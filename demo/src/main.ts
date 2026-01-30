@@ -15,6 +15,8 @@ const $btnRecv = document.getElementById("btn-recv")!;
 const $resizeHandle = document.getElementById("resize-handle")!;
 const $debugPanel = document.getElementById("debug-panel")!;
 const $btnCopy = document.getElementById("btn-copy")!;
+const $btnCollapse = document.getElementById("btn-collapse")!;
+const $debugMini = document.getElementById("debug-mini")!;
 
 // ── Task manager DOM ─────────────────────────
 
@@ -203,6 +205,39 @@ setInterval(() => {
   if (hasRunning) renderTasks();
 }, 1000);
 
+// ── Collapse debug panel ─────────────────────
+
+let debugCollapsed = false;
+let savedDebugWidth = "";
+
+$btnCollapse.onclick = () => {
+  debugCollapsed = !debugCollapsed;
+  if (debugCollapsed) {
+    savedDebugWidth = $debugPanel.style.width || "";
+    $debugPanel.style.width = "160px";
+    $debug.style.display = "none";
+    $debugMini.style.display = "flex";
+    $debugMini.style.flexDirection = "column";
+    $debugMini.scrollTop = $debugMini.scrollHeight;
+    $debugFilter.style.display = "none";
+    $resizeHandle.style.display = "none";
+    for (const el of $debugPanel.querySelectorAll<HTMLElement>("#debug-controls, #btn-copy, #debug-count")) {
+      el.style.display = "none";
+    }
+    $btnCollapse.innerHTML = "&#9664;";
+  } else {
+    $debugPanel.style.width = savedDebugWidth || "480px";
+    $debug.style.display = "";
+    $debugMini.style.display = "none";
+    $debugFilter.style.display = "";
+    $resizeHandle.style.display = "";
+    for (const el of $debugPanel.querySelectorAll<HTMLElement>("#debug-controls, #btn-copy, #debug-count")) {
+      el.style.display = "";
+    }
+    $btnCollapse.innerHTML = "&#9654;";
+  }
+};
+
 // ── Resize ───────────────────────────────────
 
 let resizing = false;
@@ -349,6 +384,17 @@ function addProtoEntry(dir: string, ts: number, msg: any) {
 
   $debug.appendChild(el);
   if (autoScrollDebug) $debug.scrollTop = $debug.scrollHeight;
+
+  // Mini feed entry
+  const mini = document.createElement("div");
+  mini.className = "mini-entry";
+  mini.innerHTML =
+    '<span class="proto-dir ' + dir + '">' +
+    (dir === "send" ? "SND" : "RCV") +
+    "</span>" +
+    '<span class="mini-method">' + escapeHtml(method) + "</span>";
+  $debugMini.appendChild(mini);
+  $debugMini.scrollTop = $debugMini.scrollHeight;
 }
 
 // ── Chat helpers ─────────────────────────────
@@ -360,7 +406,7 @@ function scrollBottom() {
 function setReady(ready: boolean) {
   busy = !ready;
   $input.disabled = !ready;
-  $send.disabled = !ready;
+  $send.disabled = !ready || !$input.value.trim();
   if (ready) $input.focus();
 }
 
@@ -652,6 +698,7 @@ $input.addEventListener("keydown", (e) => {
 $input.addEventListener("input", () => {
   $input.style.height = "auto";
   $input.style.height = Math.min($input.scrollHeight, 120) + "px";
+  $send.disabled = busy || !$input.value.trim();
 });
 
 connect();

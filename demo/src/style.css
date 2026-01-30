@@ -1,22 +1,31 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #0d1117;
-  --color-surface: #161b22;
-  --color-border: #30363d;
-  --color-text: #e6edf3;
-  --color-dim: #7d8590;
-  --color-accent: #f97316;
-  --color-accent-dim: #f9731622;
-  --color-tool-bg: #1c2128;
-  --color-thought-bg: #1a1520;
-  --color-user-bg: #1e2a3a;
-  --color-green: #3fb950;
-  --color-yellow: #d29922;
-  --color-red: #f85149;
-  --color-blue: #58a6ff;
-  --color-purple: #bc8cff;
+  --color-bg: #0a0a0a;
+  --color-surface: #171717;
+  --color-border: #262626;
+  --color-text: #fafafa;
+  --color-dim: #a3a3a3;
+  --color-accent: #fafafa;
+  --color-accent-dim: #fafafa15;
+  --color-tool-bg: #171717;
+  --color-thought-bg: #171717;
+  --color-user-bg: #171717;
+  --color-green: #00a67e;
+  --color-yellow: #f59e0b;
+  --color-red: #ef4444;
+  --color-blue: #0ea5e9;
+  --color-purple: #a78bfa;
+  --color-ring: #fafafa;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #404040; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #525252; }
 
 /* ── Status indicator ─────────────────────── */
 
@@ -58,22 +67,13 @@
 }
 
 .msg.user {
-  background: var(--color-user-bg);
-  border-radius: 6px;
-  padding: 8px 12px;
+  background: var(--color-surface);
+  border-radius: 9999px;
+  padding: 8px 18px;
   margin: 8px 0 4px;
-  border-left: 3px solid var(--color-accent);
-}
-
-.msg.user::before {
-  content: "You";
-  display: block;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-accent);
-  margin-bottom: 2px;
+  align-self: flex-end;
+  max-width: 80%;
+  width: fit-content;
 }
 
 .msg.assistant {
@@ -84,10 +84,10 @@
   color: var(--color-dim);
   font-style: italic;
   background: var(--color-thought-bg);
-  border-radius: 4px;
+  border-radius: 6px;
   padding: 6px 10px;
   font-size: 12px;
-  border-left: 2px solid #8b5cf6;
+  border-left: 2px solid var(--color-purple);
 }
 
 .msg.system {
@@ -102,7 +102,7 @@
 .tool-call {
   background: var(--color-tool-bg);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 8px 12px;
   margin: 4px 0;
   font-size: 12px;
@@ -120,8 +120,9 @@
   letter-spacing: 0.08em;
   padding: 1px 6px;
   border-radius: 3px;
-  background: var(--color-accent-dim);
-  color: var(--color-accent);
+  background: var(--color-surface);
+  color: var(--color-dim);
+  border: 1px solid var(--color-border);
   font-weight: 600;
 }
 
@@ -154,7 +155,7 @@
 .plan {
   background: var(--color-tool-bg);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 8px 12px;
   margin: 4px 0;
 }
@@ -179,7 +180,7 @@
 .plan-entry .marker {
   width: 14px;
   height: 14px;
-  border-radius: 3px;
+  border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -209,7 +210,7 @@
   font-family: inherit;
   font-size: 10px;
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
 }
 
@@ -219,8 +220,8 @@
 }
 
 .debug-ctrl-btn.active {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
+  color: var(--color-text);
+  border-color: var(--color-text);
 }
 
 .debug-ctrl-btn.copied {
@@ -231,7 +232,7 @@
 /* ── Protocol entries ─────────────────────── */
 
 .proto-entry {
-  border-bottom: 1px solid #1e242c;
+  border-bottom: 1px solid var(--color-border);
   font-size: 11px;
 }
 
@@ -246,7 +247,7 @@
   user-select: none;
 }
 
-.proto-summary:hover { background: #161b22; }
+.proto-summary:hover { background: var(--color-surface); }
 
 .proto-arrow {
   font-size: 9px;
@@ -269,8 +270,8 @@
   white-space: nowrap;
 }
 
-.proto-dir.send { background: #1e3a5f; color: var(--color-blue); }
-.proto-dir.recv { background: #1a3a1a; color: var(--color-green); }
+.proto-dir.send { background: #0ea5e914; color: var(--color-blue); }
+.proto-dir.recv { background: #00a67e14; color: var(--color-green); }
 
 .proto-method {
   color: var(--color-text);
@@ -318,7 +319,7 @@
 .json-key { color: var(--color-blue); }
 .json-str { color: var(--color-green); }
 .json-num { color: var(--color-purple); }
-.json-bool { color: var(--color-accent); }
+.json-bool { color: var(--color-yellow); }
 .json-null { color: var(--color-red); }
 
 /* ── Task items ───────────────────────────── */
@@ -329,7 +330,7 @@
   gap: 8px;
   padding: 6px 20px;
   font-size: 12px;
-  border-bottom: 1px solid #1e242c;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .task-item:last-child { border-bottom: none; }
@@ -340,13 +341,13 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: 9999px;
   flex-shrink: 0;
 }
 
-.task-badge.agent { background: #2d1f54; color: var(--color-purple); }
-.task-badge.bash { background: #1e3a5f; color: var(--color-blue); }
-.task-badge.other { background: #3a2a10; color: var(--color-accent); }
+.task-badge.agent { background: #a78bfa14; color: var(--color-purple); }
+.task-badge.bash { background: #0ea5e914; color: var(--color-blue); }
+.task-badge.other { background: #f59e0b14; color: var(--color-yellow); }
 
 .task-title {
   flex: 1;
@@ -390,7 +391,7 @@
   flex-shrink: 0;
 }
 
-.task-kill:hover { background: #3d1f1f; border-color: var(--color-red); }
+.task-kill:hover { background: #ef444414; border-color: var(--color-red); }
 .task-kill:disabled { opacity: 0.3; cursor: not-allowed; background: none; border-color: transparent; }
 
 .task-item.has-peek { border-bottom: none; padding-bottom: 2px; }
@@ -402,7 +403,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  border-bottom: 1px solid #1e242c;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .task-peek:last-child { border-bottom: none; }
@@ -423,8 +424,32 @@
   50% { opacity: 1; }
 }
 
+/* ── Mini protocol feed ──────────────────── */
+
+.mini-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.mini-entry .proto-dir {
+  font-size: 8px;
+  padding: 0 4px;
+  min-width: 32px;
+}
+
+.mini-entry .mini-method {
+  color: var(--color-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── Resize handle active state ───────────── */
 
 #resize-handle.active {
-  background: var(--color-accent);
+  background: var(--color-dim);
 }

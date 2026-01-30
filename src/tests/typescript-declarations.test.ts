@@ -406,6 +406,7 @@ const toolMeta: ToolUpdateMeta = {
   claudeCode: {
     toolName: "Read",
     toolResponse: { success: true },
+    isBackground: true,
   },
 };
 

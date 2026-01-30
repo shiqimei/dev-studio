@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claude Code ACP Demo</title>
+</head>
+<body class="font-mono text-[13px] bg-bg text-text h-screen flex flex-col">
+  <header class="px-5 py-2.5 border-b border-border flex items-center gap-3 shrink-0">
+    <h1 class="text-sm font-semibold text-accent">Claude Code ACP</h1>
+    <span id="status">connecting...</span>
+  </header>
+
+  <div id="task-bar" class="hidden px-5 py-1.5 bg-surface border-b border-border flex items-center gap-2 cursor-pointer select-none shrink-0 text-xs hover:bg-tool-bg">
+    <span id="task-icon" class="text-sm text-yellow">&#9881;</span>
+    <span id="task-text" class="text-dim flex-1">0 active tasks</span>
+    <span id="task-arrow" class="text-[10px] text-dim transition-transform duration-150">&#9660;</span>
+  </div>
+  <div id="task-panel" class="hidden max-h-60 overflow-y-auto border-b border-border bg-bg shrink-0">
+    <div id="task-list"></div>
+  </div>
+
+  <div id="main" class="flex-1 flex min-h-0">
+    <div id="chat-panel" class="flex-1 flex flex-col min-w-0">
+      <div id="messages" class="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-1"></div>
+      <div id="input-area" class="border-t border-border px-5 py-3 flex gap-2 shrink-0">
+        <textarea id="input" rows="1" placeholder="Send a message..." disabled
+          class="flex-1 bg-surface border border-border rounded-md px-3.5 py-2.5 text-text font-mono text-[13px] outline-none resize-none min-h-[40px] max-h-[120px] focus:border-accent placeholder:text-dim disabled:opacity-50"></textarea>
+        <button id="send" disabled
+          class="bg-accent text-bg border-none rounded-md px-5 py-2.5 font-mono text-[13px] font-semibold cursor-pointer self-end hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed">Send</button>
+      </div>
+    </div>
+
+    <div id="resize-handle" class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors duration-150 hover:bg-accent"></div>
+
+    <div id="debug-panel" class="w-[480px] shrink-0 border-l border-border flex flex-col bg-bg">
+      <div id="debug-header" class="px-3.5 py-2 border-b border-border flex items-center gap-2.5 shrink-0">
+        <span class="text-[11px] font-bold uppercase tracking-wide text-dim">Protocol</span>
+        <span id="debug-count" class="text-[10px] text-dim bg-surface px-1.5 rounded-full">0</span>
+        <div id="debug-controls" class="flex gap-1">
+          <button id="btn-all" class="debug-ctrl-btn active">All</button>
+          <button id="btn-send" class="debug-ctrl-btn">Sent</button>
+          <button id="btn-recv" class="debug-ctrl-btn">Recv</button>
+        </div>
+        <button id="btn-copy" class="debug-ctrl-btn whitespace-nowrap">Copy All</button>
+        <input id="debug-filter" type="text" placeholder="Filter method..."
+          class="ml-auto bg-surface border border-border rounded px-2 py-0.5 text-text font-mono text-[10px] outline-none w-[140px] focus:border-accent placeholder:text-dim" />
+      </div>
+      <div id="debug-messages" class="flex-1 overflow-y-auto py-1.5"></div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

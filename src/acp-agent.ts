@@ -418,6 +418,8 @@ export class ClaudeAcpAgent implements Agent {
             case "status":
               // Todo: process via status api: https://docs.claude.com/en/docs/claude-code/hooks#hook-output
               break;
+            case "files_persisted":
+              break;
             default:
               unreachable(message, this.logger);
               break;

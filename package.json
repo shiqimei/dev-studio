@@ -28,6 +28,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "demo": "bun demo/dev.ts",
+    "demo:server": "bun --hot demo/server/index.ts",
+    "demo:vite": "vite demo",
     "dev": "npm run build && npm run start",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
@@ -61,13 +64,14 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@agentclientprotocol/sdk": "0.13.1",
-    "@anthropic-ai/claude-agent-sdk": "0.2.22",
+    "@anthropic-ai/claude-agent-sdk": "0.2.25",
     "@modelcontextprotocol/sdk": "1.25.3",
     "diff": "8.0.3",
     "minimatch": "10.1.1"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "0.71.2",
+    "@tailwindcss/vite": "^4.1.18",
     "@types/node": "25.0.10",
     "@typescript-eslint/eslint-plugin": "8.54.0",
     "@typescript-eslint/parser": "8.54.0",
@@ -75,8 +79,10 @@
     "eslint-config-prettier": "10.1.8",
     "globals": "17.2.0",
     "prettier": "3.8.1",
+    "tailwindcss": "^4.1.18",
     "ts-node": "10.9.2",
     "typescript": "5.9.3",
+    "vite": "^7.3.1",
     "vitest": "4.0.18"
   }
 }

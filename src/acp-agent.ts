@@ -38,6 +38,7 @@ import {
   PermissionMode,
   Query,
   query,
+  SDKMessage,
   SDKPartialAssistantMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -74,11 +75,86 @@ export interface Logger {
 
 type Session = {
   query: Query;
+  router: SessionMessageRouter;
   input: Pushable<SDKUserMessage>;
   cancelled: boolean;
   permissionMode: PermissionMode;
   settingsManager: SettingsManager;
 };
+
+/**
+ * Wraps a Query async generator to continuously read messages.
+ * Intercepts system messages (e.g. task_notification) that need immediate
+ * handling—even between turns—while buffering everything else for prompt().
+ */
+class SessionMessageRouter {
+  private buffer: SDKMessage[] = [];
+  private resolver: ((result: IteratorResult<SDKMessage, void>) => void) | null = null;
+  private finished = false;
+
+  constructor(
+    private query: Query,
+    private onSystemMessage: (msg: SDKMessage) => Promise<void>,
+    private logger: Logger,
+  ) {
+    this.startReading();
+  }
+
+  private async startReading() {
+    try {
+      while (true) {
+        const result = await this.query.next();
+        if (result.done || !result.value) {
+          this.finished = true;
+          if (this.resolver) {
+            this.resolver({ value: undefined as any, done: true });
+            this.resolver = null;
+          }
+          break;
+        }
+
+        const msg = result.value;
+
+        // Intercept task_notification for immediate handling between turns
+        if (msg.type === "system" && msg.subtype === "task_notification") {
+          try {
+            await this.onSystemMessage(msg);
+          } catch (err) {
+            this.logger.error("[SessionMessageRouter] onSystemMessage error:", err);
+          }
+          continue;
+        }
+
+        // Forward to prompt() consumer
+        if (this.resolver) {
+          this.resolver({ value: msg, done: false });
+          this.resolver = null;
+        } else {
+          this.buffer.push(msg);
+        }
+      }
+    } catch (err) {
+      this.finished = true;
+      if (this.resolver) {
+        this.resolver({ value: undefined as any, done: true });
+        this.resolver = null;
+      }
+    }
+  }
+
+  /** Drop-in replacement for query.next() used by prompt(). */
+  async next(): Promise<IteratorResult<SDKMessage, void>> {
+    if (this.buffer.length > 0) {
+      return { value: this.buffer.shift()!, done: false };
+    }
+    if (this.finished) {
+      return { value: undefined, done: true };
+    }
+    return new Promise((resolve) => {
+      this.resolver = resolve;
+    });
+  }
+}
 
 type BackgroundTerminal =
   | {
@@ -122,6 +198,12 @@ export type ToolUpdateMeta = {
     toolName: string;
     /* The structured output provided by Claude Code. */
     toolResponse?: unknown;
+    /* True when this tool was launched as a background task (run_in_background). */
+    isBackground?: boolean;
+    /* True when a background task has actually finished (vs the initial "completed" which just means launched). */
+    backgroundComplete?: boolean;
+    /* The parent tool_use_id when this tool is called from a sub-agent (links to the parent Task's toolCallId). */
+    parentToolUseId?: string;
   };
 };
 
@@ -145,6 +227,8 @@ export class ClaudeAcpAgent implements Agent {
   client: AgentSideConnection;
   toolUseCache: ToolUseCache;
   backgroundTerminals: { [key: string]: BackgroundTerminal } = {};
+  /** Maps task_id (or "file:<output_file>") from task_notification → toolCallId */
+  backgroundTaskMap: Record<string, string> = {};
   clientCapabilities?: ClientCapabilities;
   logger: Logger;
 
@@ -153,6 +237,56 @@ export class ClaudeAcpAgent implements Agent {
     this.client = client;
     this.toolUseCache = {};
     this.logger = logger ?? console;
+  }
+
+  /**
+   * Handle a task_notification system message (background agent completed).
+   * Called by the SessionMessageRouter, even between turns.
+   */
+  private async handleTaskNotification(sessionId: string, message: any): Promise<void> {
+    const taskNotif = message as {
+      task_id: string;
+      status: "completed" | "failed" | "stopped";
+      output_file: string;
+      summary: string;
+    };
+    const toolCallId =
+      this.backgroundTaskMap[taskNotif.task_id] ||
+      this.backgroundTaskMap[`file:${taskNotif.output_file}`];
+    if (toolCallId) {
+      const status: "completed" | "failed" =
+        taskNotif.status === "completed" ? "completed" : "failed";
+      await this.client.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId,
+          status,
+          ...(taskNotif.summary && {
+            title: taskNotif.summary,
+            content: [
+              {
+                type: "content",
+                content: { type: "text", text: taskNotif.summary },
+              },
+            ],
+          }),
+          _meta: {
+            claudeCode: {
+              toolName: "Task",
+              isBackground: true,
+              backgroundComplete: true,
+            },
+          } satisfies ToolUpdateMeta,
+        },
+      });
+      delete this.backgroundTaskMap[taskNotif.task_id];
+      delete this.backgroundTaskMap[`file:${taskNotif.output_file}`];
+    } else {
+      this.logger.log(
+        `[claude-code-acp] task_notification for unmapped task: ${taskNotif.task_id}`,
+      );
+    }
   }
 
   async initialize(request: InitializeRequest): Promise<InitializeResponse> {
@@ -257,11 +391,11 @@ export class ClaudeAcpAgent implements Agent {
 
     this.sessions[params.sessionId].cancelled = false;
 
-    const { query, input } = this.sessions[params.sessionId];
+    const { router, input } = this.sessions[params.sessionId];
 
     input.push(promptToClaude(params));
     while (true) {
-      const { value: message, done } = await query.next();
+      const { value: message, done } = await router.next();
       if (done || !message) {
         if (this.sessions[params.sessionId].cancelled) {
           return { stopReason: "cancelled" };
@@ -274,9 +408,11 @@ export class ClaudeAcpAgent implements Agent {
           switch (message.subtype) {
             case "init":
               break;
+            case "task_notification":
+              // Intercepted by SessionMessageRouter (handles between turns too)
+              break;
             case "compact_boundary":
             case "hook_started":
-            case "task_notification":
             case "hook_progress":
             case "hook_response":
             case "status":
@@ -333,6 +469,7 @@ export class ClaudeAcpAgent implements Agent {
             this.toolUseCache,
             this.client,
             this.logger,
+            this.backgroundTaskMap,
           )) {
             await this.client.sessionUpdate(notification);
           }
@@ -361,6 +498,7 @@ export class ClaudeAcpAgent implements Agent {
                 this.toolUseCache,
                 this.client,
                 this.logger,
+                this.backgroundTaskMap,
               )) {
                 await this.client.sessionUpdate(notification);
               }
@@ -411,6 +549,8 @@ export class ClaudeAcpAgent implements Agent {
             this.toolUseCache,
             this.client,
             this.logger,
+            this.backgroundTaskMap,
+            (message as any).parent_tool_use_id,
           )) {
             await this.client.sessionUpdate(notification);
           }
@@ -802,8 +942,15 @@ export class ClaudeAcpAgent implements Agent {
       options,
     });
 
+    const router = new SessionMessageRouter(
+      q,
+      (msg) => this.handleTaskNotification(sessionId, msg),
+      this.logger,
+    );
+
     this.sessions[sessionId] = {
       query: q,
+      router,
       input: input,
       cancelled: false,
       permissionMode,
@@ -1015,6 +1162,55 @@ export function promptToClaude(prompt: PromptRequest): SDKUserMessage {
 }
 
 /**
+ * Try to extract task_id and output_file from a background tool's response.
+ * The response format varies: it can be an object with fields, a string, or
+ * an array of content blocks containing the info as text.
+ */
+function extractBackgroundTaskInfo(response: unknown): {
+  taskId?: string;
+  outputFile?: string;
+} {
+  if (!response) return {};
+
+  // Direct object with fields (e.g. { task_id: "abc", output_file: "/path" })
+  if (typeof response === "object" && !Array.isArray(response)) {
+    const obj = response as Record<string, unknown>;
+    const taskId =
+      (typeof obj.task_id === "string" ? obj.task_id : undefined) ||
+      (typeof obj.agentId === "string" ? obj.agentId : undefined);
+    const outputFile = typeof obj.output_file === "string" ? obj.output_file : undefined;
+    if (taskId || outputFile) return { taskId, outputFile };
+  }
+
+  // Extract text to search for patterns
+  let text: string;
+  if (typeof response === "string") {
+    text = response;
+  } else if (Array.isArray(response)) {
+    text = response
+      .filter((c: any) => c?.type === "text" && typeof c?.text === "string")
+      .map((c: any) => c.text)
+      .join("\n");
+  } else {
+    try {
+      text = JSON.stringify(response);
+    } catch {
+      return {};
+    }
+  }
+
+  // Match task_id, agentId, or similar identifiers
+  const taskIdMatch =
+    text.match(/task[_\s-]?id[:\s]+["']?([^\s"',)]+)/i) ||
+    text.match(/agentId[:\s]+["']?([^\s"',)]+)/i);
+  const outputFileMatch = text.match(/output[_\s-]?file[:\s]+["']?([^\s"',)]+)/i);
+  return {
+    taskId: taskIdMatch?.[1],
+    outputFile: outputFileMatch?.[1],
+  };
+}
+
+/**
  * Convert an SDKAssistantMessage (Claude) to a SessionNotification (ACP).
  * Only handles text, image, and thinking chunks for now.
  */
@@ -1025,6 +1221,8 @@ export function toAcpNotifications(
   toolUseCache: ToolUseCache,
   client: AgentSideConnection,
   logger: Logger,
+  backgroundTaskMap?: Record<string, string>,
+  parentToolUseId?: string | null,
 ): SessionNotification[] {
   if (typeof content === "string") {
     return [
@@ -1095,11 +1293,27 @@ export function toAcpNotifications(
             onPostToolUseHook: async (toolUseId, toolInput, toolResponse) => {
               const toolUse = toolUseCache[toolUseId];
               if (toolUse) {
+                const hookInputObj = toolUse.input as
+                  | Record<string, unknown>
+                  | undefined;
+                const hookIsBackground =
+                  hookInputObj?.run_in_background === true;
+
+                // Store mapping so we can match task_notification later
+                if (hookIsBackground && backgroundTaskMap && toolResponse) {
+                  const info = extractBackgroundTaskInfo(toolResponse);
+                  if (info.taskId) backgroundTaskMap[info.taskId] = toolUseId;
+                  if (info.outputFile)
+                    backgroundTaskMap[`file:${info.outputFile}`] = toolUseId;
+                }
+
                 const update: SessionNotification["update"] = {
                   _meta: {
                     claudeCode: {
                       toolResponse,
                       toolName: toolUse.name,
+                      ...(hookIsBackground && { isBackground: true }),
+                      ...(parentToolUseId && { parentToolUseId }),
                     },
                   } satisfies ToolUpdateMeta,
                   toolCallId: toolUseId,
@@ -1123,10 +1337,17 @@ export function toAcpNotifications(
           } catch {
             // ignore if we can't turn it to JSON
           }
+          const inputObj = chunk.input as
+            | Record<string, unknown>
+            | undefined;
+          const isBackground =
+            inputObj?.run_in_background === true;
           update = {
             _meta: {
               claudeCode: {
                 toolName: chunk.name,
+                ...(isBackground && { isBackground: true }),
+                ...(parentToolUseId && { parentToolUseId }),
               },
             } satisfies ToolUpdateMeta,
             toolCallId: chunk.id,
@@ -1156,10 +1377,27 @@ export function toAcpNotifications(
         }
 
         if (toolUse.name !== "TodoWrite") {
+          const resultInputObj = toolUse.input as
+            | Record<string, unknown>
+            | undefined;
+          const resultIsBackground =
+            resultInputObj?.run_in_background === true;
+
+          // Also try to establish task_id mapping from tool result content
+          if (resultIsBackground && backgroundTaskMap) {
+            const info = extractBackgroundTaskInfo(chunk.content);
+            if (info.taskId)
+              backgroundTaskMap[info.taskId] = chunk.tool_use_id;
+            if (info.outputFile)
+              backgroundTaskMap[`file:${info.outputFile}`] = chunk.tool_use_id;
+          }
+
           update = {
             _meta: {
               claudeCode: {
                 toolName: toolUse.name,
+                ...(resultIsBackground && { isBackground: true }),
+                ...(parentToolUseId && { parentToolUseId }),
               },
             } satisfies ToolUpdateMeta,
             toolCallId: chunk.tool_use_id,
@@ -1199,8 +1437,10 @@ export function streamEventToAcpNotifications(
   toolUseCache: ToolUseCache,
   client: AgentSideConnection,
   logger: Logger,
+  backgroundTaskMap?: Record<string, string>,
 ): SessionNotification[] {
   const event = message.event;
+  const parentToolUseId = message.parent_tool_use_id;
   switch (event.type) {
     case "content_block_start":
       return toAcpNotifications(
@@ -1210,6 +1450,8 @@ export function streamEventToAcpNotifications(
         toolUseCache,
         client,
         logger,
+        backgroundTaskMap,
+        parentToolUseId,
       );
     case "content_block_delta":
       return toAcpNotifications(
@@ -1219,6 +1461,8 @@ export function streamEventToAcpNotifications(
         toolUseCache,
         client,
         logger,
+        backgroundTaskMap,
+        parentToolUseId,
       );
     // No content
     case "message_start":

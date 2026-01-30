@@ -755,14 +755,17 @@ export const createPostToolUseHook =
   (logger: Logger = console): HookCallback =>
   async (input: any, toolUseID: string | undefined): Promise<{ continue: boolean }> => {
     if (input.hook_event_name === "PostToolUse" && toolUseID) {
+      // Skip tool_use_ids that were never registered (e.g. from background sub-agents)
+      if (!(toolUseID in toolUseCallbacks)) {
+        return { continue: true };
+      }
       const onPostToolUseHook = toolUseCallbacks[toolUseID]?.onPostToolUseHook;
       if (onPostToolUseHook) {
         await onPostToolUseHook(toolUseID, input.tool_input, input.tool_response);
-        delete toolUseCallbacks[toolUseID]; // Cleanup after execution
       } else {
         logger.error(`No onPostToolUseHook found for tool use ID: ${toolUseID}`);
-        delete toolUseCallbacks[toolUseID];
       }
+      delete toolUseCallbacks[toolUseID];
     }
     return { continue: true };
   };

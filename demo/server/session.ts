@@ -52,7 +52,11 @@ export async function createAcpSession(
   const agentProcess = spawn("node", ["dist/index.js"], {
     cwd: projectRoot,
     stdio: ["pipe", "pipe", "inherit"],
-    env: { ...process.env, CLAUDE_MODEL: "claude-opus-4-5-20250514" },
+    env: {
+      ...process.env,
+      CLAUDE_MODEL: process.env.CLAUDE_MODEL || "opus",
+      MAX_THINKING_TOKENS: process.env.MAX_THINKING_TOKENS || "31999",
+    },
   });
 
   agentProcess.on("error", (err) => console.error("Agent error:", err));

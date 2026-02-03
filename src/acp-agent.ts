@@ -174,16 +174,25 @@ export type NewSessionMeta = {
   claudeCode?: {
     /**
      * Options forwarded to Claude Code when starting a new session.
-     * Those parameters will be ignored and managed by ACP:
-     *   - cwd
-     *   - includePartialMessages
-     *   - allowDangerouslySkipPermissions
-     *   - permissionMode
-     *   - canUseTool
-     *   - executable
-     * Those parameters will be used and updated to work with ACP:
-     *   - hooks (merged with ACP's hooks)
-     *   - mcpServers (merged with ACP's mcpServers)
+     *
+     * These parameters are **ignored** / overridden by ACP:
+     *   - cwd, includePartialMessages, allowDangerouslySkipPermissions,
+     *     permissionMode, canUseTool, tools
+     *
+     * These parameters are **merged** with ACP's own values:
+     *   - hooks (user hooks run alongside ACP's PreToolUse/PostToolUse)
+     *   - mcpServers (user servers merged with ACP's internal MCP server)
+     *   - stderr (user callback invoked alongside ACP's logger)
+     *   - extraArgs (merged with ACP's session-id arg)
+     *
+     * All other Options fields are passed through directly, including:
+     *   - fallbackModel, maxBudgetUsd, maxTurns, maxThinkingTokens, model
+     *   - additionalDirectories, executableArgs, spawnClaudeCodeProcess
+     *   - strictMcpConfig, agent, agents, outputFormat
+     *   - enableFileCheckpointing, betas, plugins, sandbox
+     *   - permissionPromptToolName, settingSources, persistSession
+     *   - resumeSessionAt, resume, forkSession
+     *   - executable, pathToClaudeCodeExecutable
      */
     options?: Options;
   };
@@ -430,6 +439,28 @@ export class ClaudeAcpAgent implements Agent {
             return { stopReason: "cancelled" };
           }
 
+          // Build result metadata to surface cost/usage info to ACP client
+          const resultMeta: Record<string, unknown> = {
+            claudeCode: {
+              duration_ms: message.duration_ms,
+              duration_api_ms: message.duration_api_ms,
+              num_turns: message.num_turns,
+              total_cost_usd: message.total_cost_usd,
+              usage: message.usage,
+              modelUsage: message.modelUsage,
+              session_id: message.session_id,
+              uuid: message.uuid,
+              ...("permission_denials" in message &&
+                message.permission_denials.length > 0 && {
+                  permission_denials: message.permission_denials,
+                }),
+              ...("structured_output" in message &&
+                message.structured_output !== undefined && {
+                  structured_output: message.structured_output,
+                }),
+            },
+          };
+
           switch (message.subtype) {
             case "success": {
               if (message.result.includes("Please run /login")) {
@@ -438,7 +469,7 @@ export class ClaudeAcpAgent implements Agent {
               if (message.is_error) {
                 throw RequestError.internalError(undefined, message.result);
               }
-              return { stopReason: "end_turn" };
+              return { stopReason: "end_turn", _meta: resultMeta };
             }
             case "error_during_execution":
               if (message.is_error) {
@@ -447,7 +478,7 @@ export class ClaudeAcpAgent implements Agent {
                   message.errors.join(", ") || message.subtype,
                 );
               }
-              return { stopReason: "end_turn" };
+              return { stopReason: "end_turn", _meta: resultMeta };
             case "error_max_budget_usd":
             case "error_max_turns":
             case "error_max_structured_output_retries":
@@ -457,7 +488,7 @@ export class ClaudeAcpAgent implements Agent {
                   message.errors.join(", ") || message.subtype,
                 );
               }
-              return { stopReason: "max_turn_requests" };
+              return { stopReason: "max_turn_requests", _meta: resultMeta };
             default:
               unreachable(message, this.logger);
               break;
@@ -599,9 +630,12 @@ export class ClaudeAcpAgent implements Agent {
       case "bypassPermissions":
       case "dontAsk":
       case "plan":
-        this.sessions[params.sessionId].permissionMode = params.modeId;
+      case "delegate":
+        this.sessions[params.sessionId].permissionMode = params.modeId as PermissionMode;
         try {
-          await this.sessions[params.sessionId].query.setPermissionMode(params.modeId);
+          await this.sessions[params.sessionId].query.setPermissionMode(
+            params.modeId as PermissionMode,
+          );
         } catch (error) {
           const errorMessage =
             error instanceof Error && error.message ? error.message : "Invalid Mode";
@@ -622,6 +656,79 @@ export class ClaudeAcpAgent implements Agent {
   async writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse> {
     const response = await this.client.writeTextFile(params);
     return response;
+  }
+
+  // --- Query API methods exposed for library consumers ---
+
+  /**
+   * Set the maximum thinking tokens for a session.
+   * Maps to Query.setMaxThinkingTokens().
+   */
+  async setMaxThinkingTokens(sessionId: string, maxThinkingTokens: number | null): Promise<void> {
+    const session = this.sessions[sessionId];
+    if (!session) throw new Error("Session not found");
+    await session.query.setMaxThinkingTokens(maxThinkingTokens);
+  }
+
+  /**
+   * Get MCP server status for a session.
+   * Maps to Query.mcpServerStatus().
+   */
+  async mcpServerStatus(sessionId: string) {
+    const session = this.sessions[sessionId];
+    if (!session) throw new Error("Session not found");
+    return await session.query.mcpServerStatus();
+  }
+
+  /**
+   * Reconnect an MCP server by name.
+   * Maps to Query.reconnectMcpServer().
+   */
+  async reconnectMcpServer(sessionId: string, serverName: string): Promise<void> {
+    const session = this.sessions[sessionId];
+    if (!session) throw new Error("Session not found");
+    await session.query.reconnectMcpServer(serverName);
+  }
+
+  /**
+   * Toggle an MCP server enabled/disabled.
+   * Maps to Query.toggleMcpServer().
+   */
+  async toggleMcpServer(sessionId: string, serverName: string, enabled: boolean): Promise<void> {
+    const session = this.sessions[sessionId];
+    if (!session) throw new Error("Session not found");
+    await session.query.toggleMcpServer(serverName, enabled);
+  }
+
+  /**
+   * Dynamically set MCP servers for a session.
+   * Maps to Query.setMcpServers().
+   */
+  async setMcpServers(sessionId: string, servers: Record<string, McpServerConfig>) {
+    const session = this.sessions[sessionId];
+    if (!session) throw new Error("Session not found");
+    return await session.query.setMcpServers(servers);
+  }
+
+  /**
+   * Get account info for the authenticated user.
+   * Maps to Query.accountInfo().
+   */
+  async accountInfo(sessionId: string) {
+    const session = this.sessions[sessionId];
+    if (!session) throw new Error("Session not found");
+    return await session.query.accountInfo();
+  }
+
+  /**
+   * Rewind files to their state at a specific user message.
+   * Requires enableFileCheckpointing to be set in session options.
+   * Maps to Query.rewindFiles().
+   */
+  async rewindFiles(sessionId: string, userMessageId: string, opts?: { dryRun?: boolean }) {
+    const session = this.sessions[sessionId];
+    if (!session) throw new Error("Session not found");
+    return await session.query.rewindFiles(userMessageId, opts);
   }
 
   canUseTool(sessionId: string): CanUseTool {
@@ -837,13 +944,34 @@ export class ClaudeAcpAgent implements Agent {
       ? parseInt(process.env.MAX_THINKING_TOKENS, 10)
       : undefined;
 
+    // Build stderr handler that merges user callback with our logger
+    const userStderr = userProvidedOptions?.stderr;
+    const stderrHandler = userStderr
+      ? (data: string) => {
+          this.logger.error(data);
+          userStderr(data);
+        }
+      : (data: string) => this.logger.error(data);
+
+    // Determine executable: prefer user-provided, then env var, then process path
+    const resolvedExecutable = (userProvidedOptions?.executable ?? process.execPath) as any;
+    const resolvedPathToClaudeCodeExecutable =
+      userProvidedOptions?.pathToClaudeCodeExecutable ??
+      process.env.CLAUDE_CODE_EXECUTABLE ??
+      undefined;
+
     const options: Options = {
       systemPrompt,
       settingSources: ["user", "project", "local"],
-      stderr: (err) => this.logger.error(err),
       ...(maxThinkingTokens !== undefined && { maxThinkingTokens }),
+      // Spread user-provided options (fallbackModel, maxBudgetUsd,
+      // additionalDirectories, executableArgs, spawnClaudeCodeProcess,
+      // strictMcpConfig, agent, agents, outputFormat, enableFileCheckpointing,
+      // betas, plugins, permissionPromptToolName, sandbox, persistSession,
+      // resumeSessionAt, etc.)
       ...userProvidedOptions,
       // Override certain fields that must be controlled by ACP
+      stderr: stderrHandler,
       cwd: params.cwd,
       includePartialMessages: true,
       mcpServers: { ...(userProvidedOptions?.mcpServers || {}), ...mcpServers },
@@ -853,14 +981,16 @@ export class ClaudeAcpAgent implements Agent {
       allowDangerouslySkipPermissions: !IS_ROOT,
       permissionMode,
       canUseTool: this.canUseTool(sessionId),
-      // note: although not documented by the types, passing an absolute path
-      // here works to find zed's managed node version.
-      executable: process.execPath as any,
-      ...(process.env.CLAUDE_CODE_EXECUTABLE && {
-        pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_EXECUTABLE,
+      executable: resolvedExecutable,
+      ...(resolvedPathToClaudeCodeExecutable && {
+        pathToClaudeCodeExecutable: resolvedPathToClaudeCodeExecutable,
       }),
       tools: { type: "preset", preset: "claude_code" },
       hooks: {
+        // Spread all user-provided hooks first (supports all 13 hook events:
+        // PreToolUse, PostToolUse, PostToolUseFailure, Notification,
+        // UserPromptSubmit, SessionStart, SessionEnd, Stop,
+        // SubagentStart, SubagentStop, PreCompact, PermissionRequest, Setup)
         ...userProvidedOptions?.hooks,
         PreToolUse: [
           ...(userProvidedOptions?.hooks?.PreToolUse || []),
@@ -993,6 +1123,11 @@ export class ClaudeAcpAgent implements Agent {
         id: "dontAsk",
         name: "Don't Ask",
         description: "Don't prompt for permissions, deny if not pre-approved",
+      },
+      {
+        id: "delegate",
+        name: "Delegate",
+        description: "Delegation mode for sub-agents",
       },
     ];
     // Only works in non-root mode

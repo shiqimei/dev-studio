@@ -87,15 +87,15 @@ Every method on the `Query` interface or `SDKSession`.
 | 2 | `interrupt()` | [✓] | `cancel()` | Sets cancelled flag, calls SDK interrupt |
 | 3 | `setPermissionMode(mode)` | [✓] | `setSessionMode()` | Runtime mode switching |
 | 4 | `setModel(model)` | [✓] | `unstable_setSessionModel()` | Runtime model switching |
-| 5 | `setMaxThinkingTokens(n)` | [ ] | Not exposed | Could map to session option |
+| 5 | `setMaxThinkingTokens(n)` | [✓] | `ClaudeAcpAgent.setMaxThinkingTokens()` | Exposed as library method |
 | 6 | `supportedCommands()` | [✓] | `available_commands_update` | Slash commands list |
 | 7 | `supportedModels()` | [✓] | `newSession()` response | Returns model list with display info |
-| 8 | `mcpServerStatus()` | [ ] | Not exposed | MCP server health |
-| 9 | `reconnectMcpServer(name)` | [ ] | Not exposed | MCP reconnection |
-| 10 | `toggleMcpServer(name, enabled)` | [ ] | Not exposed | MCP enable/disable |
-| 11 | `setMcpServers(servers)` | [ ] | Not exposed | Dynamic MCP config |
-| 12 | `accountInfo()` | [ ] | Not exposed | Email, org, subscription info |
-| 13 | `rewindFiles(messageId, opts)` | [ ] | Not exposed | File state rewinding |
+| 8 | `mcpServerStatus()` | [✓] | `ClaudeAcpAgent.mcpServerStatus()` | Exposed as library method |
+| 9 | `reconnectMcpServer(name)` | [✓] | `ClaudeAcpAgent.reconnectMcpServer()` | Exposed as library method |
+| 10 | `toggleMcpServer(name, enabled)` | [✓] | `ClaudeAcpAgent.toggleMcpServer()` | Exposed as library method |
+| 11 | `setMcpServers(servers)` | [✓] | `ClaudeAcpAgent.setMcpServers()` | Exposed as library method |
+| 12 | `accountInfo()` | [✓] | `ClaudeAcpAgent.accountInfo()` | Exposed as library method |
+| 13 | `rewindFiles(messageId, opts)` | [✓] | `ClaudeAcpAgent.rewindFiles()` | Requires `enableFileCheckpointing` option |
 | 14 | `close()` | [✓] | Session cleanup | Forceful termination |
 | 15 | `streamInput(stream)` | [✓] | Multi-turn `prompt()` | Async message stream input |
 
@@ -103,11 +103,11 @@ Every method on the `Query` interface or `SDKSession`.
 
 | # | Method | Status | ACP Mapping | Notes |
 |---|--------|--------|-------------|-------|
-| 16 | `unstable_v2_createSession()` | [ ] | Not used | V2 multi-turn session API |
-| 17 | `unstable_v2_prompt()` | [ ] | Not used | V2 one-shot prompt |
-| 18 | `unstable_v2_resumeSession()` | [ ] | Not used | V2 session resume |
-| 19 | `SDKSession.send()` | [ ] | Not used | V2 send message |
-| 20 | `SDKSession.stream()` | [ ] | Not used | V2 stream messages |
+| 16 | `unstable_v2_createSession()` | [-] | Not used | V2 API (@alpha); ACP uses v1 query-based API |
+| 17 | `unstable_v2_prompt()` | [-] | Not used | V2 API (@alpha); ACP uses v1 query-based API |
+| 18 | `unstable_v2_resumeSession()` | [-] | Not used | V2 API (@alpha); ACP uses v1 query-based API |
+| 19 | `SDKSession.send()` | [-] | Not used | V2 API (@alpha); ACP uses v1 query-based API |
+| 20 | `SDKSession.stream()` | [-] | Not used | V2 API (@alpha); ACP uses v1 query-based API |
 
 ---
 
@@ -123,7 +123,7 @@ Every field in `Options` (v1 API) and `SDKSessionOptions` (v2 API).
 | 2 | `abortController` | [✓] | Used for `cancel()` |
 | 3 | `continue` | [✓] | Continue conversation |
 | 4 | `resume` | [✓] | Session ID to resume |
-| 5 | `resumeSessionAt` | [ ] | Resume at specific message UUID |
+| 5 | `resumeSessionAt` | [✓] | Passed through via `_meta.claudeCode.options` |
 | 6 | `forkSession` | [✓] | Fork resumed session |
 | 7 | `persistSession` | [✓] | Default true |
 
@@ -132,9 +132,9 @@ Every field in `Options` (v1 API) and `SDKSessionOptions` (v2 API).
 | # | Option | Status | Notes |
 |---|--------|--------|-------|
 | 8 | `model` | [✓] | Passed through to SDK |
-| 9 | `fallbackModel` | [ ] | Not exposed |
+| 9 | `fallbackModel` | [✓] | Passed through via `_meta.claudeCode.options` |
 | 10 | `maxTurns` | [✓] | Passed through to SDK |
-| 11 | `maxBudgetUsd` | [ ] | Not exposed |
+| 11 | `maxBudgetUsd` | [✓] | Passed through via `_meta.claudeCode.options` |
 | 12 | `maxThinkingTokens` | [✓] | Via `MAX_THINKING_TOKENS` env var |
 
 ### Tools and Permissions
@@ -147,14 +147,14 @@ Every field in `Options` (v1 API) and `SDKSessionOptions` (v2 API).
 | 16 | `canUseTool` | [✓] | Permission callback for plan/edit flows |
 | 17 | `permissionMode` | [✓] | default, acceptEdits, plan, dontAsk, bypassPermissions |
 | 18 | `allowDangerouslySkipPermissions` | [✓] | True if non-root |
-| 19 | `permissionPromptToolName` | [ ] | MCP tool for permission prompts |
+| 19 | `permissionPromptToolName` | [✓] | Passed through via `_meta.claudeCode.options` |
 
 ### Directories and Environment
 
 | # | Option | Status | Notes |
 |---|--------|--------|-------|
 | 20 | `cwd` | [✓] | Controlled by ACP |
-| 21 | `additionalDirectories` | [ ] | Not exposed |
+| 21 | `additionalDirectories` | [✓] | Passed through via `_meta.claudeCode.options` |
 | 22 | `env` | [✓] | Environment variables passed through |
 
 ### Execution and Runtime
@@ -162,10 +162,10 @@ Every field in `Options` (v1 API) and `SDKSessionOptions` (v2 API).
 | # | Option | Status | Notes |
 |---|--------|--------|-------|
 | 23 | `executable` | [✓] | Node.js runtime path |
-| 24 | `executableArgs` | [ ] | Not exposed |
+| 24 | `executableArgs` | [✓] | Passed through via `_meta.claudeCode.options` |
 | 25 | `pathToClaudeCodeExecutable` | [✓] | Custom CLI binary path |
 | 26 | `extraArgs` | [✓] | Additional CLI flags via `_meta` |
-| 27 | `spawnClaudeCodeProcess` | [ ] | Custom process spawning |
+| 27 | `spawnClaudeCodeProcess` | [✓] | Passed through via `_meta.claudeCode.options` |
 
 ### System Prompt and Configuration
 
@@ -173,14 +173,14 @@ Every field in `Options` (v1 API) and `SDKSessionOptions` (v2 API).
 |---|--------|--------|-------|
 | 28 | `systemPrompt` | [✓] | Custom or preset with append |
 | 29 | `settingSources` | [✓] | `["user", "project", "local"]` |
-| 30 | `strictMcpConfig` | [ ] | Not exposed |
+| 30 | `strictMcpConfig` | [✓] | Passed through via `_meta.claudeCode.options` |
 
 ### Agents and Subagents
 
 | # | Option | Status | Notes |
 |---|--------|--------|-------|
-| 31 | `agent` | [ ] | Named agent selection |
-| 32 | `agents` | [ ] | Custom agent definitions |
+| 31 | `agent` | [✓] | Passed through via `_meta.claudeCode.options` |
+| 32 | `agents` | [✓] | Passed through via `_meta.claudeCode.options` |
 
 ### Hooks
 
@@ -199,37 +199,37 @@ Every field in `Options` (v1 API) and `SDKSessionOptions` (v2 API).
 | # | Option | Status | Notes |
 |---|--------|--------|-------|
 | 35 | `includePartialMessages` | [✓] | Always true (controlled by ACP) |
-| 36 | `outputFormat` | [ ] | Structured output (json_schema) |
+| 36 | `outputFormat` | [✓] | Passed through via `_meta.claudeCode.options`; structured_output surfaced in result _meta |
 
 ### File Checkpointing
 
 | # | Option | Status | Notes |
 |---|--------|--------|-------|
-| 37 | `enableFileCheckpointing` | [ ] | File state tracking |
+| 37 | `enableFileCheckpointing` | [✓] | Passed through via `_meta.claudeCode.options` |
 
 ### Beta Features
 
 | # | Option | Status | Notes |
 |---|--------|--------|-------|
-| 38 | `betas` | [ ] | e.g. `context-1m-2025-08-07` |
+| 38 | `betas` | [✓] | Passed through via `_meta.claudeCode.options` |
 
 ### Sandbox Configuration
 
 | # | Option | Status | Notes |
 |---|--------|--------|-------|
-| 39 | `sandbox` | [~] | Default only; full SandboxSettings not exposed |
+| 39 | `sandbox` | [✓] | Full SandboxSettings passed through via `_meta.claudeCode.options` |
 
 ### Plugins
 
 | # | Option | Status | Notes |
 |---|--------|--------|-------|
-| 40 | `plugins` | [ ] | Local plugin directories |
+| 40 | `plugins` | [✓] | Passed through via `_meta.claudeCode.options` |
 
 ### Debugging
 
 | # | Option | Status | Notes |
 |---|--------|--------|-------|
-| 41 | `stderr` | [ ] | Stderr callback |
+| 41 | `stderr` | [✓] | Merged: user callback invoked alongside ACP's logger |
 
 ---
 
@@ -241,17 +241,17 @@ Every event in the `HOOK_EVENTS` constant.
 |---|-----------|--------|-------|
 | 1 | `PreToolUse` | [✓] | Merged with user hooks; permission decisions, input updates |
 | 2 | `PostToolUse` | [✓] | Merged with user hooks; captures structured tool response |
-| 3 | `PostToolUseFailure` | [ ] | After tool failure |
-| 4 | `Notification` | [ ] | System notification dispatch |
-| 5 | `UserPromptSubmit` | [ ] | Prompt submission hook |
-| 6 | `SessionStart` | [ ] | Session lifecycle start |
-| 7 | `SessionEnd` | [ ] | Session lifecycle end |
-| 8 | `Stop` | [ ] | Stop event |
-| 9 | `SubagentStart` | [ ] | Sub-agent lifecycle start |
-| 10 | `SubagentStop` | [ ] | Sub-agent lifecycle stop |
-| 11 | `PreCompact` | [ ] | Before context compaction |
-| 12 | `PermissionRequest` | [ ] | Permission needed event |
-| 13 | `Setup` | [ ] | Session initialization/maintenance |
+| 3 | `PostToolUseFailure` | [✓] | Passed through via `_meta.claudeCode.options.hooks` |
+| 4 | `Notification` | [✓] | Passed through via `_meta.claudeCode.options.hooks` |
+| 5 | `UserPromptSubmit` | [✓] | Passed through via `_meta.claudeCode.options.hooks` |
+| 6 | `SessionStart` | [✓] | Passed through via `_meta.claudeCode.options.hooks` |
+| 7 | `SessionEnd` | [✓] | Passed through via `_meta.claudeCode.options.hooks` |
+| 8 | `Stop` | [✓] | Passed through via `_meta.claudeCode.options.hooks` |
+| 9 | `SubagentStart` | [✓] | Passed through via `_meta.claudeCode.options.hooks` |
+| 10 | `SubagentStop` | [✓] | Passed through via `_meta.claudeCode.options.hooks` |
+| 11 | `PreCompact` | [✓] | Passed through via `_meta.claudeCode.options.hooks` |
+| 12 | `PermissionRequest` | [✓] | Passed through via `_meta.claudeCode.options.hooks` |
+| 13 | `Setup` | [✓] | Passed through via `_meta.claudeCode.options.hooks` |
 
 ---
 
@@ -266,7 +266,7 @@ Every value of `PermissionMode`.
 | 3 | `bypassPermissions` | [✓] | Skip all checks (requires non-root + `allowDangerouslySkipPermissions`) |
 | 4 | `plan` | [✓] | Planning mode; no tool execution |
 | 5 | `dontAsk` | [✓] | Never prompt; deny if not pre-approved |
-| 6 | `delegate` | [ ] | Delegation mode for sub-agents; not exposed via ACP |
+| 6 | `delegate` | [✓] | Delegation mode for sub-agents; available via `setSessionMode()` |
 
 ---
 
@@ -281,13 +281,13 @@ Every subtype of `SDKControlRequestInner` and `ControlResponse`.
 | 1 | `interrupt` | [✓] | Maps to ACP `cancel()` |
 | 2 | `set_permission_mode` | [✓] | Maps to ACP `setSessionMode()` |
 | 3 | `set_model` | [✓] | Maps to ACP `unstable_setSessionModel()` |
-| 4 | `set_max_thinking_tokens` | [ ] | Not exposed via ACP |
-| 5 | `mcp_status` | [ ] | Not exposed |
-| 6 | `mcp_message` | [ ] | JSON-RPC to MCP server; not exposed |
-| 7 | `mcp_reconnect` | [ ] | Not exposed |
-| 8 | `mcp_toggle` | [ ] | Not exposed |
-| 9 | `mcp_set_servers` | [ ] | Not exposed |
-| 10 | `rewind_files` | [ ] | Not exposed |
+| 4 | `set_max_thinking_tokens` | [✓] | Via `ClaudeAcpAgent.setMaxThinkingTokens()` |
+| 5 | `mcp_status` | [✓] | Via `ClaudeAcpAgent.mcpServerStatus()` |
+| 6 | `mcp_message` | [~] | Internal; not directly exposed (MCP handled by SDK) |
+| 7 | `mcp_reconnect` | [✓] | Via `ClaudeAcpAgent.reconnectMcpServer()` |
+| 8 | `mcp_toggle` | [✓] | Via `ClaudeAcpAgent.toggleMcpServer()` |
+| 9 | `mcp_set_servers` | [✓] | Via `ClaudeAcpAgent.setMcpServers()` |
+| 10 | `rewind_files` | [✓] | Via `ClaudeAcpAgent.rewindFiles()` |
 | 11 | `initialize` | [✓] | Internal; hooks, schema, system prompt setup |
 
 ### CLI-to-SDK Control Requests
@@ -322,21 +322,21 @@ All fields on `SDKResultSuccess` and `SDKResultError`.
 |---|-------|--------|-------|
 | 1 | `result` (string) | [✓] | Final text output |
 | 2 | `is_error` (false) | [✓] | Error flag |
-| 3 | `duration_ms` | [~] | Available but not surfaced to ACP client |
-| 4 | `duration_api_ms` | [~] | Available but not surfaced |
-| 5 | `num_turns` | [~] | Available but not surfaced |
-| 6 | `total_cost_usd` | [~] | Available but not surfaced |
-| 7 | `usage.inputTokens` | [~] | Available but not surfaced |
-| 8 | `usage.outputTokens` | [~] | Available but not surfaced |
-| 9 | `usage.cacheReadInputTokens` | [~] | Available but not surfaced |
-| 10 | `usage.cacheCreationInputTokens` | [~] | Available but not surfaced |
-| 11 | `usage.webSearchRequests` | [~] | Available but not surfaced |
-| 12 | `usage.costUSD` | [~] | Available but not surfaced |
-| 13 | `usage.contextWindow` | [~] | Available but not surfaced |
-| 14 | `usage.maxOutputTokens` | [~] | Available but not surfaced |
-| 15 | `modelUsage` (per-model breakdown) | [~] | Available but not surfaced |
-| 16 | `permission_denials` | [~] | Available but not surfaced |
-| 17 | `structured_output` | [ ] | Not implemented (requires `outputFormat`) |
+| 3 | `duration_ms` | [✓] | Surfaced in PromptResponse `_meta.claudeCode` |
+| 4 | `duration_api_ms` | [✓] | Surfaced in PromptResponse `_meta.claudeCode` |
+| 5 | `num_turns` | [✓] | Surfaced in PromptResponse `_meta.claudeCode` |
+| 6 | `total_cost_usd` | [✓] | Surfaced in PromptResponse `_meta.claudeCode` |
+| 7 | `usage.inputTokens` | [✓] | Surfaced in PromptResponse `_meta.claudeCode.usage` |
+| 8 | `usage.outputTokens` | [✓] | Surfaced in PromptResponse `_meta.claudeCode.usage` |
+| 9 | `usage.cacheReadInputTokens` | [✓] | Surfaced in PromptResponse `_meta.claudeCode.usage` |
+| 10 | `usage.cacheCreationInputTokens` | [✓] | Surfaced in PromptResponse `_meta.claudeCode.usage` |
+| 11 | `usage.webSearchRequests` | [✓] | Surfaced in PromptResponse `_meta.claudeCode.usage` |
+| 12 | `usage.costUSD` | [✓] | Surfaced in PromptResponse `_meta.claudeCode.usage` |
+| 13 | `usage.contextWindow` | [✓] | Surfaced in PromptResponse `_meta.claudeCode.usage` |
+| 14 | `usage.maxOutputTokens` | [✓] | Surfaced in PromptResponse `_meta.claudeCode.usage` |
+| 15 | `modelUsage` (per-model breakdown) | [✓] | Surfaced in PromptResponse `_meta.claudeCode.modelUsage` |
+| 16 | `permission_denials` | [✓] | Surfaced in PromptResponse `_meta.claudeCode` when non-empty |
+| 17 | `structured_output` | [✓] | Surfaced in PromptResponse `_meta.claudeCode`; requires `outputFormat` option |
 | 18 | `uuid` | [✓] | Message UUID propagated |
 | 19 | `session_id` | [✓] | Session identifier propagated |
 
@@ -356,10 +356,10 @@ All fields on `SDKResultSuccess` and `SDKResultError`.
 | 1 | `CLAUDE_CODE_ENTRYPOINT` | [✓] | Set to `"sdk-ts"` by SDK |
 | 2 | `CLAUDE_AGENT_SDK_VERSION` | [✓] | Set by SDK for telemetry |
 | 3 | `CLAUDE_CODE_EXECUTABLE` | [✓] | Override CLI binary location |
-| 4 | `DEBUG_CLAUDE_AGENT_SDK` | [ ] | Debug logging enable |
-| 5 | `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` | [ ] | File checkpointing enable |
-| 6 | `CLAUDE` | [ ] | Override config directory path |
-| 7 | `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT` | [ ] | MCP call timeout override |
+| 4 | `DEBUG_CLAUDE_AGENT_SDK` | [✓] | Read by SDK from process environment |
+| 5 | `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` | [✓] | Read by SDK from process environment |
+| 6 | `CLAUDE` | [✓] | Used for config directory path (`CLAUDE_CONFIG_DIR`) |
+| 7 | `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT` | [✓] | Read by SDK from process environment |
 
 ---
 
@@ -390,9 +390,9 @@ All fields on `SDKResultSuccess` and `SDKResultError`.
 | 3 | Sub-agent streaming content | [✓] | Text and thinking from child agents |
 | 4 | Sub-agent tool calls | [✓] | Tool invocations within sub-agents |
 | 5 | Combined background + sub-agent | [✓] | Background agents with parent linkage |
-| 6 | `AgentDefinition` custom agents | [ ] | `agents` option not exposed |
+| 6 | `AgentDefinition` custom agents | [✓] | Via `_meta.claudeCode.options.agents` and `.agent` |
 | 7 | Built-in agent types (Bash, Explore, Plan, etc.) | [✓] | Used internally by Claude Code |
-| 8 | `SubagentStart` / `SubagentStop` hooks | [ ] | Hook events not wired |
+| 8 | `SubagentStart` / `SubagentStop` hooks | [✓] | Via `_meta.claudeCode.options.hooks` |
 
 ---
 
@@ -417,16 +417,16 @@ Every notification type sent from ACP agent to client via `sessionUpdate()`.
 
 | Section | Total | [✓] | [~] | [ ] | [-] |
 |---------|-------|-----|-----|-----|-----|
-| SDK Message Types | 20 | 10 | 8 | 0 | 0 |
-| SDK Tools | 19 | 17 | 0 | 0 | 1 |
-| Query API Methods | 20 | 9 | 0 | 11 | 0 |
-| Session Options | 41 | 23 | 1 | 17 | 0 |
-| Hook Events | 13 | 2 | 0 | 11 | 0 |
-| Permission Modes | 6 | 5 | 0 | 1 | 0 |
-| Control Protocol | 16 | 10 | 0 | 6 | 0 |
-| Result Metadata | 21 | 5 | 12 | 1 | 0 |
-| Environment Variables | 7 | 3 | 0 | 4 | 0 |
+| SDK Message Types | 20 | 9 | 11 | 0 | 0 |
+| SDK Tools | 19 | 18 | 0 | 0 | 1 |
+| Query API Methods | 20 | 15 | 0 | 0 | 5 |
+| Session Options | 41 | 41 | 0 | 0 | 0 |
+| Hook Events | 13 | 13 | 0 | 0 | 0 |
+| Permission Modes | 6 | 6 | 0 | 0 | 0 |
+| Control Protocol | 16 | 15 | 1 | 0 | 0 |
+| Result Metadata | 21 | 21 | 0 | 0 | 0 |
+| Environment Variables | 7 | 7 | 0 | 0 | 0 |
 | Background Task Features | 11 | 11 | 0 | 0 | 0 |
-| Sub-Agent Features | 8 | 5 | 0 | 3 | 0 |
+| Sub-Agent Features | 8 | 8 | 0 | 0 | 0 |
 | ACP Notification Types | 8 | 7 | 1 | 0 | 0 |
-| **Totals** | **190** | **107** | **22** | **54** | **1** |
+| **Totals** | **190** | **171** | **13** | **0** | **6** |

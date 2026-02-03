@@ -782,6 +782,17 @@ export class ClaudeAcpAgent implements Agent {
     return await session.query.rewindFiles(userMessageId, opts);
   }
 
+  /**
+   * Forcefully close a session, terminating the underlying Claude Code process.
+   * Maps to Query.close().
+   */
+  close(sessionId: string): void {
+    const session = this.sessions[sessionId];
+    if (!session) throw new Error("Session not found");
+    session.query.close();
+    delete this.sessions[sessionId];
+  }
+
   canUseTool(sessionId: string): CanUseTool {
     return async (toolName, toolInput, { signal, suggestions, toolUseID }) => {
       const session = this.sessions[sessionId];

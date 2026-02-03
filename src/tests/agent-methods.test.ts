@@ -568,6 +568,30 @@ describe("ClaudeAcpAgent", () => {
   });
 
   // -----------------------------------------------------------------------
+  // close()
+  // -----------------------------------------------------------------------
+
+  describe("close()", () => {
+    it("should call query.close() and remove session", () => {
+      const mockQuery = createMockQuery();
+      mockQuery.close = vi.fn();
+      const { agent } = createAgentWithSession("s1", { mockQuery });
+
+      agent.close("s1");
+
+      expect(mockQuery.close).toHaveBeenCalledTimes(1);
+      expect(agent.sessions["s1"]).toBeUndefined();
+    });
+
+    it("should throw for missing session", () => {
+      const mockClient = createMockClient();
+      const agent = new ClaudeAcpAgent(mockClient);
+
+      expect(() => agent.close("nonexistent")).toThrow("Session not found");
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // readTextFile()
   // -----------------------------------------------------------------------
 

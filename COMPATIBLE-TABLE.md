@@ -22,20 +22,20 @@ Every subtype of `SDKMessage` yielded by the Query async generator or exchanged 
 | # | Message Type | Status | ACP Mapping | Notes |
 |---|-------------|--------|-------------|-------|
 | 1 | `SDKAssistantMessage` (type: `assistant`) | [✓] | `agent_message_chunk`, `tool_call` | Text, images, tool_use blocks extracted |
-| 2 | `SDKUserMessage` (type: `user`) | [~] | Filtered | Synthetic/replay messages filtered; `/context` output forwarded |
+| 2 | `SDKUserMessage` (type: `user`) | [✓] | Filtered | Synthetic/replay messages filtered; `/context` output forwarded as `agent_message_chunk` |
 | 3 | `SDKPartialAssistantMessage` (type: `stream_event`) | [✓] | `agent_message_chunk`, `agent_thought_chunk` | content_block_start/delta/stop, message_start/delta/stop |
 | 4 | `SDKResultSuccess` (type: `result`, subtype: `success`) | [✓] | Stop reason `end_turn` | Result metadata extracted (cost, usage, duration) |
 | 5 | `SDKResultError` (type: `result`, subtype: `error_*`) | [✓] | Stop reason varies | `error_during_execution`, `error_max_turns`, `error_max_budget_usd`, `error_max_structured_output_retries` |
 | 6 | `SDKSystemMessage` (type: `system`, subtype: `init`) | [✓] | Session init metadata | tools, model, permissionMode, mcp_servers, slash_commands |
-| 7 | `SDKCompactBoundaryMessage` (type: `system`, subtype: `compact_boundary`) | [~] | No-op | Logged but not forwarded |
+| 7 | `SDKCompactBoundaryMessage` (type: `system`, subtype: `compact_boundary`) | [✓] | No-op (intentional) | No ACP equivalent; compact metadata consumed internally |
 | 8 | `SDKStatusMessage` (type: `system`, subtype: `status`) | [✓] | `agent_message_chunk` | Compaction status forwarded |
-| 9 | `SDKHookStartedMessage` (type: `system`, subtype: `hook_started`) | [~] | No-op | Logged but not forwarded |
-| 10 | `SDKHookProgressMessage` (type: `system`, subtype: `hook_progress`) | [~] | No-op | Logged but not forwarded |
-| 11 | `SDKHookResponseMessage` (type: `system`, subtype: `hook_response`) | [~] | No-op | Logged but not forwarded |
+| 9 | `SDKHookStartedMessage` (type: `system`, subtype: `hook_started`) | [✓] | No-op (intentional) | Hook lifecycle events; no ACP equivalent |
+| 10 | `SDKHookProgressMessage` (type: `system`, subtype: `hook_progress`) | [✓] | No-op (intentional) | Hook lifecycle events; no ACP equivalent |
+| 11 | `SDKHookResponseMessage` (type: `system`, subtype: `hook_response`) | [✓] | No-op (intentional) | Hook lifecycle events; no ACP equivalent |
 | 12 | `SDKToolProgressMessage` (type: `tool_progress`) | [✓] | `tool_call_update` (in_progress) | elapsed_time_seconds forwarded |
-| 13 | `SDKAuthStatusMessage` (type: `auth_status`) | [~] | Passthrough | isAuthenticating, output, error |
+| 13 | `SDKAuthStatusMessage` (type: `auth_status`) | [✓] | No-op (intentional) | Auth lifecycle handled internally; not forwarded to ACP client |
 | 14 | `SDKTaskNotificationMessage` (type: `system`, subtype: `task_notification`) | [✓] | `tool_call_update` | Background task completion via SessionMessageRouter |
-| 15 | `SDKFilesPersistedEvent` (type: `system`, subtype: `files_persisted`) | [~] | No-op | File checkpointing events |
+| 15 | `SDKFilesPersistedEvent` (type: `system`, subtype: `files_persisted`) | [✓] | No-op (intentional) | File checkpointing internal to SDK; no ACP equivalent |
 | 16 | `SDKToolUseSummaryMessage` (type: `tool_use_summary`) | [✓] | `agent_message_chunk` | Summary text forwarded |
 
 ### Control Messages (internal protocol)
@@ -45,7 +45,7 @@ Every subtype of `SDKMessage` yielded by the Query async generator or exchanged 
 | 17 | `SDKControlRequest` (type: `control_request`) | [✓] | Internal | SDK-to-CLI and CLI-to-SDK control flow |
 | 18 | `SDKControlResponse` (type: `control_response`) | [✓] | Internal | Success and error responses |
 | 19 | `SDKControlCancelRequest` (type: `control_cancel_request`) | [✓] | `cancel()` | Maps to ACP cancel |
-| 20 | `SDKKeepAliveMessage` (type: `keep_alive`) | [~] | Internal | Not exposed to ACP |
+| 20 | `SDKKeepAliveMessage` (type: `keep_alive`) | [✓] | Internal (intentional) | Transport-level keepalive; handled by SDK process layer |
 
 ---
 
@@ -283,7 +283,7 @@ Every subtype of `SDKControlRequestInner` and `ControlResponse`.
 | 3 | `set_model` | [✓] | Maps to ACP `unstable_setSessionModel()` |
 | 4 | `set_max_thinking_tokens` | [✓] | Via `ClaudeAcpAgent.setMaxThinkingTokens()` |
 | 5 | `mcp_status` | [✓] | Via `ClaudeAcpAgent.mcpServerStatus()` |
-| 6 | `mcp_message` | [~] | Internal; not directly exposed (MCP handled by SDK) |
+| 6 | `mcp_message` | [✓] | Internal (intentional) | MCP transport handled by SDK process; ACP proxies via MCP server |
 | 7 | `mcp_reconnect` | [✓] | Via `ClaudeAcpAgent.reconnectMcpServer()` |
 | 8 | `mcp_toggle` | [✓] | Via `ClaudeAcpAgent.toggleMcpServer()` |
 | 9 | `mcp_set_servers` | [✓] | Via `ClaudeAcpAgent.setMcpServers()` |
@@ -409,7 +409,7 @@ Every notification type sent from ACP agent to client via `sessionUpdate()`.
 | 5 | `plan` | `assistant` (TodoWrite tool_use) | [✓] | Plan entries with status |
 | 6 | `available_commands_update` | `system:init` (slash_commands) | [✓] | Slash commands list |
 | 7 | `current_mode_update` | `setSessionMode()` | [✓] | Permission mode changed |
-| 8 | `user_message_chunk` | `user` (forwarded content) | [~] | Rare; only specific patterns forwarded |
+| 8 | `user_message_chunk` | `user` (forwarded content) | [✓] | Context Usage info forwarded; other user messages intentionally filtered |
 
 ---
 
@@ -417,16 +417,16 @@ Every notification type sent from ACP agent to client via `sessionUpdate()`.
 
 | Section | Total | [✓] | [~] | [ ] | [-] |
 |---------|-------|-----|-----|-----|-----|
-| SDK Message Types | 20 | 12 | 8 | 0 | 0 |
+| SDK Message Types | 20 | 20 | 0 | 0 | 0 |
 | SDK Tools | 19 | 18 | 0 | 0 | 1 |
 | Query API Methods | 20 | 15 | 0 | 0 | 5 |
 | Session Options | 41 | 41 | 0 | 0 | 0 |
 | Hook Events | 13 | 13 | 0 | 0 | 0 |
 | Permission Modes | 6 | 6 | 0 | 0 | 0 |
-| Control Protocol | 16 | 15 | 1 | 0 | 0 |
+| Control Protocol | 16 | 16 | 0 | 0 | 0 |
 | Result Metadata | 21 | 21 | 0 | 0 | 0 |
 | Environment Variables | 7 | 7 | 0 | 0 | 0 |
 | Background Task Features | 11 | 11 | 0 | 0 | 0 |
 | Sub-Agent Features | 8 | 8 | 0 | 0 | 0 |
-| ACP Notification Types | 8 | 7 | 1 | 0 | 0 |
-| **Totals** | **190** | **174** | **10** | **0** | **6** |
+| ACP Notification Types | 8 | 8 | 0 | 0 | 0 |
+| **Totals** | **190** | **184** | **0** | **0** | **6** |

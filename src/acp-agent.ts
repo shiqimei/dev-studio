@@ -421,11 +421,26 @@ export class ClaudeAcpAgent implements Agent {
               // Intercepted by SessionMessageRouter (handles between turns too)
               break;
             case "compact_boundary":
+              break;
             case "hook_started":
             case "hook_progress":
             case "hook_response":
+              // Hook lifecycle events - logged but not forwarded to ACP client
+              break;
             case "status":
-              // Todo: process via status api: https://docs.claude.com/en/docs/claude-code/hooks#hook-output
+              // Forward compaction status as an agent message
+              if (message.status === "compacting") {
+                await this.client.sessionUpdate({
+                  sessionId: params.sessionId,
+                  update: {
+                    sessionUpdate: "agent_message_chunk",
+                    content: {
+                      type: "text",
+                      text: "[Compacting conversation context...]",
+                    },
+                  },
+                });
+              }
               break;
             case "files_persisted":
               break;
@@ -589,8 +604,44 @@ export class ClaudeAcpAgent implements Agent {
           }
           break;
         }
-        case "tool_progress":
+        case "tool_progress": {
+          // Forward tool progress as in_progress tool_call_update
+          const toolUse = this.toolUseCache[message.tool_use_id];
+          if (toolUse) {
+            await this.client.sessionUpdate({
+              sessionId: params.sessionId,
+              update: {
+                sessionUpdate: "tool_call_update",
+                toolCallId: message.tool_use_id,
+                status: "in_progress",
+                _meta: {
+                  claudeCode: {
+                    toolName: toolUse.name,
+                    elapsed_time_seconds: message.elapsed_time_seconds,
+                    ...(message.parent_tool_use_id && {
+                      parentToolUseId: message.parent_tool_use_id,
+                    }),
+                  },
+                },
+              },
+            });
+          }
+          break;
+        }
         case "tool_use_summary":
+          // Forward collapsed tool descriptions as agent message
+          if (message.summary) {
+            await this.client.sessionUpdate({
+              sessionId: params.sessionId,
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                content: {
+                  type: "text",
+                  text: message.summary,
+                },
+              },
+            });
+          }
           break;
         case "auth_status":
           break;

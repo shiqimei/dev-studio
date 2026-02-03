@@ -28,15 +28,15 @@ Every subtype of `SDKMessage` yielded by the Query async generator or exchanged 
 | 5 | `SDKResultError` (type: `result`, subtype: `error_*`) | [✓] | Stop reason varies | `error_during_execution`, `error_max_turns`, `error_max_budget_usd`, `error_max_structured_output_retries` |
 | 6 | `SDKSystemMessage` (type: `system`, subtype: `init`) | [✓] | Session init metadata | tools, model, permissionMode, mcp_servers, slash_commands |
 | 7 | `SDKCompactBoundaryMessage` (type: `system`, subtype: `compact_boundary`) | [~] | No-op | Logged but not forwarded |
-| 8 | `SDKStatusMessage` (type: `system`, subtype: `status`) | [~] | No-op | TODO: process via status API |
+| 8 | `SDKStatusMessage` (type: `system`, subtype: `status`) | [✓] | `agent_message_chunk` | Compaction status forwarded |
 | 9 | `SDKHookStartedMessage` (type: `system`, subtype: `hook_started`) | [~] | No-op | Logged but not forwarded |
 | 10 | `SDKHookProgressMessage` (type: `system`, subtype: `hook_progress`) | [~] | No-op | Logged but not forwarded |
 | 11 | `SDKHookResponseMessage` (type: `system`, subtype: `hook_response`) | [~] | No-op | Logged but not forwarded |
-| 12 | `SDKToolProgressMessage` (type: `tool_progress`) | [~] | Passthrough | elapsed_time_seconds for long-running tools |
+| 12 | `SDKToolProgressMessage` (type: `tool_progress`) | [✓] | `tool_call_update` (in_progress) | elapsed_time_seconds forwarded |
 | 13 | `SDKAuthStatusMessage` (type: `auth_status`) | [~] | Passthrough | isAuthenticating, output, error |
 | 14 | `SDKTaskNotificationMessage` (type: `system`, subtype: `task_notification`) | [✓] | `tool_call_update` | Background task completion via SessionMessageRouter |
 | 15 | `SDKFilesPersistedEvent` (type: `system`, subtype: `files_persisted`) | [~] | No-op | File checkpointing events |
-| 16 | `SDKToolUseSummaryMessage` (type: `tool_use_summary`) | [~] | Passthrough | Collapsed tool descriptions |
+| 16 | `SDKToolUseSummaryMessage` (type: `tool_use_summary`) | [✓] | `agent_message_chunk` | Summary text forwarded |
 
 ### Control Messages (internal protocol)
 
@@ -417,7 +417,7 @@ Every notification type sent from ACP agent to client via `sessionUpdate()`.
 
 | Section | Total | [✓] | [~] | [ ] | [-] |
 |---------|-------|-----|-----|-----|-----|
-| SDK Message Types | 20 | 9 | 11 | 0 | 0 |
+| SDK Message Types | 20 | 12 | 8 | 0 | 0 |
 | SDK Tools | 19 | 18 | 0 | 0 | 1 |
 | Query API Methods | 20 | 15 | 0 | 0 | 5 |
 | Session Options | 41 | 41 | 0 | 0 | 0 |
@@ -429,4 +429,4 @@ Every notification type sent from ACP agent to client via `sessionUpdate()`.
 | Background Task Features | 11 | 11 | 0 | 0 | 0 |
 | Sub-Agent Features | 8 | 8 | 0 | 0 | 0 |
 | ACP Notification Types | 8 | 7 | 1 | 0 | 0 |
-| **Totals** | **190** | **171** | **13** | **0** | **6** |
+| **Totals** | **190** | **174** | **10** | **0** | **6** |

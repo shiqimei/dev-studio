@@ -42,6 +42,23 @@ function cleanup() {
   }
 }
 
+async function waitForPort(port: number, timeoutMs = 10_000): Promise<void> {
+  const { createConnection } = await import("node:net");
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const ok = await new Promise<boolean>((resolve) => {
+      const sock = createConnection({ port, host: "127.0.0.1" }, () => {
+        sock.destroy();
+        resolve(true);
+      });
+      sock.on("error", () => resolve(false));
+    });
+    if (ok) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`Port ${port} not ready after ${timeoutMs}ms`);
+}
+
 // Start backend
 const backend = spawn("bun", ["--hot", path.join(ROOT, "demo/server/index.ts")], {
   cwd: ROOT,
@@ -51,6 +68,9 @@ const backend = spawn("bun", ["--hot", path.join(ROOT, "demo/server/index.ts")],
 children.push(backend);
 backend.stdout?.on("data", prefix("server", CYAN));
 backend.stderr?.on("data", prefix("server", CYAN));
+
+// Wait for backend to be ready before starting Vite
+await waitForPort(BACKEND_PORT);
 
 // Start Vite
 const vite = spawn("npx", ["vite", "--port", String(VITE_PORT)], {

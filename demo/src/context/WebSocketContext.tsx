@@ -7,7 +7,7 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import type { AppState, Action, SessionSnapshot, ImageAttachment } from "../types";
+import type { AppState, Action, ChatMessage, SessionSnapshot, ImageAttachment } from "../types";
 import { classifyTool } from "../utils";
 
 let nextId = 0;
@@ -42,6 +42,7 @@ const initialState: AppState = {
   startTime: Date.now(),
   // Session management
   sessions: [],
+  diskSessions: [],
   currentSessionId: null,
   sessionHistory: {},
 };
@@ -360,6 +361,33 @@ function reducer(state: AppState, action: Action): AppState {
     case "SESSION_LIST":
       return { ...state, sessions: action.sessions };
 
+    case "DISK_SESSIONS":
+      return { ...state, diskSessions: action.sessions };
+
+    case "SESSION_HISTORY": {
+      // Convert history messages into ChatMessage format and store in sessionHistory
+      const historyMessages: ChatMessage[] = action.messages.map((m) => {
+        if (m.role === "user") {
+          return { type: "user" as const, id: uid(), text: m.text };
+        }
+        return { type: "assistant" as const, id: uid(), text: m.text, done: true };
+      });
+      return {
+        ...state,
+        sessionHistory: {
+          ...state.sessionHistory,
+          [action.sessionId]: {
+            messages: historyMessages,
+            tasks: {},
+            protoEntries: [],
+            currentAssistantId: null,
+            currentThoughtId: null,
+            turnToolCallIds: [],
+          },
+        },
+      };
+    }
+
     case "SESSION_SWITCHED": {
       // Save current session state to history
       const history = { ...state.sessionHistory };
@@ -566,6 +594,12 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
     // Session management messages
     case "session_list":
       dispatch({ type: "SESSION_LIST", sessions: msg.sessions });
+      break;
+    case "disk_sessions":
+      dispatch({ type: "DISK_SESSIONS", sessions: msg.sessions });
+      break;
+    case "session_history":
+      dispatch({ type: "SESSION_HISTORY", sessionId: msg.sessionId, messages: msg.messages });
       break;
     case "session_switched":
       dispatch({ type: "SESSION_SWITCHED", sessionId: msg.sessionId });

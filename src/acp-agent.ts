@@ -1481,14 +1481,68 @@ export class ClaudeAcpAgent implements Agent {
   }
 
   async unstable_listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
-    const sessions = Object.entries(this.sessions)
-      .filter(([_, s]) => !params.cwd || s.cwd === params.cwd)
-      .map(([id, s]) => ({
+    const sessionsMap = new Map<string, { sessionId: string; cwd: string; title: string | null; updatedAt: string | null }>();
+
+    // Read sessions from ~/.claude/projects on disk
+    const projectsDir = path.join(CLAUDE_CONFIG_DIR, "projects");
+    try {
+      const projectDirs = params.cwd
+        ? [path.join(projectsDir, params.cwd.replace(/\//g, "-"))]
+        : fs.readdirSync(projectsDir, { withFileTypes: true })
+            .filter((d) => d.isDirectory())
+            .map((d) => path.join(projectsDir, d.name));
+
+      for (const dir of projectDirs) {
+        const indexPath = path.join(dir, "sessions-index.json");
+        if (!fs.existsSync(indexPath)) continue;
+        try {
+          const raw = fs.readFileSync(indexPath, "utf-8");
+          const index = JSON.parse(raw) as {
+            entries: Array<{
+              sessionId: string;
+              firstPrompt?: string;
+              created?: string;
+              modified?: string;
+              projectPath?: string;
+              isSidechain?: boolean;
+            }>;
+          };
+          for (const entry of index.entries) {
+            if (entry.isSidechain) continue;
+            const cwd = entry.projectPath || dir.replace(projectsDir + "/", "").replace(/-/g, "/");
+            if (params.cwd && cwd !== params.cwd) continue;
+            sessionsMap.set(entry.sessionId, {
+              sessionId: entry.sessionId,
+              cwd,
+              title: entry.firstPrompt?.slice(0, 100) ?? null,
+              updatedAt: entry.modified ?? entry.created ?? null,
+            });
+          }
+        } catch {
+          // Skip malformed index files
+        }
+      }
+    } catch {
+      // ~/.claude/projects may not exist
+    }
+
+    // Overlay in-memory sessions (they have more up-to-date metadata)
+    for (const [id, s] of Object.entries(this.sessions)) {
+      if (params.cwd && s.cwd !== params.cwd) continue;
+      sessionsMap.set(id, {
         sessionId: id,
         cwd: s.cwd,
         title: s.title,
         updatedAt: s.updatedAt,
-      }));
+      });
+    }
+
+    const sessions = Array.from(sessionsMap.values()).sort((a, b) => {
+      const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return tb - ta;
+    });
+
     return { sessions };
   }
 }

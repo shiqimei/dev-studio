@@ -77,6 +77,15 @@ export interface SessionMeta {
   isLive: boolean;
 }
 
+export interface DiskSession {
+  sessionId: string;
+  title: string | null;
+  updatedAt: string | null;
+  created: string | null;
+  messageCount: number;
+  gitBranch: string | null;
+}
+
 export interface SessionSnapshot {
   messages: ChatMessage[];
   tasks: Record<string, TaskInfo>;
@@ -133,6 +142,7 @@ export interface AppState {
   startTime: number;
   // Session management
   sessions: SessionMeta[];
+  diskSessions: DiskSession[];
   currentSessionId: string | null;
   sessionHistory: Record<string, SessionSnapshot>;
 }
@@ -160,5 +170,7 @@ export type Action =
   | { type: "TOGGLE_DEBUG_COLLAPSE" }
   | { type: "TOGGLE_TASK_PANEL" }
   | { type: "SESSION_LIST"; sessions: SessionMeta[] }
+  | { type: "DISK_SESSIONS"; sessions: DiskSession[] }
+  | { type: "SESSION_HISTORY"; sessionId: string; messages: Array<{ role: "user" | "assistant"; text: string }> }
   | { type: "SESSION_SWITCHED"; sessionId: string }
   | { type: "SESSION_TITLE_UPDATE"; sessionId: string; title: string };

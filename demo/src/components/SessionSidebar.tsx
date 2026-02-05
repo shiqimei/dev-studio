@@ -1,5 +1,5 @@
 import { useWs } from "../context/WebSocketContext";
-import type { SessionMeta } from "../types";
+import type { DiskSession, SessionMeta } from "../types";
 
 function relativeTime(iso: string | null): string {
   if (!iso) return "";
@@ -51,11 +51,56 @@ function SessionItem({
   );
 }
 
+function DiskSessionItem({
+  session,
+  isActive,
+  isLive,
+  onClick,
+}: {
+  session: DiskSession;
+  isActive: boolean;
+  isLive: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left px-3 py-2 border-b border-border transition-colors ${
+        isActive
+          ? "bg-[var(--color-accent-dim)] border-l-2 border-l-[var(--color-accent)]"
+          : "hover:bg-[var(--color-border)] border-l-2 border-l-transparent"
+      }`}
+    >
+      <div
+        className={`text-xs truncate ${
+          isActive ? "text-text font-medium" : "text-dim"
+        }`}
+      >
+        {session.title || "New session"}
+      </div>
+      <div className="text-[10px] text-dim mt-0.5 flex items-center justify-between">
+        <span className="truncate opacity-60 flex items-center gap-1">
+          {isLive && (
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+          )}
+          {session.sessionId.slice(0, 8)}
+          {session.gitBranch && (
+            <span className="opacity-60">({session.gitBranch})</span>
+          )}
+        </span>
+        <span className="shrink-0 ml-1">
+          {relativeTime(session.updatedAt)}
+        </span>
+      </div>
+    </button>
+  );
+}
+
 export function SessionSidebar() {
   const { state, newSession, resumeSession } = useWs();
 
   const instances = state.sessions.filter((s) => s.isLive);
-  const sessions = state.sessions.filter((s) => !s.isLive);
+  const liveSessionIds = new Set(instances.map((s) => s.sessionId));
 
   return (
     <div className="w-60 shrink-0 bg-surface border-r border-border flex flex-col overflow-hidden">
@@ -93,29 +138,31 @@ export function SessionSidebar() {
         ))}
       </div>
 
-      {/* Sessions header */}
-      {sessions.length > 0 && (
-        <>
-          <div className="px-3 py-2 border-b border-t border-border">
-            <span className="text-xs font-semibold text-dim uppercase tracking-wider">
-              Sessions
-            </span>
+      {/* All Sessions from disk */}
+      <div className="px-3 py-2 border-b border-t border-border">
+        <span className="text-xs font-semibold text-dim uppercase tracking-wider">
+          All Sessions
+        </span>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {state.diskSessions.length === 0 && (
+          <div className="px-3 py-3 text-xs text-dim text-center">
+            No sessions found
           </div>
-          <div className="flex-1 overflow-y-auto">
-            {sessions.map((session) => (
-              <SessionItem
-                key={session.sessionId}
-                session={session}
-                isActive={session.sessionId === state.currentSessionId}
-                onClick={() => {
-                  if (session.sessionId !== state.currentSessionId)
-                    resumeSession(session.sessionId);
-                }}
-              />
-            ))}
-          </div>
-        </>
-      )}
+        )}
+        {state.diskSessions.map((session) => (
+          <DiskSessionItem
+            key={session.sessionId}
+            session={session}
+            isActive={session.sessionId === state.currentSessionId}
+            isLive={liveSessionIds.has(session.sessionId)}
+            onClick={() => {
+              if (session.sessionId !== state.currentSessionId)
+                resumeSession(session.sessionId);
+            }}
+          />
+        ))}
+      </div>
     </div>
   );
 }

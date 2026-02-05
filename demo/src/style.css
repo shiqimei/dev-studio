@@ -69,17 +69,18 @@
 
 .msg.user {
   background: var(--color-surface);
-  border-radius: 9999px;
+  color: var(--color-text);
+  border-radius: 5px;
   padding: 8px 18px;
   margin: 8px 0 4px;
   align-self: flex-end;
   max-width: 80%;
   width: fit-content;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .msg.user:has(img) {
-  border-radius: 16px;
+  border-radius: 5px;
   padding: 10px;
 }
 

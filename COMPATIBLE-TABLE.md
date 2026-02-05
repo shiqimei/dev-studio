@@ -103,11 +103,12 @@ Every method on the `Query` interface or `SDKSession`.
 
 | # | Method | Status | ACP Mapping | Notes |
 |---|--------|--------|-------------|-------|
-| 16 | `unstable_v2_createSession()` | [-] | Not used | V2 API (@alpha); ACP uses v1 query-based API |
-| 17 | `unstable_v2_prompt()` | [-] | Not used | V2 API (@alpha); ACP uses v1 query-based API |
-| 18 | `unstable_v2_resumeSession()` | [-] | Not used | V2 API (@alpha); ACP uses v1 query-based API |
-| 19 | `SDKSession.send()` | [-] | Not used | V2 API (@alpha); ACP uses v1 query-based API |
-| 20 | `SDKSession.stream()` | [-] | Not used | V2 API (@alpha); ACP uses v1 query-based API |
+| 16 | `unstable_v2_createSession()` | [✓] | `createSessionV2()` | V2 API used for session creation alongside v1 fallback |
+| 17 | `unstable_v2_prompt()` | [-] | Not used | V2 API (@alpha); use `SDKSession.send()` + `stream()` instead |
+| 18 | `unstable_v2_resumeSession()` | [✓] | `createSessionV2()` | V2 API used for session resume |
+| 19 | `SDKSession.send()` | [✓] | `prompt()` dual-path | V2 sessions use `send()` for message delivery |
+| 20 | `SDKSession.stream()` | [✓] | `SessionMessageRouter` | V2 sessions stream via `stream()` wrapped in router |
+| 21 | `unstable_listSessions()` | [✓] | `unstable_listSessions()` | Returns in-memory session list with metadata |
 
 ---
 
@@ -419,7 +420,7 @@ Every notification type sent from ACP agent to client via `sessionUpdate()`.
 |---------|-------|-----|-----|-----|-----|
 | SDK Message Types | 20 | 20 | 0 | 0 | 0 |
 | SDK Tools | 19 | 18 | 0 | 0 | 1 |
-| Query API Methods | 20 | 15 | 0 | 0 | 5 |
+| Query API Methods | 21 | 19 | 0 | 0 | 2 |
 | Session Options | 41 | 41 | 0 | 0 | 0 |
 | Hook Events | 13 | 13 | 0 | 0 | 0 |
 | Permission Modes | 6 | 6 | 0 | 0 | 0 |
@@ -429,4 +430,4 @@ Every notification type sent from ACP agent to client via `sessionUpdate()`.
 | Background Task Features | 11 | 11 | 0 | 0 | 0 |
 | Sub-Agent Features | 8 | 8 | 0 | 0 | 0 |
 | ACP Notification Types | 8 | 8 | 0 | 0 | 0 |
-| **Totals** | **190** | **184** | **0** | **0** | **6** |
+| **Totals** | **191** | **189** | **0** | **0** | **2** |

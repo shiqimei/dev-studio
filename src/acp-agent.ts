@@ -9,6 +9,8 @@ import {
   ForkSessionResponse,
   InitializeRequest,
   InitializeResponse,
+  ListSessionsRequest,
+  ListSessionsResponse,
   ndJsonStream,
   NewSessionRequest,
   NewSessionResponse,
@@ -40,7 +42,11 @@ import {
   query,
   SDKMessage,
   SDKPartialAssistantMessage,
+  SDKSession,
+  SDKSessionOptions,
   SDKUserMessage,
+  unstable_v2_createSession,
+  unstable_v2_resumeSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -74,13 +80,24 @@ export interface Logger {
 }
 
 type Session = {
-  query: Query;
+  // v1 fields (optional when using v2)
+  query?: Query;
+  input?: Pushable<SDKUserMessage>;
+  // v2 field
+  sdkSession?: SDKSession;
+  // Common
   router: SessionMessageRouter;
-  input: Pushable<SDKUserMessage>;
   cancelled: boolean;
   permissionMode: PermissionMode;
   settingsManager: SettingsManager;
+  // Metadata for listSessions
+  title: string | null;
+  cwd: string;
+  updatedAt: string;
 };
+
+/** Minimal interface needed by SessionMessageRouter — satisfied by both v1 Query and v2 replay wrapper. */
+type MessageSource = { next(): Promise<IteratorResult<SDKMessage, void>> };
 
 /**
  * Wraps a Query async generator to continuously read messages.
@@ -90,10 +107,12 @@ type Session = {
 class SessionMessageRouter {
   private buffer: SDKMessage[] = [];
   private resolver: ((result: IteratorResult<SDKMessage, void>) => void) | null = null;
+  private rejecter: ((err: unknown) => void) | null = null;
   private finished = false;
+  private streamError: unknown = null;
 
   constructor(
-    private query: Query,
+    private query: MessageSource,
     private onSystemMessage: (msg: SDKMessage) => Promise<void>,
     private logger: Logger,
   ) {
@@ -109,6 +128,7 @@ class SessionMessageRouter {
           if (this.resolver) {
             this.resolver({ value: undefined as any, done: true });
             this.resolver = null;
+            this.rejecter = null;
           }
           break;
         }
@@ -129,15 +149,19 @@ class SessionMessageRouter {
         if (this.resolver) {
           this.resolver({ value: msg, done: false });
           this.resolver = null;
+          this.rejecter = null;
         } else {
           this.buffer.push(msg);
         }
       }
     } catch (err) {
+      this.logger.error("[SessionMessageRouter] stream error:", err);
       this.finished = true;
-      if (this.resolver) {
-        this.resolver({ value: undefined as any, done: true });
+      this.streamError = err;
+      if (this.rejecter) {
+        this.rejecter(err);
         this.resolver = null;
+        this.rejecter = null;
       }
     }
   }
@@ -148,10 +172,14 @@ class SessionMessageRouter {
       return { value: this.buffer.shift()!, done: false };
     }
     if (this.finished) {
+      if (this.streamError) {
+        throw this.streamError;
+      }
       return { value: undefined, done: true };
     }
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       this.resolver = resolve;
+      this.rejecter = reject;
     });
   }
 }
@@ -227,6 +255,32 @@ export type ToolUseCache = {
 
 // Bypass Permissions doesn't work if we are a root/sudo user
 const IS_ROOT = (process.geteuid?.() ?? process.getuid?.()) === 0;
+
+/**
+ * Creates a Query-like async iterator that replays the first result
+ * and then forwards messages from the v2 stream.
+ */
+function createReplayQuery(
+  firstResult: IteratorResult<SDKMessage, void>,
+  stream: AsyncGenerator<SDKMessage, void>,
+): Query {
+  let replayed = false;
+  const iterator = {
+    async next(): Promise<IteratorResult<SDKMessage, void>> {
+      if (!replayed) {
+        replayed = true;
+        if (firstResult.done) {
+          return { value: undefined as any, done: true };
+        }
+        return firstResult;
+      }
+      return stream.next();
+    },
+  };
+
+  // Return a minimal Query-like object that satisfies SessionMessageRouter
+  return iterator as unknown as Query;
+}
 
 // Implement the ACP Agent interface
 export class ClaudeAcpAgent implements Agent {
@@ -335,6 +389,7 @@ export class ClaudeAcpAgent implements Agent {
         sessionCapabilities: {
           fork: {},
           resume: {},
+          list: {},
         },
       },
       agentInfo: {
@@ -398,15 +453,41 @@ export class ClaudeAcpAgent implements Agent {
       throw new Error("Session not found");
     }
 
-    this.sessions[params.sessionId].cancelled = false;
+    const session = this.sessions[params.sessionId];
+    session.cancelled = false;
 
-    const { router, input } = this.sessions[params.sessionId];
+    const { router } = session;
 
-    input.push(promptToClaude(params));
+    const promptMessage = promptToClaude(params);
+
+    // Update session metadata
+    if (!session.title) {
+      // Set title from first user prompt text
+      const firstText = params.prompt.find((c) => c.type === "text");
+      if (firstText && "text" in firstText) {
+        session.title = firstText.text.slice(0, 100);
+        this.client.sessionUpdate({
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "session_info_update" as any,
+            title: session.title,
+          } as any,
+        }).catch((err) => {
+          this.logger.error("[claude-code-acp] session_info_update failed:", err);
+        });
+      }
+    }
+    session.updatedAt = new Date().toISOString();
+
+    if (session.sdkSession) {
+      await session.sdkSession.send(promptMessage);
+    } else {
+      session.input!.push(promptMessage);
+    }
     while (true) {
       const { value: message, done } = await router.next();
       if (done || !message) {
-        if (this.sessions[params.sessionId].cancelled) {
+        if (session.cancelled) {
           return { stopReason: "cancelled" };
         }
         break;
@@ -450,7 +531,7 @@ export class ClaudeAcpAgent implements Agent {
           }
           break;
         case "result": {
-          if (this.sessions[params.sessionId].cancelled) {
+          if (session.cancelled) {
             return { stopReason: "cancelled" };
           }
 
@@ -525,7 +606,7 @@ export class ClaudeAcpAgent implements Agent {
         }
         case "user":
         case "assistant": {
-          if (this.sessions[params.sessionId].cancelled) {
+          if (session.cancelled) {
             break;
           }
 
@@ -586,9 +667,32 @@ export class ClaudeAcpAgent implements Agent {
 
           const content =
             message.type === "assistant"
-              ? // Handled by stream events above
-                message.message.content.filter((item) => !["text", "thinking"].includes(item.type))
-              : message.message.content;
+              ? // text/thinking are handled by stream events; tool_use variants are
+                // handled by content_block_start stream events – skip them all to
+                // avoid duplicate notifications.
+                message.message.content.filter(
+                  (item) =>
+                    !["text", "thinking", "tool_use", "server_tool_use", "mcp_tool_use"].includes(
+                      item.type,
+                    ),
+                )
+              : // For user messages, tool_result variants are already forwarded via
+                // the PostToolUse hook callback – skip them to avoid duplicates.
+                Array.isArray(message.message.content)
+                ? message.message.content.filter(
+                    (item) =>
+                      ![
+                        "tool_result",
+                        "tool_search_tool_result",
+                        "web_fetch_tool_result",
+                        "web_search_tool_result",
+                        "code_execution_tool_result",
+                        "bash_code_execution_tool_result",
+                        "text_editor_code_execution_tool_result",
+                        "mcp_tool_result",
+                      ].includes(item.type),
+                  )
+                : message.message.content;
 
           for (const notification of toAcpNotifications(
             content,
@@ -654,24 +758,35 @@ export class ClaudeAcpAgent implements Agent {
   }
 
   async cancel(params: CancelNotification): Promise<void> {
-    if (!this.sessions[params.sessionId]) {
+    const session = this.sessions[params.sessionId];
+    if (!session) {
       throw new Error("Session not found");
     }
-    this.sessions[params.sessionId].cancelled = true;
-    await this.sessions[params.sessionId].query.interrupt();
+    session.cancelled = true;
+    if (session.sdkSession) {
+      // v2: close the session to interrupt
+      session.sdkSession.close();
+    } else {
+      await session.query!.interrupt();
+    }
   }
 
   async unstable_setSessionModel(
     params: SetSessionModelRequest,
   ): Promise<SetSessionModelResponse | void> {
-    if (!this.sessions[params.sessionId]) {
+    const session = this.sessions[params.sessionId];
+    if (!session) {
       throw new Error("Session not found");
     }
-    await this.sessions[params.sessionId].query.setModel(params.modelId);
+    if (!session.query) {
+      throw new Error("setSessionModel not supported on v2 sessions");
+    }
+    await session.query.setModel(params.modelId);
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
-    if (!this.sessions[params.sessionId]) {
+    const session = this.sessions[params.sessionId];
+    if (!session) {
       throw new Error("Session not found");
     }
 
@@ -682,11 +797,11 @@ export class ClaudeAcpAgent implements Agent {
       case "dontAsk":
       case "plan":
       case "delegate":
-        this.sessions[params.sessionId].permissionMode = params.modeId as PermissionMode;
+        session.permissionMode = params.modeId as PermissionMode;
         try {
-          await this.sessions[params.sessionId].query.setPermissionMode(
-            params.modeId as PermissionMode,
-          );
+          if (session.query) {
+            await session.query.setPermissionMode(params.modeId as PermissionMode);
+          }
         } catch (error) {
           const errorMessage =
             error instanceof Error && error.message ? error.message : "Invalid Mode";
@@ -718,6 +833,7 @@ export class ClaudeAcpAgent implements Agent {
   async setMaxThinkingTokens(sessionId: string, maxThinkingTokens: number | null): Promise<void> {
     const session = this.sessions[sessionId];
     if (!session) throw new Error("Session not found");
+    if (!session.query) throw new Error("setMaxThinkingTokens not supported on v2 sessions");
     await session.query.setMaxThinkingTokens(maxThinkingTokens);
   }
 
@@ -728,6 +844,7 @@ export class ClaudeAcpAgent implements Agent {
   async mcpServerStatus(sessionId: string) {
     const session = this.sessions[sessionId];
     if (!session) throw new Error("Session not found");
+    if (!session.query) throw new Error("mcpServerStatus not supported on v2 sessions");
     return await session.query.mcpServerStatus();
   }
 
@@ -738,6 +855,7 @@ export class ClaudeAcpAgent implements Agent {
   async reconnectMcpServer(sessionId: string, serverName: string): Promise<void> {
     const session = this.sessions[sessionId];
     if (!session) throw new Error("Session not found");
+    if (!session.query) throw new Error("reconnectMcpServer not supported on v2 sessions");
     await session.query.reconnectMcpServer(serverName);
   }
 
@@ -748,6 +866,7 @@ export class ClaudeAcpAgent implements Agent {
   async toggleMcpServer(sessionId: string, serverName: string, enabled: boolean): Promise<void> {
     const session = this.sessions[sessionId];
     if (!session) throw new Error("Session not found");
+    if (!session.query) throw new Error("toggleMcpServer not supported on v2 sessions");
     await session.query.toggleMcpServer(serverName, enabled);
   }
 
@@ -758,6 +877,7 @@ export class ClaudeAcpAgent implements Agent {
   async setMcpServers(sessionId: string, servers: Record<string, McpServerConfig>) {
     const session = this.sessions[sessionId];
     if (!session) throw new Error("Session not found");
+    if (!session.query) throw new Error("setMcpServers not supported on v2 sessions");
     return await session.query.setMcpServers(servers);
   }
 
@@ -768,6 +888,7 @@ export class ClaudeAcpAgent implements Agent {
   async accountInfo(sessionId: string) {
     const session = this.sessions[sessionId];
     if (!session) throw new Error("Session not found");
+    if (!session.query) throw new Error("accountInfo not supported on v2 sessions");
     return await session.query.accountInfo();
   }
 
@@ -779,17 +900,22 @@ export class ClaudeAcpAgent implements Agent {
   async rewindFiles(sessionId: string, userMessageId: string, opts?: { dryRun?: boolean }) {
     const session = this.sessions[sessionId];
     if (!session) throw new Error("Session not found");
+    if (!session.query) throw new Error("rewindFiles not supported on v2 sessions");
     return await session.query.rewindFiles(userMessageId, opts);
   }
 
   /**
    * Forcefully close a session, terminating the underlying Claude Code process.
-   * Maps to Query.close().
+   * Maps to Query.close() or SDKSession.close().
    */
   close(sessionId: string): void {
     const session = this.sessions[sessionId];
     if (!session) throw new Error("Session not found");
-    session.query.close();
+    if (session.sdkSession) {
+      session.sdkSession.close();
+    } else if (session.query) {
+      session.query.close();
+    }
     delete this.sessions[sessionId];
   }
 
@@ -1149,6 +1275,9 @@ export class ClaudeAcpAgent implements Agent {
       cancelled: false,
       permissionMode,
       settingsManager,
+      title: null,
+      cwd: params.cwd,
+      updatedAt: new Date().toISOString(),
     };
 
     const availableCommands = await getAvailableSlashCommands(q);
@@ -1209,6 +1338,158 @@ export class ClaudeAcpAgent implements Agent {
         availableModes,
       },
     };
+  }
+
+  private async createSessionV2(
+    params: NewSessionRequest,
+    creationOpts: { resume?: string } = {},
+  ): Promise<NewSessionResponse> {
+    const settingsManager = new SettingsManager(params.cwd, {
+      logger: this.logger,
+    });
+    await settingsManager.initialize();
+
+    const permissionMode: PermissionMode = "default";
+
+    // Determine model from env or default
+    const model = process.env.CLAUDE_MODEL || "sonnet";
+
+    // Determine executable
+    const userProvidedOptions = (params._meta as NewSessionMeta | undefined)?.claudeCode?.options;
+    const resolvedPathToClaudeCodeExecutable =
+      userProvidedOptions?.pathToClaudeCodeExecutable ??
+      process.env.CLAUDE_CODE_EXECUTABLE ??
+      undefined;
+
+    // Configure thinking tokens from environment variable
+    const env: Record<string, string | undefined> = { ...process.env };
+    if (process.env.MAX_THINKING_TOKENS) {
+      env.MAX_THINKING_TOKENS = process.env.MAX_THINKING_TOKENS;
+    }
+
+    const allowedTools: string[] = [];
+    const disallowedTools = ["AskUserQuestion"];
+
+    const disableBuiltInTools = params._meta?.disableBuiltInTools === true;
+    if (!disableBuiltInTools) {
+      if (this.clientCapabilities?.fs?.readTextFile) {
+        allowedTools.push(acpToolNames.read);
+        disallowedTools.push("Read");
+      }
+      if (this.clientCapabilities?.fs?.writeTextFile) {
+        disallowedTools.push("Write", "Edit");
+      }
+      if (this.clientCapabilities?.terminal) {
+        allowedTools.push(acpToolNames.bashOutput, acpToolNames.killShell);
+        disallowedTools.push("Bash", "BashOutput", "KillShell");
+      }
+    }
+
+    const sessionOpts: SDKSessionOptions = {
+      model,
+      ...(resolvedPathToClaudeCodeExecutable && {
+        pathToClaudeCodeExecutable: resolvedPathToClaudeCodeExecutable,
+      }),
+      env,
+      allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
+      disallowedTools: disallowedTools.length > 0 ? disallowedTools : undefined,
+      canUseTool: this.canUseTool("__pending__"),
+      hooks: {
+        ...userProvidedOptions?.hooks,
+        PreToolUse: [
+          ...(userProvidedOptions?.hooks?.PreToolUse || []),
+          { hooks: [createPreToolUseHook(settingsManager, this.logger)] },
+        ],
+        PostToolUse: [
+          ...(userProvidedOptions?.hooks?.PostToolUse || []),
+          { hooks: [createPostToolUseHook(this.logger)] },
+        ],
+      },
+      permissionMode,
+    };
+
+    let sdkSession: SDKSession;
+    if (creationOpts.resume) {
+      sdkSession = unstable_v2_resumeSession(creationOpts.resume, sessionOpts);
+    } else {
+      sdkSession = unstable_v2_createSession(sessionOpts);
+    }
+
+    // For v2, the sessionId may not be available until the first message.
+    // We need to start streaming to get the init message with the session ID.
+    const stream = sdkSession.stream();
+
+    // Read the first message (should be system:init) to get sessionId
+    const firstResult = await stream.next();
+    let sessionId: string;
+    if (
+      firstResult.value &&
+      firstResult.value.type === "system" &&
+      firstResult.value.subtype === "init"
+    ) {
+      sessionId = firstResult.value.session_id || sdkSession.sessionId;
+    } else {
+      // Fallback: try to get it from the session object
+      try {
+        sessionId = sdkSession.sessionId;
+      } catch {
+        sessionId = creationOpts.resume || randomUUID();
+      }
+    }
+
+    // Update canUseTool to use the real sessionId
+    sessionOpts.canUseTool = this.canUseTool(sessionId);
+
+    // Create a Query-like wrapper that replays the first message and then forwards
+    const replayQuery = createReplayQuery(firstResult, stream);
+
+    const router = new SessionMessageRouter(
+      replayQuery,
+      (msg) => this.handleTaskNotification(sessionId, msg),
+      this.logger,
+    );
+
+    this.sessions[sessionId] = {
+      sdkSession,
+      router,
+      cancelled: false,
+      permissionMode,
+      settingsManager,
+      title: null,
+      cwd: params.cwd,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const availableModes = [
+      { id: "default", name: "Default", description: "Standard behavior, prompts for dangerous operations" },
+      { id: "acceptEdits", name: "Accept Edits", description: "Auto-accept file edit operations" },
+      { id: "plan", name: "Plan Mode", description: "Planning mode, no actual tool execution" },
+      { id: "dontAsk", name: "Don't Ask", description: "Don't prompt for permissions, deny if not pre-approved" },
+      { id: "delegate", name: "Delegate", description: "Delegation mode for sub-agents" },
+    ];
+    if (!IS_ROOT) {
+      availableModes.push({ id: "bypassPermissions", name: "Bypass Permissions", description: "Bypass all permission checks" });
+    }
+
+    return {
+      sessionId,
+      modes: {
+        currentModeId: permissionMode,
+        availableModes,
+      },
+    };
+  }
+
+  async unstable_listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+    const sessions = Object.entries(this.sessions)
+      .filter(([_, s]) => !params.cwd || s.cwd === params.cwd)
+      .map(([id, s]) => ({
+        sessionId: id,
+        cwd: s.cwd,
+        title: s.title,
+        updatedAt: s.updatedAt,
+      }));
+    return { sessions };
   }
 }
 

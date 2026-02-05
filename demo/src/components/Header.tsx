@@ -3,7 +3,16 @@ import { useWs } from "../context/WebSocketContext";
 export function Header() {
   const { state } = useWs();
   const statusClass = state.connected ? "connected" : "error";
-  const statusText = state.connected ? "connected" : "disconnected";
+
+  // Find current session title
+  const currentSession = state.sessions.find(
+    (s) => s.sessionId === state.currentSessionId,
+  );
+  const sessionLabel =
+    currentSession?.title ||
+    (state.currentSessionId
+      ? state.currentSessionId.slice(0, 8) + "..."
+      : null);
 
   return (
     <header className="px-5 py-2.5 border-b border-border flex items-center gap-3 shrink-0">
@@ -18,6 +27,11 @@ export function Header() {
         />
       </svg>
       <h1 className="text-sm font-semibold text-text">Claude Code ACP</h1>
+      {sessionLabel && (
+        <span className="text-xs text-dim truncate max-w-48">
+          {sessionLabel}
+        </span>
+      )}
       <span id="status" className={statusClass}>
         {state.connected ? "" : "connecting..."}
         {state.connected && "connected"}

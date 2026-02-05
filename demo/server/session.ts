@@ -7,7 +7,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import { nodeToWebWritable, nodeToWebReadable } from "../../src/utils.js";
 import { WebClient } from "./client.js";
-import type { AcpSession, BroadcastFn } from "./types.js";
+import type { AcpConnection, BroadcastFn } from "./types.js";
 
 /**
  * Wraps an ndJsonStream with taps on both directions.
@@ -44,9 +44,12 @@ function instrumentedStream(
   return { readable, writable };
 }
 
-export async function createAcpSession(
+/**
+ * One-time connection setup: spawns agent process, creates ClientSideConnection, initializes.
+ */
+export async function createAcpConnection(
   broadcast: BroadcastFn,
-): Promise<AcpSession> {
+): Promise<AcpConnection> {
   const projectRoot = path.resolve(import.meta.dir, "../..");
 
   const agentProcess = spawn("node", ["dist/index.js"], {
@@ -88,6 +91,16 @@ export async function createAcpSession(
     text: `Connected to ${initResp.agentInfo.name} v${initResp.agentInfo.version}`,
   });
 
+  return { connection, agentProcess };
+}
+
+/**
+ * Create a new session on an existing connection.
+ */
+export async function createNewSession(
+  connection: ClientSideConnection,
+  broadcast: BroadcastFn,
+): Promise<{ sessionId: string }> {
   const cwd = process.env.ACP_CWD || process.cwd();
   const session = await connection.newSession({
     cwd,
@@ -97,9 +110,36 @@ export async function createAcpSession(
   broadcast({
     type: "session_info",
     sessionId: session.sessionId,
-    models: session.models.availableModels.map((m) => m.modelId),
-    modes: session.modes.availableModes.map((m) => ({ id: m.id, name: m.name })),
+    models: session.models?.availableModels.map((m) => m.modelId) ?? [],
+    modes: session.modes?.availableModes.map((m) => ({ id: m.id, name: m.name })) ?? [],
   });
 
-  return { connection, sessionId: session.sessionId, agentProcess };
+  return { sessionId: session.sessionId };
+}
+
+/**
+ * Resume an existing session by ID.
+ */
+export async function resumeSession(
+  connection: ClientSideConnection,
+  sessionId: string,
+): Promise<{ sessionId: string }> {
+  const cwd = process.env.ACP_CWD || process.cwd();
+  const response = await connection.unstable_resumeSession({
+    sessionId,
+    cwd,
+    mcpServers: [],
+  });
+  return { sessionId: response.sessionId };
+}
+
+/**
+ * List all active sessions.
+ */
+export async function listSessions(
+  connection: ClientSideConnection,
+): Promise<{ sessions: Array<{ sessionId: string; title?: string | null; updatedAt?: string | null; cwd: string }> }> {
+  const cwd = process.env.ACP_CWD || process.cwd();
+  const response = await connection.unstable_listSessions({ cwd });
+  return { sessions: response.sessions };
 }

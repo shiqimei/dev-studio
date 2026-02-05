@@ -60,6 +60,9 @@ function createAgentWithSession(
     cancelled: false,
     permissionMode: (overrides.permissionMode ?? "default") as any,
     settingsManager: {} as any,
+    title: null,
+    cwd: "/tmp",
+    updatedAt: new Date().toISOString(),
   };
 
   return { agent, mockClient, mockLogger, mockQuery };
@@ -108,6 +111,7 @@ describe("ClaudeAcpAgent", () => {
         sessionCapabilities: {
           fork: {},
           resume: {},
+          list: {},
         },
       });
     });

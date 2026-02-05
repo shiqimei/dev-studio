@@ -90,6 +90,9 @@ async function runPromptWithMessages(
     cancelled: opts?.cancelled ?? false,
     permissionMode: "default",
     settingsManager: {} as any,
+    title: "test",
+    cwd: "/tmp",
+    updatedAt: new Date().toISOString(),
   };
 
   if (opts?.toolUseCache) {
@@ -728,7 +731,7 @@ describe("prompt() message handling", () => {
       expect(updates).toHaveLength(0);
     });
 
-    it("tool_use blocks in assistant message are forwarded via toAcpNotifications", async () => {
+    it("tool_use blocks in assistant message are filtered (handled by stream_event)", async () => {
       const { promptPromise, updates } = await runPromptWithMessages([
         {
           type: "assistant",
@@ -766,16 +769,15 @@ describe("prompt() message handling", () => {
       ]);
 
       await promptPromise;
-      // tool_use block should be forwarded
+      // tool_use blocks are now filtered from assistant messages to avoid
+      // duplicates — they are handled by stream_event (content_block_start)
       const toolCallUpdates = updates.filter(
         (u) => u.update.sessionUpdate === "tool_call",
       );
-      expect(toolCallUpdates).toHaveLength(1);
-      expect((toolCallUpdates[0].update as any).toolCallId).toBe("toolu_prompt_test");
-      expect((toolCallUpdates[0].update as any)._meta.claudeCode.toolName).toBe("Bash");
+      expect(toolCallUpdates).toHaveLength(0);
     });
 
-    it("assistant message with mixed text + tool_use forwards only tool_use", async () => {
+    it("assistant message with mixed text + tool_use forwards nothing (all handled by stream_event)", async () => {
       const { promptPromise, updates } = await runPromptWithMessages([
         {
           type: "assistant",
@@ -815,12 +817,12 @@ describe("prompt() message handling", () => {
       ]);
 
       await promptPromise;
-      // text and thinking filtered, only tool_use forwarded
+      // text, thinking, and tool_use are all filtered from assistant messages
+      // (they are handled by stream_event instead) to avoid duplicates
       const toolCallUpdates = updates.filter(
         (u) => u.update.sessionUpdate === "tool_call",
       );
-      expect(toolCallUpdates).toHaveLength(1);
-      expect((toolCallUpdates[0].update as any).toolCallId).toBe("toolu_mixed");
+      expect(toolCallUpdates).toHaveLength(0);
 
       // No agent_message_chunk or agent_thought_chunk from the assistant message
       const textOrThought = updates.filter(
@@ -1113,6 +1115,9 @@ describe("prompt() message handling", () => {
         cancelled: true,
         permissionMode: "default",
         settingsManager: {} as any,
+        title: "test",
+        cwd: "/tmp",
+        updatedAt: new Date().toISOString(),
       };
 
       const response = await agent.prompt({
@@ -1140,6 +1145,9 @@ describe("prompt() message handling", () => {
         cancelled: false,
         permissionMode: "default",
         settingsManager: {} as any,
+        title: "test",
+        cwd: "/tmp",
+        updatedAt: new Date().toISOString(),
       };
 
       // Set cancelled to true after prompt starts. Since router returns done
@@ -1223,6 +1231,9 @@ describe("prompt() message handling", () => {
         cancelled: false,
         permissionMode: "default",
         settingsManager: {} as any,
+        title: "test",
+        cwd: "/tmp",
+        updatedAt: new Date().toISOString(),
       };
 
       const response = await agent.prompt({
@@ -1285,6 +1296,9 @@ describe("prompt() message handling", () => {
         cancelled: false,
         permissionMode: "default",
         settingsManager: {} as any,
+        title: "test",
+        cwd: "/tmp",
+        updatedAt: new Date().toISOString(),
       };
 
       await expect(
@@ -1419,10 +1433,11 @@ describe("prompt() message handling", () => {
 
       const response = await promptPromise;
       expect(response.stopReason).toBe("end_turn");
-      // Should have tool_call + agent_message_chunk (summary)
+      // tool_use in assistant messages is now filtered (handled by stream_event),
+      // so only the tool_use_summary agent_message_chunk should appear
       const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call");
       const agentMsgs = updates.filter((u) => u.update.sessionUpdate === "agent_message_chunk");
-      expect(toolCalls).toHaveLength(1);
+      expect(toolCalls).toHaveLength(0);
       expect(agentMsgs).toHaveLength(1);
       expect((agentMsgs[0].update as any).content.text).toBe("Read 1 file");
     });
@@ -1494,6 +1509,9 @@ describe("prompt() message handling", () => {
         cancelled: false,
         permissionMode: "default",
         settingsManager: {} as any,
+        title: "test",
+        cwd: "/tmp",
+        updatedAt: new Date().toISOString(),
       };
 
       await agent.prompt({
@@ -1529,6 +1547,9 @@ describe("prompt() message handling", () => {
         cancelled: true, // was cancelled from previous turn
         permissionMode: "default",
         settingsManager: {} as any,
+        title: "test",
+        cwd: "/tmp",
+        updatedAt: new Date().toISOString(),
       };
 
       const response = await agent.prompt({

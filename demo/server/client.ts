@@ -74,6 +74,14 @@ export class WebClient implements Client {
         this.broadcast({ type: "mode", modeId: update.currentModeId });
         break;
 
+      case "session_info_update":
+        this.broadcast({
+          type: "session_title_update",
+          sessionId: params.sessionId,
+          title: (update as any).title,
+        });
+        break;
+
       default:
         break;
     }

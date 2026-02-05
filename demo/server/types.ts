@@ -1,9 +1,8 @@
 import type { ClientSideConnection } from "@agentclientprotocol/sdk";
 import type { ChildProcess } from "node:child_process";
 
-export interface AcpSession {
+export interface AcpConnection {
   connection: ClientSideConnection;
-  sessionId: string;
   agentProcess: ChildProcess;
 }
 

@@ -7,13 +7,22 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import type { AppState, Action } from "../types";
+import type { AppState, Action, SessionSnapshot } from "../types";
 import { classifyTool } from "../utils";
 
 let nextId = 0;
 function uid(): string {
   return "m" + nextId++;
 }
+
+const emptySnapshot: SessionSnapshot = {
+  messages: [],
+  tasks: {},
+  protoEntries: [],
+  currentAssistantId: null,
+  currentThoughtId: null,
+  turnToolCallIds: [],
+};
 
 const initialState: AppState = {
   connected: false,
@@ -31,6 +40,10 @@ const initialState: AppState = {
   textFilter: "",
   debugCollapsed: false,
   startTime: Date.now(),
+  // Session management
+  sessions: [],
+  currentSessionId: null,
+  sessionHistory: {},
 };
 
 function reducer(state: AppState, action: Action): AppState {
@@ -337,6 +350,51 @@ function reducer(state: AppState, action: Action): AppState {
       };
     }
 
+    // ── Session management actions ────────────
+
+    case "SESSION_LIST":
+      return { ...state, sessions: action.sessions };
+
+    case "SESSION_SWITCHED": {
+      // Save current session state to history
+      const history = { ...state.sessionHistory };
+      if (state.currentSessionId) {
+        history[state.currentSessionId] = {
+          messages: state.messages,
+          tasks: state.tasks,
+          protoEntries: state.protoEntries,
+          currentAssistantId: state.currentAssistantId,
+          currentThoughtId: state.currentThoughtId,
+          turnToolCallIds: state.turnToolCallIds,
+        };
+      }
+
+      // Restore target session state from history or use empty defaults
+      const restored = history[action.sessionId] ?? emptySnapshot;
+
+      return {
+        ...state,
+        currentSessionId: action.sessionId,
+        sessionHistory: history,
+        messages: restored.messages,
+        tasks: restored.tasks,
+        protoEntries: restored.protoEntries,
+        currentAssistantId: null,
+        currentThoughtId: null,
+        turnToolCallIds: restored.turnToolCallIds,
+        busy: false,
+        peekStatus: {},
+      };
+    }
+
+    case "SESSION_TITLE_UPDATE":
+      return {
+        ...state,
+        sessions: state.sessions.map((s) =>
+          s.sessionId === action.sessionId ? { ...s, title: action.title } : s,
+        ),
+      };
+
     default:
       return state;
   }
@@ -346,6 +404,8 @@ interface WsContextValue {
   state: AppState;
   dispatch: React.Dispatch<Action>;
   send: (text: string) => void;
+  newSession: () => void;
+  resumeSession: (sessionId: string) => void;
 }
 
 const WsContext = createContext<WsContextValue | null>(null);
@@ -366,8 +426,22 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     wsRef.current.send(JSON.stringify({ type: "prompt", text }));
   }, []);
 
+  const newSession = useCallback(() => {
+    if (!wsRef.current) return;
+    wsRef.current.send(JSON.stringify({ type: "new_session" }));
+  }, []);
+
+  const resumeSessionCb = useCallback((sessionId: string) => {
+    if (!wsRef.current) return;
+    wsRef.current.send(JSON.stringify({ type: "resume_session", sessionId }));
+  }, []);
+
   useEffect(() => {
+    let disposed = false;
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+
     function connect() {
+      if (disposed) return;
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(proto + "//" + location.host + "/ws");
       wsRef.current = ws;
@@ -375,7 +449,9 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       ws.onopen = () => dispatch({ type: "WS_CONNECTED" });
       ws.onclose = () => {
         dispatch({ type: "WS_DISCONNECTED" });
-        setTimeout(connect, 2000);
+        if (!disposed) {
+          reconnectTimer = setTimeout(connect, 2000);
+        }
       };
 
       ws.onmessage = (ev) => {
@@ -385,7 +461,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     }
 
     connect();
-    return () => wsRef.current?.close();
+    return () => {
+      disposed = true;
+      clearTimeout(reconnectTimer);
+      wsRef.current?.close();
+    };
   }, []);
 
   // Tick running tasks every second
@@ -400,7 +480,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   }, [state.tasks, state.busy]);
 
   return (
-    <WsContext.Provider value={{ state, dispatch, send }}>
+    <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb }}>
       {children}
     </WsContext.Provider>
   );
@@ -471,6 +551,16 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       break;
     case "error":
       dispatch({ type: "ERROR", text: msg.text });
+      break;
+    // Session management messages
+    case "session_list":
+      dispatch({ type: "SESSION_LIST", sessions: msg.sessions });
+      break;
+    case "session_switched":
+      dispatch({ type: "SESSION_SWITCHED", sessionId: msg.sessionId });
+      break;
+    case "session_title_update":
+      dispatch({ type: "SESSION_TITLE_UPDATE", sessionId: msg.sessionId, title: msg.title });
       break;
   }
 }

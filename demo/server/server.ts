@@ -1,6 +1,6 @@
 import path from "node:path";
-import { createAcpSession } from "./session.js";
-import type { AcpSession } from "./types.js";
+import { createAcpConnection, createNewSession, listSessions } from "./session.js";
+import type { AcpConnection } from "./types.js";
 
 export function startServer(port: number) {
   const clients = new Set<{ send: (data: string) => void }>();
@@ -14,7 +14,18 @@ export function startServer(port: number) {
     }
   }
 
-  let acpSession: AcpSession | null = null;
+  let acpConnection: AcpConnection | null = null;
+  let currentSessionId: string | null = null;
+
+  async function broadcastSessionList() {
+    if (!acpConnection) return;
+    try {
+      const { sessions } = await listSessions(acpConnection.connection);
+      broadcast({ type: "session_list", sessions });
+    } catch (err: any) {
+      console.error("Failed to list sessions:", err.message);
+    }
+  }
 
   const server = Bun.serve({
     port,
@@ -42,11 +53,21 @@ export function startServer(port: number) {
       async open(ws) {
         clients.add(ws);
 
-        if (!acpSession) {
+        if (!acpConnection) {
           try {
-            acpSession = await createAcpSession(broadcast);
+            acpConnection = await createAcpConnection(broadcast);
+            const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
+            currentSessionId = sessionId;
+            await broadcastSessionList();
+            broadcast({ type: "session_switched", sessionId: currentSessionId });
           } catch (err: any) {
             ws.send(JSON.stringify({ type: "error", text: err.message }));
+          }
+        } else {
+          // Re-joining client: send current state
+          await broadcastSessionList();
+          if (currentSessionId) {
+            broadcast({ type: "session_switched", sessionId: currentSessionId });
           }
         }
       },
@@ -56,16 +77,50 @@ export function startServer(port: number) {
           typeof raw === "string" ? raw : new TextDecoder().decode(raw),
         );
 
-        if (msg.type === "prompt" && acpSession) {
-          try {
-            const result = await acpSession.connection.prompt({
-              sessionId: acpSession.sessionId,
-              prompt: [{ type: "text", text: msg.text }],
-            });
-            broadcast({ type: "turn_end", stopReason: result.stopReason });
-          } catch (err: any) {
-            broadcast({ type: "error", text: err.message });
-            broadcast({ type: "turn_end", stopReason: "error" });
+        if (!acpConnection) return;
+
+        switch (msg.type) {
+          case "prompt": {
+            if (!currentSessionId) return;
+            try {
+              const result = await acpConnection.connection.prompt({
+                sessionId: currentSessionId,
+                prompt: [{ type: "text", text: msg.text }],
+              });
+              broadcast({ type: "turn_end", stopReason: result.stopReason });
+              // Refresh session list to pick up title changes
+              await broadcastSessionList();
+            } catch (err: any) {
+              broadcast({ type: "error", text: err.message });
+              broadcast({ type: "turn_end", stopReason: "error" });
+            }
+            break;
+          }
+
+          case "new_session": {
+            try {
+              const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
+              currentSessionId = sessionId;
+              await broadcastSessionList();
+              broadcast({ type: "session_switched", sessionId: currentSessionId });
+            } catch (err: any) {
+              broadcast({ type: "error", text: err.message });
+            }
+            break;
+          }
+
+          case "resume_session": {
+            if (msg.sessionId === currentSessionId) break;
+            // Sessions are already alive on the agent — just switch routing.
+            // No need to call unstable_resumeSession (which spawns a new subprocess).
+            currentSessionId = msg.sessionId;
+            broadcast({ type: "session_switched", sessionId: currentSessionId });
+            break;
+          }
+
+          case "list_sessions": {
+            await broadcastSessionList();
+            break;
           }
         }
       },

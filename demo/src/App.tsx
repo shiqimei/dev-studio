@@ -6,6 +6,7 @@ import { TaskPanel } from "./components/TaskPanel";
 import { ChatPanel } from "./components/ChatPanel";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { DebugPanel } from "./components/DebugPanel";
+import { SessionSidebar } from "./components/SessionSidebar";
 
 function Layout() {
   const { state } = useWs();
@@ -17,6 +18,7 @@ function Layout() {
       <TaskBar />
       <TaskPanel />
       <div className="flex-1 flex min-h-0 overflow-hidden">
+        <SessionSidebar />
         <ChatPanel />
         <ResizeHandle
           debugPanelRef={debugPanelRef}

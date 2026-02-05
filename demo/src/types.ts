@@ -61,6 +61,24 @@ export type ChatMessage =
   | PlanMessage
   | PermissionMessage;
 
+// ── Sessions ────────────────────────────────
+
+export interface SessionMeta {
+  sessionId: string;
+  title: string | null;
+  updatedAt: string | null;
+  cwd: string;
+}
+
+export interface SessionSnapshot {
+  messages: ChatMessage[];
+  tasks: Record<string, TaskInfo>;
+  protoEntries: ProtoEntry[];
+  currentAssistantId: string | null;
+  currentThoughtId: string | null;
+  turnToolCallIds: string[];
+}
+
 // ── Tasks ────────────────────────────────────
 
 export interface TaskInfo {
@@ -106,6 +124,10 @@ export interface AppState {
   textFilter: string;
   debugCollapsed: boolean;
   startTime: number;
+  // Session management
+  sessions: SessionMeta[];
+  currentSessionId: string | null;
+  sessionHistory: Record<string, SessionSnapshot>;
 }
 
 // ── Actions ─────────────────────────────────
@@ -129,4 +151,7 @@ export type Action =
   | { type: "SET_DIR_FILTER"; filter: DirFilter }
   | { type: "SET_TEXT_FILTER"; filter: string }
   | { type: "TOGGLE_DEBUG_COLLAPSE" }
-  | { type: "TOGGLE_TASK_PANEL" };
+  | { type: "TOGGLE_TASK_PANEL" }
+  | { type: "SESSION_LIST"; sessions: SessionMeta[] }
+  | { type: "SESSION_SWITCHED"; sessionId: string }
+  | { type: "SESSION_TITLE_UPDATE"; sessionId: string; title: string };

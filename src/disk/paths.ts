@@ -52,3 +52,28 @@ export function getManagedSettingsPath(): string {
       return "/etc/claude-code/managed-settings.json";
   }
 }
+
+/** Returns the path to ~/.claude/statsig-cache.json. */
+export function getStatsCachePath(): string {
+  return path.join(CLAUDE_CONFIG_DIR, "statsig-cache.json");
+}
+
+/** Returns the path to ~/.claude/todos/. */
+export function getTasksDir(): string {
+  return path.join(CLAUDE_CONFIG_DIR, "todos");
+}
+
+/** Returns the path to ~/.claude/commands/. */
+export function getCommandsDir(): string {
+  return path.join(CLAUDE_CONFIG_DIR, "commands");
+}
+
+/** Returns the path to ~/.claude/plugins/installed_plugins.json. */
+export function getPluginsPath(): string {
+  return path.join(CLAUDE_CONFIG_DIR, "plugins", "installed_plugins.json");
+}
+
+/** Returns the path to ~/.claude/skills/. */
+export function getSkillsDir(): string {
+  return path.join(CLAUDE_CONFIG_DIR, "skills");
+}

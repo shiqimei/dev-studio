@@ -21,3 +21,23 @@ export type {
   ToolUpdateMeta,
   ToolUseCache,
 } from "./acp/types.js";
+
+export {
+  systemInitNotification,
+  hookStartedNotification,
+  hookProgressNotification,
+  hookResponseNotification,
+  compactBoundaryNotification,
+  filesPersistedNotification,
+  authStatusNotification,
+} from "./acp/system-notifications.js";
+export type {
+  SystemInitMeta,
+  HookStartedMeta,
+  HookProgressMeta,
+  HookResponseMeta,
+  CompactBoundaryMeta,
+  FilesPersistedMeta,
+  AuthStatusMeta,
+  SystemEventMeta,
+} from "./acp/system-notifications.js";

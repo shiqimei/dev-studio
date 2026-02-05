@@ -14,6 +14,25 @@ export {
   toolUpdateFromToolResult,
   acpToolNames as toolNames,
 } from "./acp/tool-conversion.js";
+export {
+  systemInitNotification,
+  hookStartedNotification,
+  hookProgressNotification,
+  hookResponseNotification,
+  compactBoundaryNotification,
+  filesPersistedNotification,
+  authStatusNotification,
+} from "./acp/system-notifications.js";
+export type {
+  SystemInitMeta,
+  HookStartedMeta,
+  HookProgressMeta,
+  HookResponseMeta,
+  CompactBoundaryMeta,
+  FilesPersistedMeta,
+  AuthStatusMeta,
+  SystemEventMeta,
+} from "./acp/system-notifications.js";
 export type {
   Logger,
   NewSessionMeta,
@@ -45,9 +64,24 @@ export {
   getProjectSettingsPath,
   getLocalSettingsPath,
   getManagedSettingsPath,
+  getStatsCachePath,
+  getTasksDir,
+  getCommandsDir,
+  getPluginsPath,
+  getSkillsDir,
 } from "./disk/paths.js";
 export { readSessionsIndex } from "./disk/sessions-index.js";
 export { readSessionHistory } from "./disk/session-history.js";
+export { readStatsCache } from "./disk/stats.js";
+export type { DailyActivity, StatsCache } from "./disk/stats.js";
+export { readSessionTasks, getSessionTasksDir, listSessionsWithTasks } from "./disk/tasks.js";
+export type { TaskEntry } from "./disk/tasks.js";
+export { readCommands, listCommandNames } from "./disk/commands.js";
+export type { CommandDefinition } from "./disk/commands.js";
+export { readInstalledPlugins, listPluginNames } from "./disk/plugins.js";
+export type { PluginInstallation, InstalledPlugins } from "./disk/plugins.js";
+export { readSkills, listSkillNames } from "./disk/skills.js";
+export type { SkillInfo } from "./disk/skills.js";
 export type { SessionIndexEntry, SessionsIndex, HistoryMessage } from "./disk/types.js";
 
 // --- Events Layer ---

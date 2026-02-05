@@ -116,7 +116,7 @@ describe("prompt() message handling", () => {
   // 1. System message handling
   // =========================================================================
   describe("system messages", () => {
-    it("system:init emits no notification", async () => {
+    it("system:init emits system_init notification", async () => {
       const { promptPromise, updates } = await runPromptWithMessages([
         {
           type: "system",
@@ -137,16 +137,17 @@ describe("prompt() message handling", () => {
 
       const response = await promptPromise;
       expect(response.stopReason).toBe("end_turn");
-      // No sessionUpdate for system:init
       const initUpdates = updates.filter(
         (u) =>
           u.update.sessionUpdate === "agent_message_chunk" &&
-          (u.update as any).content?.text?.includes("init"),
+          (u.update as any)._meta?.claudeCode?.eventType === "system_init",
       );
-      expect(initUpdates).toHaveLength(0);
+      expect(initUpdates).toHaveLength(1);
+      expect((initUpdates[0].update as any)._meta.claudeCode.model).toBe("test");
+      expect((initUpdates[0].update as any)._meta.claudeCode.claudeCodeVersion).toBe("1.0.0");
     });
 
-    it("system:compact_boundary emits no notification", async () => {
+    it("system:compact_boundary emits compact_boundary notification", async () => {
       const { promptPromise, updates } = await runPromptWithMessages([
         {
           type: "system",
@@ -159,10 +160,11 @@ describe("prompt() message handling", () => {
       ]);
 
       await promptPromise;
-      expect(updates).toHaveLength(0);
+      expect(updates).toHaveLength(1);
+      expect((updates[0].update as any)._meta.claudeCode.eventType).toBe("compact_boundary");
     });
 
-    it("system:hook_started emits no notification", async () => {
+    it("system:hook_started emits hook_started notification", async () => {
       const { promptPromise, updates } = await runPromptWithMessages([
         {
           type: "system",
@@ -177,10 +179,12 @@ describe("prompt() message handling", () => {
       ]);
 
       await promptPromise;
-      expect(updates).toHaveLength(0);
+      expect(updates).toHaveLength(1);
+      expect((updates[0].update as any)._meta.claudeCode.eventType).toBe("hook_started");
+      expect((updates[0].update as any)._meta.claudeCode.hookName).toBe("PreToolUse");
     });
 
-    it("system:hook_progress emits no notification", async () => {
+    it("system:hook_progress emits hook_progress notification", async () => {
       const { promptPromise, updates } = await runPromptWithMessages([
         {
           type: "system",
@@ -196,10 +200,11 @@ describe("prompt() message handling", () => {
       ]);
 
       await promptPromise;
-      expect(updates).toHaveLength(0);
+      expect(updates).toHaveLength(1);
+      expect((updates[0].update as any)._meta.claudeCode.eventType).toBe("hook_progress");
     });
 
-    it("system:hook_response emits no notification", async () => {
+    it("system:hook_response emits hook_response notification", async () => {
       const { promptPromise, updates } = await runPromptWithMessages([
         {
           type: "system",
@@ -219,7 +224,9 @@ describe("prompt() message handling", () => {
       ]);
 
       await promptPromise;
-      expect(updates).toHaveLength(0);
+      expect(updates).toHaveLength(1);
+      expect((updates[0].update as any)._meta.claudeCode.eventType).toBe("hook_response");
+      expect((updates[0].update as any)._meta.claudeCode.exitCode).toBe(0);
     });
 
     it('system:status with status "compacting" emits agent_message_chunk', async () => {
@@ -264,7 +271,7 @@ describe("prompt() message handling", () => {
       expect(updates).toHaveLength(0);
     });
 
-    it("system:files_persisted emits no notification", async () => {
+    it("system:files_persisted emits files_persisted notification", async () => {
       const { promptPromise, updates } = await runPromptWithMessages([
         {
           type: "system",
@@ -278,7 +285,9 @@ describe("prompt() message handling", () => {
       ]);
 
       await promptPromise;
-      expect(updates).toHaveLength(0);
+      expect(updates).toHaveLength(1);
+      expect((updates[0].update as any)._meta.claudeCode.eventType).toBe("files_persisted");
+      expect((updates[0].update as any)._meta.claudeCode.files).toHaveLength(1);
     });
   });
 
@@ -1072,7 +1081,7 @@ describe("prompt() message handling", () => {
   // 7. auth_status handling
   // =========================================================================
   describe("auth_status", () => {
-    it("auth_status emits no notification", async () => {
+    it("auth_status emits auth_status notification", async () => {
       const { promptPromise, updates } = await runPromptWithMessages([
         {
           type: "auth_status",
@@ -1085,7 +1094,8 @@ describe("prompt() message handling", () => {
       ]);
 
       await promptPromise;
-      expect(updates).toHaveLength(0);
+      expect(updates).toHaveLength(1);
+      expect((updates[0].update as any)._meta.claudeCode.eventType).toBe("auth_status");
     });
   });
 
@@ -1356,9 +1366,11 @@ describe("prompt() message handling", () => {
 
       const response = await promptPromise;
       expect(response.stopReason).toBe("end_turn");
-      // Only the compacting status should have generated an update
-      expect(updates).toHaveLength(1);
-      expect(updates[0].update.sessionUpdate).toBe("agent_message_chunk");
+      // system_init + compacting status + compact_boundary = 3 notifications
+      expect(updates).toHaveLength(3);
+      expect(updates.every((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(true);
+      expect((updates[0].update as any)._meta.claudeCode.eventType).toBe("system_init");
+      expect((updates[2].update as any)._meta.claudeCode.eventType).toBe("compact_boundary");
     });
 
     it("handles interleaved system, assistant, and user messages", async () => {
@@ -1434,12 +1446,13 @@ describe("prompt() message handling", () => {
       const response = await promptPromise;
       expect(response.stopReason).toBe("end_turn");
       // tool_use in assistant messages is now filtered (handled by stream_event),
-      // so only the tool_use_summary agent_message_chunk should appear
+      // system_init now emits a notification, plus the tool_use_summary agent_message_chunk
       const toolCalls = updates.filter((u) => u.update.sessionUpdate === "tool_call");
       const agentMsgs = updates.filter((u) => u.update.sessionUpdate === "agent_message_chunk");
       expect(toolCalls).toHaveLength(0);
-      expect(agentMsgs).toHaveLength(1);
-      expect((agentMsgs[0].update as any).content.text).toBe("Read 1 file");
+      expect(agentMsgs).toHaveLength(2); // system_init + tool_use_summary
+      expect((agentMsgs[0].update as any)._meta.claudeCode.eventType).toBe("system_init");
+      expect((agentMsgs[1].update as any).content.text).toBe("Read 1 file");
     });
   });
 

@@ -10,4 +10,9 @@ export type SessionEvent =
   | { type: "agent-idle"; sessionId: string }
   | { type: "session-updated"; sessionId: string; projectDir: string }
   | { type: "task-notification"; sessionId: string; entry: unknown; taskId: string; status: string }
+  | { type: "system-init"; sessionId: string; entry: unknown }
+  | { type: "hook-lifecycle"; sessionId: string; entry: unknown; hookEvent: string; hookName: string; subtype: string }
+  | { type: "compact-boundary"; sessionId: string; entry: unknown }
+  | { type: "files-persisted"; sessionId: string; entry: unknown }
+  | { type: "auth-status"; sessionId: string; entry: unknown }
   | { type: "raw-entry"; sessionId: string; entry: unknown };

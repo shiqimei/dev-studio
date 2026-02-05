@@ -54,10 +54,24 @@ import { acpToolNames, EDIT_TOOL_NAMES } from "./types.js";
 import { toolInfoFromToolUse } from "./tool-conversion.js";
 import { createPostToolUseHook, createPreToolUseHook } from "../sdk/hooks.js";
 import { toAcpNotifications, streamEventToAcpNotifications, promptToClaude } from "./notifications.js";
+import {
+  systemInitNotification,
+  hookStartedNotification,
+  hookProgressNotification,
+  hookResponseNotification,
+  compactBoundaryNotification,
+  filesPersistedNotification,
+  authStatusNotification,
+} from "./system-notifications.js";
 import { SessionMessageRouter } from "../sdk/message-router.js";
 import { createCanUseTool } from "../sdk/permissions.js";
 import { SettingsManager } from "../disk/settings.js";
 import { CLAUDE_CONFIG_DIR } from "../disk/paths.js";
+import { readStatsCache } from "../disk/stats.js";
+import { readSessionTasks } from "../disk/tasks.js";
+import { listCommandNames } from "../disk/commands.js";
+import { listPluginNames } from "../disk/plugins.js";
+import { listSkillNames } from "../disk/skills.js";
 import { readSessionsIndex } from "../disk/sessions-index.js";
 import type { ManagedSession } from "../sdk/types.js";
 import type { Logger, NewSessionMeta, ToolUpdateMeta, ToolUseCache } from "./types.js";
@@ -310,17 +324,45 @@ export class ClaudeAcpAgent implements Agent {
       switch (message.type) {
         case "system":
           switch (message.subtype) {
-            case "init":
+            case "init": {
+              const stats = readStatsCache();
+              const commands = listCommandNames();
+              const plugins = listPluginNames();
+              const skills = listSkillNames();
+              await this.client.sessionUpdate(
+                systemInitNotification(params.sessionId, message as unknown as Record<string, unknown>, {
+                  stats: stats
+                    ? { lastComputedDate: stats.lastComputedDate, recentActivity: stats.dailyActivity.slice(-7) }
+                    : undefined,
+                  diskCommands: commands.length > 0 ? commands : undefined,
+                  diskPlugins: plugins.length > 0 ? plugins : undefined,
+                  diskSkills: skills.length > 0 ? skills : undefined,
+                }),
+              );
               break;
+            }
             case "task_notification":
               // Intercepted by SessionMessageRouter (handles between turns too)
               break;
             case "compact_boundary":
+              await this.client.sessionUpdate(
+                compactBoundaryNotification(params.sessionId, message as unknown as Record<string, unknown>),
+              );
               break;
             case "hook_started":
+              await this.client.sessionUpdate(
+                hookStartedNotification(params.sessionId, message as unknown as Record<string, unknown>),
+              );
+              break;
             case "hook_progress":
+              await this.client.sessionUpdate(
+                hookProgressNotification(params.sessionId, message as unknown as Record<string, unknown>),
+              );
+              break;
             case "hook_response":
-              // Hook lifecycle events - logged but not forwarded to ACP client
+              await this.client.sessionUpdate(
+                hookResponseNotification(params.sessionId, message as unknown as Record<string, unknown>),
+              );
               break;
             case "status":
               // Forward compaction status as an agent message
@@ -338,6 +380,9 @@ export class ClaudeAcpAgent implements Agent {
               }
               break;
             case "files_persisted":
+              await this.client.sessionUpdate(
+                filesPersistedNotification(params.sessionId, message as unknown as Record<string, unknown>),
+              );
               break;
             default:
               unreachable(message, this.logger);
@@ -348,6 +393,9 @@ export class ClaudeAcpAgent implements Agent {
           if (session.cancelled) {
             return { stopReason: "cancelled" };
           }
+
+          // Read stats to include in result metadata
+          const resultStats = readStatsCache();
 
           // Build result metadata to surface cost/usage info to ACP client
           const resultMeta: Record<string, unknown> = {
@@ -368,6 +416,12 @@ export class ClaudeAcpAgent implements Agent {
                 message.structured_output !== undefined && {
                   structured_output: message.structured_output,
                 }),
+              ...(resultStats && {
+                stats: {
+                  lastComputedDate: resultStats.lastComputedDate,
+                  recentActivity: resultStats.dailyActivity.slice(-7),
+                },
+              }),
             },
           };
 
@@ -540,7 +594,7 @@ export class ClaudeAcpAgent implements Agent {
           }
           break;
         }
-        case "tool_use_summary":
+        case "tool_use_summary": {
           // Forward collapsed tool descriptions as agent message
           if (message.summary) {
             await this.client.sessionUpdate({
@@ -554,8 +608,29 @@ export class ClaudeAcpAgent implements Agent {
               },
             });
           }
+
+          // Check for task state after tool summaries (e.g., TodoWrite results)
+          const tasks = readSessionTasks(params.sessionId);
+          if (tasks.length > 0) {
+            await this.client.sessionUpdate({
+              sessionId: params.sessionId,
+              update: {
+                sessionUpdate: "session_info_update" as any,
+                _meta: {
+                  claudeCode: {
+                    eventType: "task_state",
+                    tasks,
+                  },
+                },
+              } as any,
+            });
+          }
           break;
+        }
         case "auth_status":
+          await this.client.sessionUpdate(
+            authStatusNotification(params.sessionId, message as unknown as Record<string, unknown>),
+          );
           break;
         default:
           unreachable(message);

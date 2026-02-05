@@ -77,18 +77,95 @@ export class SessionEventEmitter extends EventEmitter {
         break;
 
       case "system":
-        if (obj.subtype === "task_notification") {
-          this.emit("event", {
-            type: "task-notification",
-            sessionId,
-            entry: data,
-            taskId: (obj as any).task_id ?? "",
-            status: (obj as any).status ?? "",
-          } satisfies SessionEvent);
+        switch (obj.subtype) {
+          case "task_notification":
+            this.emit("event", {
+              type: "task-notification",
+              sessionId,
+              entry: data,
+              taskId: (obj as any).task_id ?? "",
+              status: (obj as any).status ?? "",
+            } satisfies SessionEvent);
+            break;
+          case "init":
+            this.emit("event", {
+              type: "system-init",
+              sessionId,
+              entry: data,
+            } satisfies SessionEvent);
+            break;
+          case "hook_started":
+          case "hook_progress":
+          case "hook_response":
+            this.emit("event", {
+              type: "hook-lifecycle",
+              sessionId,
+              entry: data,
+              hookEvent: (obj as any).hook_event ?? "",
+              hookName: (obj as any).hook_name ?? "",
+              subtype: obj.subtype as string,
+            } satisfies SessionEvent);
+            break;
+          case "compact_boundary":
+            this.emit("event", {
+              type: "compact-boundary",
+              sessionId,
+              entry: data,
+            } satisfies SessionEvent);
+            break;
+          case "files_persisted":
+            this.emit("event", {
+              type: "files-persisted",
+              sessionId,
+              entry: data,
+            } satisfies SessionEvent);
+            break;
+          default:
+            break;
         }
         break;
 
+      case "auth_status":
+        this.emit("event", {
+          type: "auth-status",
+          sessionId,
+          entry: data,
+        } satisfies SessionEvent);
+        break;
+
       default:
+        // Extract tool_use from assistant messages
+        if (obj.type === "assistant" || obj.type === "user") {
+          const message = obj.message as { content?: unknown[] } | undefined;
+          if (message && Array.isArray(message.content)) {
+            for (const block of message.content) {
+              const b = block as Record<string, unknown>;
+              if (
+                b.type === "tool_use" ||
+                b.type === "server_tool_use" ||
+                b.type === "mcp_tool_use"
+              ) {
+                this.emit("event", {
+                  type: "tool-started",
+                  sessionId,
+                  entry: data,
+                  toolName: (b.name as string) ?? "",
+                  toolUseId: (b.id as string) ?? "",
+                } satisfies SessionEvent);
+              } else if (
+                b.type === "tool_result" ||
+                b.type === "mcp_tool_result"
+              ) {
+                this.emit("event", {
+                  type: "tool-completed",
+                  sessionId,
+                  entry: data,
+                  toolUseId: (b.tool_use_id as string) ?? "",
+                } satisfies SessionEvent);
+              }
+            }
+          }
+        }
         break;
     }
   }

@@ -495,6 +495,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
       ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data);
+        console.log("[WS RAW]", msg.type, JSON.parse(JSON.stringify(msg)));
         handleMsg(msg, dispatch);
       };
     }
@@ -531,7 +532,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       dispatch({ type: "PROTOCOL", dir: msg.dir, ts: msg.ts, msg: msg.msg });
       break;
     case "text":
-      dispatch({ type: "TEXT_CHUNK", text: msg.text });
+      if (msg.text) dispatch({ type: "TEXT_CHUNK", text: msg.text });
       break;
     case "thought":
       dispatch({ type: "THOUGHT_CHUNK", text: msg.text });

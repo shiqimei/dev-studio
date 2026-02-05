@@ -1,8 +1,9 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createAcpConnection, createNewSession, listSessions, resumeSession } from "./session.js";
 import type { AcpConnection } from "./types.js";
+import { getProjectDir } from "../../src/disk/paths.js";
+import { readSessionsIndex } from "../../src/disk/sessions-index.js";
+import { readSessionHistory as readHistory } from "../../src/disk/session-history.js";
 
 export function startServer(port: number) {
   const clients = new Set<{ send: (data: string) => void }>();
@@ -23,89 +24,24 @@ export function startServer(port: number) {
 
   let acpConnection: AcpConnection | null = null;
 
+  const projectDir = getProjectDir();
+
   function readDiskSessions() {
-    const indexPath = path.join(getProjectDir(), "sessions-index.json");
-    try {
-      const raw = fs.readFileSync(indexPath, "utf-8");
-      const index = JSON.parse(raw) as {
-        entries: Array<{
-          sessionId: string;
-          firstPrompt?: string;
-          created?: string;
-          modified?: string;
-          messageCount?: number;
-          gitBranch?: string;
-          isSidechain?: boolean;
-        }>;
-      };
-      return index.entries
-        .filter((e) => !e.isSidechain)
-        .map((e) => ({
-          sessionId: e.sessionId,
-          title: e.firstPrompt?.slice(0, 100) ?? null,
-          updatedAt: e.modified ?? e.created ?? null,
-          created: e.created ?? null,
-          messageCount: e.messageCount ?? 0,
-          gitBranch: e.gitBranch ?? null,
-        }))
-        .sort((a, b) => {
-          const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-          const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-          return tb - ta;
-        });
-    } catch {
-      return [];
-    }
-  }
-
-  function getProjectDir() {
-    const configDir = process.env.CLAUDE ?? path.join(os.homedir(), ".claude");
-    const cwd = process.env.ACP_CWD || process.cwd();
-    return path.join(configDir, "projects", cwd.replace(/\//g, "-"));
-  }
-
-  function readSessionHistory(sessionId: string) {
-    const jsonlPath = path.join(getProjectDir(), `${sessionId}.jsonl`);
-    try {
-      const raw = fs.readFileSync(jsonlPath, "utf-8");
-      const lines = raw.split("\n").filter(Boolean);
-      const messages: Array<{ role: "user" | "assistant"; text: string }> = [];
-
-      for (const line of lines) {
-        const entry = JSON.parse(line);
-        if (entry.type === "user" && entry.message?.content) {
-          const content = entry.message.content;
-          let text: string;
-          if (typeof content === "string") {
-            text = content;
-          } else if (Array.isArray(content)) {
-            text = content
-              .filter((c: any) => c.type === "text")
-              .map((c: any) => c.text)
-              .join("\n");
-          } else {
-            continue;
-          }
-          if (text && !entry.isMeta) {
-            messages.push({ role: "user", text });
-          }
-        } else if (entry.type === "assistant" && entry.message?.content) {
-          const content = entry.message.content;
-          if (!Array.isArray(content)) continue;
-          const textParts = content
-            .filter((c: any) => c.type === "text")
-            .map((c: any) => c.text)
-            .join("\n");
-          if (textParts) {
-            messages.push({ role: "assistant", text: textParts });
-          }
-        }
-      }
-
-      return messages;
-    } catch {
-      return [];
-    }
+    const entries = readSessionsIndex(projectDir);
+    return entries
+      .map((e) => ({
+        sessionId: e.sessionId,
+        title: e.firstPrompt?.slice(0, 100) ?? null,
+        updatedAt: e.modified ?? e.created ?? null,
+        created: e.created ?? null,
+        messageCount: e.messageCount ?? 0,
+        gitBranch: e.gitBranch ?? null,
+      }))
+      .sort((a, b) => {
+        const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+        const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+        return tb - ta;
+      });
   }
 
   function broadcastDiskSessions() {
@@ -230,7 +166,7 @@ export function startServer(port: number) {
             if (msg.sessionId === currentSessionId) break;
             currentSessionId = msg.sessionId;
             // Load conversation history from ~/.claude session file
-            const history = readSessionHistory(msg.sessionId);
+            const history = readHistory(projectDir, msg.sessionId);
             broadcast({ type: "session_history", sessionId: msg.sessionId, messages: history });
             broadcast({ type: "session_switched", sessionId: currentSessionId });
             // Resume non-live sessions via ACP so the user can continue chatting

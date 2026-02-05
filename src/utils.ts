@@ -3,8 +3,9 @@
 import { Readable, Writable } from "node:stream";
 import { WritableStream, ReadableStream } from "node:stream/web";
 import { readFileSync } from "node:fs";
-import { Logger } from "./acp-agent.js";
-import { ClaudeCodeSettings, getManagedSettingsPath } from "./settings.js";
+import { Logger } from "./acp/types.js";
+import { ClaudeCodeSettings } from "./disk/settings.js";
+import { getManagedSettingsPath } from "./disk/paths.js";
 
 // Useful for bridging push-based and async-iterator-based code.
 export class Pushable<T> implements AsyncIterable<T> {

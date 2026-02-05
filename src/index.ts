@@ -19,7 +19,7 @@ process.on("unhandledRejection", (reason, promise) => {
   console.error("Unhandled Rejection at:", promise, "reason:", reason);
 });
 
-import { runAcp } from "./acp-agent.js";
+import { runAcp } from "./acp/agent.js";
 runAcp();
 
 // Keep process alive

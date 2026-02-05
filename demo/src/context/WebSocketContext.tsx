@@ -47,6 +47,16 @@ const initialState: AppState = {
   sessionHistory: {},
 };
 
+function markAssistantDone(messages: ChatMessage[], currentAssistantId: string | null): ChatMessage[] {
+  if (!currentAssistantId) return messages;
+  return messages.map((m) =>
+    m.id === currentAssistantId && m.type === "assistant"
+      ? { ...m, done: true }
+      : m,
+  );
+}
+
+
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "WS_CONNECTED":
@@ -80,6 +90,7 @@ function reducer(state: AppState, action: Action): AppState {
       if (state.currentAssistantId) {
         return {
           ...state,
+          currentThoughtId: null,
           messages: state.messages.map((m) =>
             m.id === state.currentAssistantId && m.type === "assistant"
               ? { ...m, text: m.text + action.text }
@@ -91,6 +102,7 @@ function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         currentAssistantId: newId,
+        currentThoughtId: null,
         messages: [
           ...state.messages,
           { type: "assistant", id: newId, text: action.text, done: false },
@@ -102,19 +114,24 @@ function reducer(state: AppState, action: Action): AppState {
       if (state.currentThoughtId) {
         return {
           ...state,
-          messages: state.messages.map((m) =>
-            m.id === state.currentThoughtId && m.type === "thought"
-              ? { ...m, text: m.text + action.text }
-              : m,
+          currentAssistantId: null,
+          messages: markAssistantDone(
+            state.messages.map((m) =>
+              m.id === state.currentThoughtId && m.type === "thought"
+                ? { ...m, text: m.text + action.text }
+                : m,
+            ),
+            state.currentAssistantId,
           ),
         };
       }
       const newId = uid();
       return {
         ...state,
+        currentAssistantId: null,
         currentThoughtId: newId,
         messages: [
-          ...state.messages,
+          ...markAssistantDone(state.messages, state.currentAssistantId),
           { type: "thought", id: newId, text: action.text },
         ],
       };
@@ -150,13 +167,14 @@ function reducer(state: AppState, action: Action): AppState {
 
       return {
         ...state,
+        currentAssistantId: null,
         currentThoughtId: null,
         taskPanelOpen,
         tasks: { ...state.tasks, [action.toolCallId]: newTask },
         peekStatus: newPeek,
         turnToolCallIds: [...state.turnToolCallIds, action.toolCallId],
         messages: [
-          ...state.messages,
+          ...markAssistantDone(state.messages, state.currentAssistantId),
           {
             type: "tool_call",
             id: uid(),
@@ -228,9 +246,10 @@ function reducer(state: AppState, action: Action): AppState {
     case "PLAN":
       return {
         ...state,
+        currentAssistantId: null,
         currentThoughtId: null,
         messages: [
-          ...state.messages,
+          ...markAssistantDone(state.messages, state.currentAssistantId),
           { type: "plan", id: uid(), entries: action.entries },
         ],
       };
@@ -238,8 +257,10 @@ function reducer(state: AppState, action: Action): AppState {
     case "PERMISSION":
       return {
         ...state,
+        currentAssistantId: null,
+        currentThoughtId: null,
         messages: [
-          ...state.messages,
+          ...markAssistantDone(state.messages, state.currentAssistantId),
           { type: "permission", id: uid(), title: action.title },
         ],
       };
@@ -266,8 +287,10 @@ function reducer(state: AppState, action: Action): AppState {
     case "SYSTEM":
       return {
         ...state,
+        currentAssistantId: null,
+        currentThoughtId: null,
         messages: [
-          ...state.messages,
+          ...markAssistantDone(state.messages, state.currentAssistantId),
           { type: "system", id: uid(), text: action.text },
         ],
       };

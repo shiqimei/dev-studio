@@ -26,7 +26,12 @@ export class WebClient implements Client {
     switch (update.sessionUpdate) {
       case "agent_message_chunk":
         if (update.content.type === "text") {
-          this.broadcast({ type: "text", sessionId: params.sessionId, text: update.content.text });
+          const eventType = (update._meta as any)?.claudeCode?.eventType;
+          if (eventType) {
+            this.broadcast({ type: "system", sessionId: params.sessionId, text: update.content.text });
+          } else {
+            this.broadcast({ type: "text", sessionId: params.sessionId, text: update.content.text });
+          }
         }
         break;
 

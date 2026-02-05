@@ -1,25 +1,89 @@
-import { useRef, useCallback } from "react";
+import { useRef, useCallback, useState } from "react";
 import { useWs } from "../context/WebSocketContext";
+import type { ImageAttachment } from "../types";
+
+const SUPPORTED_IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
+/**
+ * Convert an image blob to PNG if its type isn't supported by the API.
+ * Returns { data: base64, mimeType } ready for ImageAttachment.
+ */
+function toSupportedImage(blob: Blob): Promise<{ data: string; mimeType: string }> {
+  if (SUPPORTED_IMAGE_TYPES.has(blob.type)) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        resolve({ data: dataUrl.split(",")[1], mimeType: blob.type });
+      };
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // Convert to PNG via canvas
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      const pngDataUrl = canvas.toDataURL("image/png");
+      resolve({ data: pngDataUrl.split(",")[1], mimeType: "image/png" });
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Failed to load image for conversion"));
+    };
+    img.src = url;
+  });
+}
 
 export function ChatInput() {
   const { state, send } = useWs();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [images, setImages] = useState<ImageAttachment[]>([]);
 
   const handleSend = useCallback(() => {
-    const text = inputRef.current?.value.trim();
-    if (!text || state.busy) return;
-    send(text);
+    const text = inputRef.current?.value.trim() ?? "";
+    if ((!text && images.length === 0) || state.busy) return;
+    send(text, images.length > 0 ? images : undefined);
     if (inputRef.current) {
       inputRef.current.value = "";
       inputRef.current.style.height = "auto";
     }
-  }, [state.busy, send]);
+    setImages([]);
+  }, [state.busy, send, images]);
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleSend();
+      }
+      // Ctrl+V on Mac doesn't trigger native paste, so read clipboard manually
+      if (e.key === "v" && e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+        navigator.clipboard.read().then((clipboardItems) => {
+          for (const item of clipboardItems) {
+            const imageType = item.types.find((t) => t.startsWith("image/"));
+            if (!imageType) continue;
+            item.getType(imageType).then((blob) => {
+              toSupportedImage(blob).then((attachment) => {
+                setImages((prev) => [...prev, attachment]);
+              });
+            });
+          }
+        }).catch(() => {
+          // Clipboard API not available or permission denied; fall through
+        });
       }
     },
     [handleSend],
@@ -32,26 +96,70 @@ export function ChatInput() {
     el.style.height = Math.min(el.scrollHeight, 120) + "px";
   }, []);
 
+  const onPaste = useCallback(
+    (e: React.ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (!item.type.startsWith("image/")) continue;
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (!file) continue;
+        toSupportedImage(file).then((attachment) => {
+          setImages((prev) => [...prev, attachment]);
+        });
+      }
+    },
+    [],
+  );
+
+  const removeImage = useCallback((index: number) => {
+    setImages((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
   const disabled = !state.connected || state.busy;
 
   return (
-    <div className="border-t border-border px-5 py-3 flex gap-2 shrink-0">
-      <textarea
-        ref={inputRef}
-        rows={1}
-        placeholder="Send a message..."
-        disabled={disabled}
-        onKeyDown={onKeyDown}
-        onInput={onInput}
-        className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none min-h-[36px] max-h-[120px] overflow-hidden shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_2px_6px_rgba(0,0,0,0.4)] placeholder:text-dim disabled:opacity-50 disabled:cursor-not-allowed"
-      />
-      <button
-        disabled={disabled}
-        onClick={handleSend}
-        className="bg-text text-bg border-none rounded-md h-9 px-4 py-2 font-mono text-sm font-medium cursor-pointer self-end hover:opacity-90 disabled:opacity-50 disabled:pointer-events-none"
-      >
-        Send
-      </button>
+    <div className="border-t border-border px-5 py-3 shrink-0">
+      {images.length > 0 && (
+        <div className="flex gap-2 mb-2 flex-wrap">
+          {images.map((img, i) => (
+            <div key={i} className="relative group">
+              <img
+                src={`data:${img.mimeType};base64,${img.data}`}
+                alt={`Pasted image ${i + 1}`}
+                className="h-16 w-16 object-cover rounded-md border border-border"
+              />
+              <button
+                type="button"
+                onClick={() => removeImage(i)}
+                className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-600 text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer border-none"
+              >
+                x
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <textarea
+          ref={inputRef}
+          rows={1}
+          placeholder={images.length > 0 ? "Add a message or send image..." : "Send a message..."}
+          disabled={disabled}
+          onKeyDown={onKeyDown}
+          onInput={onInput}
+          onPaste={onPaste}
+          className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none min-h-[36px] max-h-[120px] overflow-hidden shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_2px_6px_rgba(0,0,0,0.4)] placeholder:text-dim disabled:opacity-50 disabled:cursor-not-allowed"
+        />
+        <button
+          disabled={disabled}
+          onClick={handleSend}
+          className="bg-text text-bg border-none rounded-md h-9 px-4 py-2 font-mono text-sm font-medium cursor-pointer self-end hover:opacity-90 disabled:opacity-50 disabled:pointer-events-none"
+        >
+          Send
+        </button>
+      </div>
     </div>
   );
 }

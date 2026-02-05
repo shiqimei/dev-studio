@@ -21,7 +21,7 @@ export function MessageList() {
       {state.messages.map((msg) => {
         switch (msg.type) {
           case "user":
-            return <UserMessage key={msg.id} text={msg.text} />;
+            return <UserMessage key={msg.id} text={msg.text} images={msg.images} />;
           case "assistant":
             return (
               <AssistantMessage

@@ -75,6 +75,12 @@
   align-self: flex-end;
   max-width: 80%;
   width: fit-content;
+  overflow: hidden;
+}
+
+.msg.user:has(img) {
+  border-radius: 16px;
+  padding: 10px;
 }
 
 .msg.assistant {

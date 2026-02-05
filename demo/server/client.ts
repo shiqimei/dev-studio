@@ -26,19 +26,20 @@ export class WebClient implements Client {
     switch (update.sessionUpdate) {
       case "agent_message_chunk":
         if (update.content.type === "text") {
-          this.broadcast({ type: "text", text: update.content.text });
+          this.broadcast({ type: "text", sessionId: params.sessionId, text: update.content.text });
         }
         break;
 
       case "agent_thought_chunk":
         if (update.content.type === "text") {
-          this.broadcast({ type: "thought", text: update.content.text });
+          this.broadcast({ type: "thought", sessionId: params.sessionId, text: update.content.text });
         }
         break;
 
       case "tool_call":
         this.broadcast({
           type: "tool_call",
+          sessionId: params.sessionId,
           toolCallId: update.toolCallId,
           title: update.title,
           kind: update.kind,
@@ -51,6 +52,7 @@ export class WebClient implements Client {
       case "tool_call_update":
         this.broadcast({
           type: "tool_call_update",
+          sessionId: params.sessionId,
           toolCallId: update.toolCallId,
           status: update.status,
           content: update.content,
@@ -60,18 +62,19 @@ export class WebClient implements Client {
         break;
 
       case "plan":
-        this.broadcast({ type: "plan", entries: update.entries });
+        this.broadcast({ type: "plan", sessionId: params.sessionId, entries: update.entries });
         break;
 
       case "available_commands_update":
         this.broadcast({
           type: "commands",
+          sessionId: params.sessionId,
           commands: update.availableCommands.map((c) => c.name),
         });
         break;
 
       case "current_mode_update":
-        this.broadcast({ type: "mode", modeId: update.currentModeId });
+        this.broadcast({ type: "mode", sessionId: params.sessionId, modeId: update.currentModeId });
         break;
 
       case "session_info_update":

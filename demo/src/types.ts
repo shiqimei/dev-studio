@@ -1,9 +1,15 @@
 // ── Chat messages ────────────────────────────
 
+export interface ImageAttachment {
+  data: string;
+  mimeType: string;
+}
+
 export interface UserMessage {
   type: "user";
   id: string;
   text: string;
+  images?: ImageAttachment[];
 }
 
 export interface AssistantMessage {
@@ -68,6 +74,7 @@ export interface SessionMeta {
   title: string | null;
   updatedAt: string | null;
   cwd: string;
+  isLive: boolean;
 }
 
 export interface SessionSnapshot {
@@ -136,7 +143,7 @@ export type Action =
   | { type: "WS_CONNECTED" }
   | { type: "WS_DISCONNECTED" }
   | { type: "SET_BUSY"; busy: boolean }
-  | { type: "SEND_MESSAGE"; text: string }
+  | { type: "SEND_MESSAGE"; text: string; images?: ImageAttachment[] }
   | { type: "TEXT_CHUNK"; text: string }
   | { type: "THOUGHT_CHUNK"; text: string }
   | { type: "TOOL_CALL"; toolCallId: string; kind: string; title: string; content: string; meta: any }

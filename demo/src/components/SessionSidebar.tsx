@@ -1,4 +1,5 @@
 import { useWs } from "../context/WebSocketContext";
+import type { SessionMeta } from "../types";
 
 function relativeTime(iso: string | null): string {
   if (!iso) return "";
@@ -13,65 +14,108 @@ function relativeTime(iso: string | null): string {
   return `${days}d ago`;
 }
 
+function SessionItem({
+  session,
+  isActive,
+  onClick,
+}: {
+  session: SessionMeta;
+  isActive: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left px-3 py-2 border-b border-border transition-colors ${
+        isActive
+          ? "bg-[var(--color-accent-dim)] border-l-2 border-l-[var(--color-accent)]"
+          : "hover:bg-[var(--color-border)] border-l-2 border-l-transparent"
+      }`}
+    >
+      <div
+        className={`text-xs truncate ${
+          isActive ? "text-text font-medium" : "text-dim"
+        }`}
+      >
+        {session.title || "New session"}
+      </div>
+      <div className="text-[10px] text-dim mt-0.5 flex items-center justify-between">
+        <span className="truncate opacity-60">
+          {session.sessionId.slice(0, 8)}
+        </span>
+        <span className="shrink-0 ml-1">
+          {relativeTime(session.updatedAt)}
+        </span>
+      </div>
+    </button>
+  );
+}
+
 export function SessionSidebar() {
   const { state, newSession, resumeSession } = useWs();
 
+  const instances = state.sessions.filter((s) => s.isLive);
+  const sessions = state.sessions.filter((s) => !s.isLive);
+
   return (
     <div className="w-60 shrink-0 bg-surface border-r border-border flex flex-col overflow-hidden">
-      {/* Header */}
+      {/* Instances header */}
       <div className="px-3 py-2.5 border-b border-border flex items-center justify-between">
         <span className="text-xs font-semibold text-dim uppercase tracking-wider">
-          Sessions
+          Instances
         </span>
         <button
           onClick={newSession}
           className="w-6 h-6 flex items-center justify-center rounded text-dim hover:text-text hover:bg-[var(--color-border)] transition-colors text-lg leading-none"
-          title="New session"
+          title="New instance"
         >
           +
         </button>
       </div>
 
-      {/* Session list */}
-      <div className="flex-1 overflow-y-auto">
-        {state.sessions.length === 0 && (
-          <div className="px-3 py-4 text-xs text-dim text-center">
-            No sessions
+      {/* Instance list */}
+      <div className="overflow-y-auto">
+        {instances.length === 0 && (
+          <div className="px-3 py-3 text-xs text-dim text-center">
+            No live instances
           </div>
         )}
-        {state.sessions.map((session) => {
-          const isActive = session.sessionId === state.currentSessionId;
-          return (
-            <button
-              key={session.sessionId}
-              onClick={() => {
-                if (!isActive) resumeSession(session.sessionId);
-              }}
-              className={`w-full text-left px-3 py-2 border-b border-border transition-colors ${
-                isActive
-                  ? "bg-[var(--color-accent-dim)] border-l-2 border-l-[var(--color-accent)]"
-                  : "hover:bg-[var(--color-border)] border-l-2 border-l-transparent"
-              }`}
-            >
-              <div
-                className={`text-xs truncate ${
-                  isActive ? "text-text font-medium" : "text-dim"
-                }`}
-              >
-                {session.title || "New session"}
-              </div>
-              <div className="text-[10px] text-dim mt-0.5 flex items-center justify-between">
-                <span className="truncate opacity-60">
-                  {session.sessionId.slice(0, 8)}
-                </span>
-                <span className="shrink-0 ml-1">
-                  {relativeTime(session.updatedAt)}
-                </span>
-              </div>
-            </button>
-          );
-        })}
+        {instances.map((session) => (
+          <SessionItem
+            key={session.sessionId}
+            session={session}
+            isActive={session.sessionId === state.currentSessionId}
+            onClick={() => {
+              if (session.sessionId !== state.currentSessionId)
+                resumeSession(session.sessionId);
+            }}
+          />
+        ))}
       </div>
+
+      {/* Sessions header */}
+      {sessions.length > 0 && (
+        <>
+          <div className="px-3 py-2 border-b border-t border-border">
+            <span className="text-xs font-semibold text-dim uppercase tracking-wider">
+              Sessions
+            </span>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {sessions.map((session) => (
+              <SessionItem
+                key={session.sessionId}
+                session={session}
+                isActive={session.sessionId === state.currentSessionId}
+                onClick={() => {
+                  if (session.sessionId !== state.currentSessionId)
+                    resumeSession(session.sessionId);
+                }}
+              />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

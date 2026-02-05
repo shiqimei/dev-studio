@@ -4,8 +4,13 @@ import type { AcpConnection } from "./types.js";
 
 export function startServer(port: number) {
   const clients = new Set<{ send: (data: string) => void }>();
+  let currentSessionId: string | null = null;
+  const liveSessionIds = new Set<string>();
 
   function broadcast(msg: object) {
+    // Filter out session-specific updates that don't match the current session
+    const m = msg as any;
+    if (m.sessionId && m.sessionId !== currentSessionId) return;
     const data = JSON.stringify(msg);
     for (const ws of clients) {
       try {
@@ -15,13 +20,16 @@ export function startServer(port: number) {
   }
 
   let acpConnection: AcpConnection | null = null;
-  let currentSessionId: string | null = null;
 
   async function broadcastSessionList() {
     if (!acpConnection) return;
     try {
       const { sessions } = await listSessions(acpConnection.connection);
-      broadcast({ type: "session_list", sessions });
+      const enriched = sessions.map((s) => ({
+        ...s,
+        isLive: liveSessionIds.has(s.sessionId),
+      }));
+      broadcast({ type: "session_list", sessions: enriched });
     } catch (err: any) {
       console.error("Failed to list sessions:", err.message);
     }
@@ -58,6 +66,7 @@ export function startServer(port: number) {
             acpConnection = await createAcpConnection(broadcast);
             const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
             currentSessionId = sessionId;
+            liveSessionIds.add(sessionId);
             await broadcastSessionList();
             broadcast({ type: "session_switched", sessionId: currentSessionId });
           } catch (err: any) {
@@ -83,9 +92,15 @@ export function startServer(port: number) {
           case "prompt": {
             if (!currentSessionId) return;
             try {
+              const prompt: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [];
+              if (msg.text) prompt.push({ type: "text", text: msg.text });
+              for (const img of msg.images ?? []) {
+                prompt.push({ type: "image", data: img.data, mimeType: img.mimeType });
+              }
+              if (prompt.length === 0) return;
               const result = await acpConnection.connection.prompt({
                 sessionId: currentSessionId,
-                prompt: [{ type: "text", text: msg.text }],
+                prompt,
               });
               broadcast({ type: "turn_end", stopReason: result.stopReason });
               // Refresh session list to pick up title changes
@@ -101,6 +116,7 @@ export function startServer(port: number) {
             try {
               const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
               currentSessionId = sessionId;
+              liveSessionIds.add(sessionId);
               await broadcastSessionList();
               broadcast({ type: "session_switched", sessionId: currentSessionId });
             } catch (err: any) {

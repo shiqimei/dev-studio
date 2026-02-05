@@ -7,7 +7,7 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import type { AppState, Action, SessionSnapshot } from "../types";
+import type { AppState, Action, SessionSnapshot, ImageAttachment } from "../types";
 import { classifyTool } from "../utils";
 
 let nextId = 0;
@@ -65,7 +65,12 @@ function reducer(state: AppState, action: Action): AppState {
         currentThoughtId: null,
         messages: [
           ...state.messages,
-          { type: "user", id: uid(), text: action.text },
+          {
+            type: "user",
+            id: uid(),
+            text: action.text,
+            ...(action.images?.length ? { images: action.images } : {}),
+          },
         ],
       };
     }
@@ -403,7 +408,7 @@ function reducer(state: AppState, action: Action): AppState {
 interface WsContextValue {
   state: AppState;
   dispatch: React.Dispatch<Action>;
-  send: (text: string) => void;
+  send: (text: string, images?: ImageAttachment[]) => void;
   newSession: () => void;
   resumeSession: (sessionId: string) => void;
 }
@@ -420,10 +425,16 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const wsRef = useRef<WebSocket | null>(null);
 
-  const send = useCallback((text: string) => {
+  const send = useCallback((text: string, images?: ImageAttachment[]) => {
     if (!wsRef.current) return;
-    dispatch({ type: "SEND_MESSAGE", text });
-    wsRef.current.send(JSON.stringify({ type: "prompt", text }));
+    dispatch({ type: "SEND_MESSAGE", text, images });
+    wsRef.current.send(
+      JSON.stringify({
+        type: "prompt",
+        text,
+        ...(images?.length ? { images } : {}),
+      }),
+    );
   }, []);
 
   const newSession = useCallback(() => {

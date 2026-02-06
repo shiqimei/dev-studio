@@ -338,6 +338,10 @@ function mergeToolResults(entries: ChatEntry[], resultBlocks: ContentBlock[]): v
       toolUse.status = block.is_error ? "failed" : "completed";
       // Extract text from tool result content for display
       toolUse.result = extractResultText(block.content);
+      // Link Task tool calls to their sub-agent session
+      if (toolUse.name === "Task" && toolUse.result) {
+        toolUse.agentId = extractAgentId(toolUse.result);
+      }
     }
   }
 }
@@ -355,4 +359,10 @@ function extractResultText(content: unknown): string {
     return "";
   }
   return text;
+}
+
+/** Extract agentId from Task tool result text (e.g. "agentId: a8ce50f"). */
+export function extractAgentId(text: string): string | undefined {
+  const m = text.match(/agentId:\s*(\w+)/);
+  return m ? m[1] : undefined;
 }

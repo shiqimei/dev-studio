@@ -3,7 +3,8 @@ import { createAcpConnection, createNewSession, listSessions, resumeSession } fr
 import type { AcpConnection } from "./types.js";
 import { getProjectDir } from "../../src/disk/paths.js";
 import { readSessionsIndex } from "../../src/disk/sessions-index.js";
-import { readSessionHistoryFull } from "../../src/disk/session-history.js";
+import { readSessionHistoryFull, readSubagentHistoryFull } from "../../src/disk/session-history.js";
+import { readSubagents } from "../../src/disk/subagents.js";
 
 export function startServer(port: number) {
   const clients = new Set<{ send: (data: string) => void }>();
@@ -29,14 +30,24 @@ export function startServer(port: number) {
   function readDiskSessions() {
     const entries = readSessionsIndex(projectDir);
     return entries
-      .map((e) => ({
-        sessionId: e.sessionId,
-        title: e.firstPrompt?.slice(0, 100) ?? null,
-        updatedAt: e.modified ?? e.created ?? null,
-        created: e.created ?? null,
-        messageCount: e.messageCount ?? 0,
-        gitBranch: e.gitBranch ?? null,
-      }))
+      .map((e) => {
+        const subagents = readSubagents(projectDir, e.sessionId);
+        const children = subagents.map((s) => ({
+          agentId: s.agentId,
+          taskPrompt: s.taskPrompt,
+          timestamp: s.timestamp,
+          agentType: s.agentType,
+        }));
+        return {
+          sessionId: e.sessionId,
+          title: e.firstPrompt?.slice(0, 100) ?? null,
+          updatedAt: e.modified ?? e.created ?? null,
+          created: e.created ?? null,
+          messageCount: e.messageCount ?? 0,
+          gitBranch: e.gitBranch ?? null,
+          ...(children.length > 0 ? { children } : {}),
+        };
+      })
       .sort((a, b) => {
         const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
         const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
@@ -179,6 +190,15 @@ export function startServer(port: number) {
                 broadcast({ type: "error", text: `Failed to resume session: ${err.message}` });
               }
             }
+            break;
+          }
+
+          case "resume_subagent": {
+            const compositeId = `${msg.parentSessionId}:subagent:${msg.agentId}`;
+            currentSessionId = compositeId;
+            const entries = readSubagentHistoryFull(projectDir, msg.parentSessionId, msg.agentId);
+            broadcast({ type: "session_history", sessionId: compositeId, entries });
+            broadcast({ type: "session_switched", sessionId: compositeId });
             break;
           }
 

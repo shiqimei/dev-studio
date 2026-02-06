@@ -77,3 +77,13 @@ export function getPluginsPath(): string {
 export function getSkillsDir(): string {
   return path.join(CLAUDE_CONFIG_DIR, "skills");
 }
+
+/** Returns the path to a session's subagents directory. */
+export function getSubagentsDir(projectDir: string, sessionId: string): string {
+  return path.join(projectDir, sessionId, "subagents");
+}
+
+/** Returns the path to a specific subagent's JSONL file. */
+export function getSubagentJsonlPath(projectDir: string, sessionId: string, agentId: string): string {
+  return path.join(projectDir, sessionId, "subagents", `agent-${agentId}.jsonl`);
+}

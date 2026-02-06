@@ -117,7 +117,16 @@ export function ChatInput() {
     setImages((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
+  const isSubagentView = state.currentSessionId?.includes(":subagent:") ?? false;
   const disabled = !state.connected || state.busy;
+
+  if (isSubagentView) {
+    return (
+      <div className="border-t border-border px-5 py-3 shrink-0 flex items-center justify-center">
+        <span className="text-xs text-dim">Read-only: viewing sub-agent session</span>
+      </div>
+    );
+  }
 
   return (
     <div className="border-t border-border px-5 py-3 shrink-0">

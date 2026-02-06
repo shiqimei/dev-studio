@@ -35,3 +35,14 @@ export interface JsonlEntry {
   is_error?: boolean;
   [key: string]: unknown;
 }
+
+export type SubagentType = "code" | "explore" | "bash" | "agent";
+
+export interface SubagentMeta {
+  agentId: string;
+  parentSessionId: string;
+  filename: string;
+  timestamp: string;
+  taskPrompt: string;
+  agentType: SubagentType;
+}

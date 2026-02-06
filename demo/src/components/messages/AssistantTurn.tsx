@@ -1,4 +1,5 @@
 import type { MessageEntry } from "../../types";
+import { useWs } from "../../context/WebSocketContext";
 import { AssistantMessage } from "./AssistantMessage";
 import { ThoughtMessage } from "./ThoughtMessage";
 import { ToolCall } from "./ToolCall";
@@ -9,6 +10,11 @@ interface Props {
 }
 
 export function AssistantTurn({ entry, isLatest }: Props) {
+  const { state, resumeSubagent } = useWs();
+
+  // Extract the parent session UUID (strip composite subagent suffix)
+  const parentSessionId = state.currentSessionId?.split(":subagent:")[0] ?? null;
+
   return (
     <>
       {entry.content.map((block, i) => {
@@ -34,6 +40,12 @@ export function AssistantTurn({ entry, isLatest }: Props) {
                 content={block.result || ""}
                 status={block.status || "completed"}
                 input={block.input}
+                agentId={block.agentId}
+                onNavigateToAgent={
+                  block.agentId && parentSessionId
+                    ? () => resumeSubagent(parentSessionId!, block.agentId!)
+                    : undefined
+                }
               />
             );
           default:

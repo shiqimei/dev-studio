@@ -159,7 +159,7 @@
 .msg.system {
   color: var(--color-dim);
   font-size: 11px;
-  text-align: center;
+  text-align: left;
   padding: 4px 0;
 }
 
@@ -209,6 +209,24 @@
 .tool-call .tool-status.pending { color: var(--color-yellow); }
 .tool-call .tool-status.completed { color: var(--color-green); }
 .tool-call .tool-status.failed { color: var(--color-red); }
+
+.tool-call .agent-link {
+  font-size: 10px;
+  color: var(--color-purple);
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--color-purple) 30%, transparent);
+  border-radius: 3px;
+  padding: 0 5px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  line-height: 18px;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+.tool-call .agent-link:hover {
+  background: color-mix(in srgb, var(--color-purple) 12%, transparent);
+  border-color: var(--color-purple);
+}
 
 .tool-call .tool-content {
   margin-top: 6px;
@@ -609,3 +627,35 @@
 #resize-handle.active {
   background: var(--color-dim);
 }
+
+/* ── Session tree (subagent expansion) ───── */
+
+.session-chevron {
+  font-size: 9px;
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+  color: var(--color-dim);
+  cursor: pointer;
+}
+
+.session-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.subagent-badge {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  line-height: 16px;
+}
+
+.subagent-badge.code    { background: #a78bfa14; color: var(--color-purple); }
+.subagent-badge.bash    { background: #0ea5e914; color: var(--color-blue); }
+.subagent-badge.explore { background: #00a67e14; color: var(--color-green); }
+.subagent-badge.agent   { background: #f59e0b14; color: var(--color-yellow); }

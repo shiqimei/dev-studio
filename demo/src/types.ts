@@ -27,6 +27,7 @@ export interface ToolUseBlock {
   kind?: string;
   status?: "pending" | "completed" | "failed";
   result?: string;
+  agentId?: string;
 }
 
 export interface ToolResultBlock {
@@ -101,6 +102,15 @@ export interface SessionMeta {
   isLive: boolean;
 }
 
+export type SubagentType = "code" | "explore" | "bash" | "agent";
+
+export interface SubagentChild {
+  agentId: string;
+  taskPrompt: string;
+  timestamp: string;
+  agentType: SubagentType;
+}
+
 export interface DiskSession {
   sessionId: string;
   title: string | null;
@@ -108,6 +118,7 @@ export interface DiskSession {
   created: string | null;
   messageCount: number;
   gitBranch: string | null;
+  children?: SubagentChild[];
 }
 
 export interface SessionSnapshot {

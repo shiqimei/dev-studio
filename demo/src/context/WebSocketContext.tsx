@@ -20,7 +20,7 @@ import type {
   ImageAttachment,
 } from "../types";
 import { classifyTool } from "../utils";
-import { jsonlToEntries, prettyToolName } from "../jsonl-convert";
+import { jsonlToEntries, prettyToolName, extractAgentId } from "../jsonl-convert";
 
 let nextId = 0;
 function uid(): string {
@@ -336,16 +336,20 @@ function reducer(state: AppState, action: Action): AppState {
           if (!hasBlock) return m;
           return {
             ...m,
-            content: m.content.map((b) =>
-              b.type === "tool_use" && b.id === action.toolCallId
-                ? {
-                    ...b,
-                    status: newStatus ?? b.status,
-                    title: action.title || b.title,
-                    result: action.content || b.result,
-                  }
-                : b,
-            ),
+            content: m.content.map((b) => {
+              if (b.type !== "tool_use" || b.id !== action.toolCallId) return b;
+              const updated = {
+                ...b,
+                status: newStatus ?? b.status,
+                title: action.title || b.title,
+                result: action.content || b.result,
+              };
+              // Link Task tool calls to their sub-agent session
+              if (b.name === "Task" && action.content) {
+                updated.agentId = extractAgentId(action.content) ?? b.agentId;
+              }
+              return updated;
+            }),
           };
         }),
       };
@@ -553,6 +557,7 @@ interface WsContextValue {
   send: (text: string, images?: ImageAttachment[]) => void;
   newSession: () => void;
   resumeSession: (sessionId: string) => void;
+  resumeSubagent: (parentSessionId: string, agentId: string) => void;
 }
 
 const WsContext = createContext<WsContextValue | null>(null);
@@ -587,6 +592,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const resumeSessionCb = useCallback((sessionId: string) => {
     if (!wsRef.current) return;
     wsRef.current.send(JSON.stringify({ type: "resume_session", sessionId }));
+  }, []);
+
+  const resumeSubagentCb = useCallback((parentSessionId: string, agentId: string) => {
+    if (!wsRef.current) return;
+    wsRef.current.send(JSON.stringify({ type: "resume_subagent", parentSessionId, agentId }));
   }, []);
 
   useEffect(() => {
@@ -634,7 +644,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   }, [state.tasks, state.busy]);
 
   return (
-    <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb }}>
+    <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb }}>
       {children}
     </WsContext.Provider>
   );

@@ -7,14 +7,16 @@ interface Props {
   content: string;
   status: "pending" | "completed" | "failed";
   input?: unknown;
+  agentId?: string;
+  onNavigateToAgent?: () => void;
 }
 
-export function ToolCall({ kind, title, content, status, input }: Props) {
+export function ToolCall({ kind, title, content, status, input, agentId, onNavigateToAgent }: Props) {
   const displayTitle = title || (content && content.length <= 100 ? content : "");
   const isEdit = kind === "Edit";
-  const isRead = kind === "Read";
+  const isReadOrWrite = kind === "Read" || kind === "Write";
   const hasDiff = isEdit && input && typeof input === "object" && "old_string" in (input as any);
-  const hasCode = isRead && content && content.length > 100;
+  const hasCode = isReadOrWrite && content && content.length > 100;
   const expandable = hasDiff || hasCode || (content && (title || content.length > 100));
   const [open, setOpen] = useState(false);
   const statusLabel =
@@ -28,6 +30,15 @@ export function ToolCall({ kind, title, content, status, input }: Props) {
       >
         <span className="tool-kind">{kind}</span>
         <span className="tool-title">{displayTitle}</span>
+        {agentId && onNavigateToAgent && (
+          <button
+            className="agent-link"
+            onClick={(e) => { e.stopPropagation(); onNavigateToAgent(); }}
+            title={`View sub-agent ${agentId}`}
+          >
+            {agentId.slice(0, 7)} →
+          </button>
+        )}
         <span className={`tool-status ${status}`}>{statusLabel}</span>
       </div>
       {open && hasDiff && (

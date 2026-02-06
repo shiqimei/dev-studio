@@ -3,7 +3,7 @@
  * No SDK dependencies — pure filesystem access.
  */
 import * as fs from "node:fs";
-import { getSessionJsonlPath } from "./paths.js";
+import { getSessionJsonlPath, getSubagentJsonlPath } from "./paths.js";
 import type { HistoryMessage, JsonlEntry } from "./types.js";
 
 /**
@@ -64,6 +64,20 @@ const CONTENT_ENTRY_TYPES = new Set(["user", "assistant", "system", "result"]);
  */
 export function readSessionHistoryFull(projectDir: string, sessionId: string): JsonlEntry[] {
   const jsonlPath = getSessionJsonlPath(projectDir, sessionId);
+  return parseJsonlFile(jsonlPath);
+}
+
+/**
+ * Reads a subagent's JSONL conversation file and returns the raw parsed entries.
+ * Same filtering as readSessionHistoryFull but reads from the subagent path.
+ */
+export function readSubagentHistoryFull(projectDir: string, sessionId: string, agentId: string): JsonlEntry[] {
+  const jsonlPath = getSubagentJsonlPath(projectDir, sessionId, agentId);
+  return parseJsonlFile(jsonlPath);
+}
+
+/** Parse a JSONL file and return content entries. */
+function parseJsonlFile(jsonlPath: string): JsonlEntry[] {
   try {
     const raw = fs.readFileSync(jsonlPath, "utf-8");
     const lines = raw.split("\n").filter(Boolean);

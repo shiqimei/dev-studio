@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { useWs } from "../context/WebSocketContext";
-import type { DiskSession } from "../types";
+import type { DiskSession, SubagentChild, SubagentType } from "../types";
 
 function relativeTime(iso: string | null): string {
   if (!iso) return "";
@@ -59,8 +60,58 @@ function SessionItem({
   );
 }
 
+const AGENT_TYPE_STYLES: Record<SubagentType, { label: string; className: string }> = {
+  code:    { label: "Code",    className: "subagent-badge code" },
+  explore: { label: "Explore", className: "subagent-badge explore" },
+  bash:    { label: "Bash",    className: "subagent-badge bash" },
+  agent:   { label: "Agent",   className: "subagent-badge agent" },
+};
+
+function SubagentItem({
+  child,
+  parentSessionId,
+  isActive,
+  onClick,
+}: {
+  child: SubagentChild;
+  parentSessionId: string;
+  isActive: boolean;
+  onClick: () => void;
+}) {
+  const badge = AGENT_TYPE_STYLES[child.agentType] ?? AGENT_TYPE_STYLES.agent;
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left pl-7 pr-3 py-1.5 border-b border-border transition-colors ${
+        isActive
+          ? "bg-[var(--color-accent-dim)] border-l-2 border-l-[var(--color-purple)]"
+          : "hover:bg-[var(--color-border)] border-l-2 border-l-transparent"
+      }`}
+    >
+      <div className={`text-xs truncate flex items-center gap-1.5 ${isActive ? "text-text font-medium" : "text-dim"}`}>
+        <span className={badge.className}>{badge.label}</span>
+        <span className="truncate">{child.taskPrompt || "Sub-agent"}</span>
+      </div>
+      <div className="text-[10px] text-dim mt-0.5 flex items-center justify-between pl-3">
+        <span className="truncate opacity-60">{child.agentId.slice(0, 8)}</span>
+        <span className="shrink-0 ml-1">{relativeTime(child.timestamp)}</span>
+      </div>
+    </button>
+  );
+}
+
 export function SessionSidebar() {
-  const { state, newSession, resumeSession } = useWs();
+  const { state, newSession, resumeSession, resumeSubagent } = useWs();
+  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
+
+  const toggleExpand = (sessionId: string) => {
+    setExpandedSessions((prev) => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  };
 
   const liveSessionIds = new Set(
     state.sessions.filter((s) => s.isLive).map((s) => s.sessionId),
@@ -89,18 +140,46 @@ export function SessionSidebar() {
             No sessions found
           </div>
         )}
-        {state.diskSessions.map((session) => (
-          <SessionItem
-            key={session.sessionId}
-            session={session}
-            isActive={session.sessionId === state.currentSessionId}
-            isLive={liveSessionIds.has(session.sessionId)}
-            onClick={() => {
-              if (session.sessionId !== state.currentSessionId)
-                resumeSession(session.sessionId);
-            }}
-          />
-        ))}
+        {state.diskSessions.map((session) => {
+          const hasChildren = (session.children?.length ?? 0) > 0;
+          const isExpanded = expandedSessions.has(session.sessionId);
+          return (
+            <div key={session.sessionId}>
+              <div className="relative flex items-center">
+                {hasChildren && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleExpand(session.sessionId); }}
+                    className={`absolute left-1 z-10 session-chevron${isExpanded ? " expanded" : ""}`}
+                    title={`${session.children!.length} sub-agent${session.children!.length > 1 ? "s" : ""}`}
+                  >
+                    ▶
+                  </button>
+                )}
+                <div className="flex-1">
+                  <SessionItem
+                    session={session}
+                    isActive={session.sessionId === state.currentSessionId}
+                    isLive={liveSessionIds.has(session.sessionId)}
+                    onClick={() => {
+                      if (session.sessionId !== state.currentSessionId)
+                        resumeSession(session.sessionId);
+                    }}
+                  />
+                </div>
+              </div>
+              {hasChildren && isExpanded &&
+                session.children!.map((child) => (
+                  <SubagentItem
+                    key={child.agentId}
+                    child={child}
+                    parentSessionId={session.sessionId}
+                    isActive={state.currentSessionId === `${session.sessionId}:subagent:${child.agentId}`}
+                    onClick={() => resumeSubagent(session.sessionId, child.agentId)}
+                  />
+                ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

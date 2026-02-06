@@ -16,13 +16,17 @@ export function MessageList() {
       onScroll={onScroll}
       className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-1"
     >
-      {state.messages.map((entry) => {
+      {state.messages.map((entry, idx) => {
         switch (entry.type) {
           case "message":
             return entry.role === "user" ? (
               <UserMessage key={entry.id} entry={entry} />
             ) : (
-              <AssistantTurn key={entry.id} entry={entry} />
+              <AssistantTurn
+                key={entry.id}
+                entry={entry}
+                isLatest={idx === state.messages.length - 1}
+              />
             );
           case "system":
             return <SystemMessage key={entry.id} text={entry.text} />;

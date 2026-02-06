@@ -92,14 +92,19 @@
   color: #6ADAFF;
 }
 
-.msg.thought {
+.tool-kind.thinking {
+  background: var(--color-purple);
+  color: var(--color-bg);
+  border-color: var(--color-purple);
+}
+
+.thought-hint {
   color: var(--color-dim);
   font-style: italic;
-  background: var(--color-thought-bg);
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
-  border-left: 2px solid var(--color-purple);
+}
+
+.thought-content {
+  font-style: italic;
 }
 
 .msg.system {

@@ -5,9 +5,10 @@ import { ToolCall } from "./ToolCall";
 
 interface Props {
   entry: MessageEntry;
+  isLatest: boolean;
 }
 
-export function AssistantTurn({ entry }: Props) {
+export function AssistantTurn({ entry, isLatest }: Props) {
   return (
     <>
       {entry.content.map((block, i) => {
@@ -21,7 +22,9 @@ export function AssistantTurn({ entry }: Props) {
               />
             );
           case "thinking":
-            return <ThoughtMessage key={i} text={block.thinking} />;
+            return (
+              <ThoughtMessage key={i} text={block.thinking} isLatest={isLatest} />
+            );
           case "tool_use":
             return (
               <ToolCall

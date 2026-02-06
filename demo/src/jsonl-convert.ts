@@ -120,13 +120,18 @@ function convertContentBlocks(content: unknown): ContentBlock[] {
           is_error: Boolean(block.is_error),
         });
         break;
-      case "image":
-        blocks.push({
-          type: "image",
-          data: String(block.data ?? ""),
-          mimeType: String(block.mimeType ?? block.media_type ?? "image/png"),
-        });
+      case "image": {
+        // JSONL uses nested source: { type: "base64", media_type, data }
+        const src = block.source as Record<string, unknown> | undefined;
+        const data = String(src?.data ?? block.data ?? "");
+        const mimeType = String(
+          src?.media_type ?? block.mimeType ?? block.media_type ?? "image/png",
+        );
+        if (data) {
+          blocks.push({ type: "image", data, mimeType });
+        }
         break;
+      }
     }
   }
 

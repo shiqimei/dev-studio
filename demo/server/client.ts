@@ -50,6 +50,8 @@ export class WebClient implements Client {
           kind: update.kind,
           status: "pending",
           content: update.content,
+          rawInput: (update as any).rawInput,
+          locations: (update as any).locations,
           _meta: update._meta,
         });
         break;
@@ -61,6 +63,9 @@ export class WebClient implements Client {
           toolCallId: update.toolCallId,
           status: update.status,
           content: update.content,
+          rawInput: (update as any).rawInput,
+          kind: (update as any).kind,
+          locations: (update as any).locations,
           _meta: update._meta,
           title: update.title,
         });

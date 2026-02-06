@@ -76,6 +76,7 @@ import { readSessionsIndex, renameSessionOnDisk, deleteSessionFromDisk } from ".
 import { readSessionHistoryFull, readSubagentHistoryFull } from "../disk/session-history.js";
 import { readSubagents, buildSubagentTree, readSessionTeamInfo, findTeamCreateInSession } from "../disk/subagents.js";
 import type { ManagedSession } from "../sdk/types.js";
+import type { SessionIndexEntry } from "../disk/types.js";
 import type { Logger, NewSessionMeta, ToolUpdateMeta, ToolUseCache } from "./types.js";
 import type { BackgroundTerminal } from "./background-tasks.js";
 import { extractBackgroundTaskInfo } from "./background-tasks.js";
@@ -537,12 +538,46 @@ export class ClaudeAcpAgent implements Agent {
           // Update toolUseCache with complete tool_use blocks from the final
           // assistant message.  During streaming, content_block_start only has
           // input: {} — the complete input arrives here.
+          // After updating the cache, send tool_call_update with the now-complete
+          // rawInput, title, content, and locations so live sessions match history.
           if (message.type === "assistant" && Array.isArray(message.message.content)) {
             for (const item of message.message.content) {
               const t = (item as any).type;
               const id = (item as any).id;
               if (["tool_use", "server_tool_use", "mcp_tool_use"].includes(t) && id) {
-                this.toolUseCache[id] = item;
+                this.toolUseCache[id] = item as any;
+
+                // Send tool_call_update with complete input now that we have it
+                const toolUse = item as any;
+                if (toolUse.name !== "TodoWrite") {
+                  let rawInput;
+                  try {
+                    rawInput = JSON.parse(JSON.stringify(toolUse.input));
+                  } catch {
+                    // ignore
+                  }
+                  const inputObj = toolUse.input as Record<string, unknown> | undefined;
+                  const isBackground = inputObj?.run_in_background === true;
+                  const info = toolInfoFromToolUse(toolUse);
+                  await this.client.sessionUpdate({
+                    sessionId: params.sessionId,
+                    update: {
+                      sessionUpdate: "tool_call_update",
+                      toolCallId: id,
+                      rawInput,
+                      ...info,
+                      _meta: {
+                        claudeCode: {
+                          toolName: toolUse.name,
+                          ...(isBackground && { isBackground: true }),
+                          ...((message as any).parent_tool_use_id && {
+                            parentToolUseId: (message as any).parent_tool_use_id,
+                          }),
+                        },
+                      } satisfies ToolUpdateMeta,
+                    },
+                  });
+                }
               }
             }
           }
@@ -780,6 +815,11 @@ export class ClaudeAcpAgent implements Agent {
 
   async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     switch (method) {
+      case "sessions/list": {
+        const result = await this.unstable_listSessions({ cwd: params.cwd as string | undefined });
+        return result as unknown as Record<string, unknown>;
+      }
+
       case "sessions/getHistory": {
         const sessionId = params.sessionId as string;
         if (!sessionId) throw new Error("sessionId is required");
@@ -802,8 +842,13 @@ export class ClaudeAcpAgent implements Agent {
         const title = params.title as string;
         if (!sessionId || !title) throw new Error("sessionId and title are required");
         const projectDir = getProjectDir(params.cwd as string | undefined);
-        const success = renameSessionOnDisk(projectDir, sessionId, title);
-        return { success };
+        const diskSuccess = renameSessionOnDisk(projectDir, sessionId, title);
+        // Also update in-memory session title (live sessions may not be on disk yet)
+        const liveSession = this.sessions[sessionId];
+        if (liveSession) {
+          liveSession.title = title;
+        }
+        return { success: diskSuccess || !!liveSession };
       }
 
       case "sessions/delete": {
@@ -1259,6 +1304,27 @@ export class ClaudeAcpAgent implements Agent {
     const cwd = params.cwd ?? undefined;
     const projectDir = getProjectDir(cwd);
     const entries = readSessionsIndex(projectDir);
+
+    // Merge live sessions that aren't on disk yet
+    const diskSessionIds = new Set(entries.map((e) => e.sessionId));
+    for (const [sessionId, session] of Object.entries(this.sessions)) {
+      if (!diskSessionIds.has(sessionId)) {
+        entries.push({
+          sessionId,
+          firstPrompt: session.title ?? undefined,
+          created: session.updatedAt,
+          modified: session.updatedAt,
+        } as SessionIndexEntry);
+      }
+    }
+
+    // Override disk titles with in-memory titles for live sessions (e.g. after rename)
+    for (const entry of entries) {
+      const liveSession = this.sessions[entry.sessionId];
+      if (liveSession?.title) {
+        entry.firstPrompt = liveSession.title;
+      }
+    }
 
     // Read team metadata for each session
     const teamInfoMap = new Map<string, { teamName: string; agentName?: string }>();

@@ -4,7 +4,6 @@ import { UserMessage } from "./messages/UserMessage";
 import { AssistantTurn } from "./messages/AssistantTurn";
 import { SystemMessage } from "./messages/SystemMessage";
 import { Plan } from "./messages/Plan";
-import { Permission } from "./messages/Permission";
 import { TurnStatusBar } from "./TurnStatusBar";
 
 export function MessageList() {
@@ -34,7 +33,7 @@ export function MessageList() {
           case "plan":
             return <Plan key={entry.id} entries={entry.entries} />;
           case "permission":
-            return <Permission key={entry.id} title={entry.title} />;
+            return null;
         }
       })}
       <TurnStatusBar />

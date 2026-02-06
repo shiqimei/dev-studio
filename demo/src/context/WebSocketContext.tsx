@@ -73,6 +73,7 @@ const emptySnapshot: SessionSnapshot = {
   currentTurnId: null,
   turnToolCallIds: [],
   turnStatus: null,
+  queuedMessages: [],
 };
 
 const initialState: AppState = {
@@ -348,7 +349,7 @@ function reducer(state: AppState, action: Action): AppState {
         type: "tool_use",
         id: action.toolCallId,
         name: prettyToolName(rawToolName),
-        input: {},
+        input: action.rawInput ?? {},
         title: action.title || action.toolCallId,
         kind: action.kind || "tool",
         status: "pending",
@@ -434,6 +435,9 @@ function reducer(state: AppState, action: Action): AppState {
                 status: newStatus ?? b.status,
                 title: action.title || b.title,
                 result: action.content || b.result,
+                // Merge rawInput and kind when the complete assistant message arrives
+                ...(action.rawInput != null && { input: action.rawInput }),
+                ...(action.kind && { kind: action.kind }),
               };
               // Link Task tool calls to their sub-agent session
               if (b.name === "Task" && action.content) {
@@ -627,6 +631,7 @@ function reducer(state: AppState, action: Action): AppState {
             currentTurnId: null,
             turnToolCallIds: [],
             turnStatus: null,
+            queuedMessages: [],
           },
         },
       };
@@ -648,6 +653,7 @@ function reducer(state: AppState, action: Action): AppState {
           currentTurnId: state.currentTurnId,
           turnToolCallIds: state.turnToolCallIds,
           turnStatus: state.turnStatus,
+          queuedMessages: state.queuedMessages,
         };
       }
 
@@ -684,8 +690,8 @@ function reducer(state: AppState, action: Action): AppState {
         currentTurnId: null,
         turnToolCallIds: restored.turnToolCallIds,
         turnStatus: restored.turnStatus,
-        busy: false,
-        queuedMessages: [],
+        busy: restored.queuedMessages.length > 0,
+        queuedMessages: restored.queuedMessages,
         peekStatus: {},
       };
     }
@@ -1001,6 +1007,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
         kind: msg.kind || "tool",
         title: msg.title || msg.toolCallId,
         content,
+        rawInput: msg.rawInput,
         meta: msg._meta,
       });
       break;
@@ -1017,7 +1024,9 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
         toolCallId: msg.toolCallId,
         status: msg.status,
         title: msg.title,
+        kind: msg.kind,
         content,
+        rawInput: msg.rawInput,
         meta: msg._meta,
       });
       break;

@@ -132,7 +132,7 @@ export function toolInfoFromToolUse(toolUse: any): ToolInfo {
     case "Bash":
     case acpToolNames.bash:
       return {
-        title: input?.command ? "`" + input.command.replaceAll("`", "\\`") + "`" : "Terminal",
+        title: input?.command ? input.command : "Terminal",
         kind: "execute",
         content:
           input && input.description
@@ -201,7 +201,7 @@ export function toolInfoFromToolUse(toolUse: any): ToolInfo {
 
     case "LS":
       return {
-        title: `List the ${input?.path ? "`" + input.path + "`" : "current"} directory's contents`,
+        title: `List the ${input?.path ? input.path : "current"} directory's contents`,
         kind: "search",
         content: [],
         locations: [],
@@ -212,7 +212,7 @@ export function toolInfoFromToolUse(toolUse: any): ToolInfo {
       const path = input?.file_path ?? input?.file_path;
 
       return {
-        title: path ? `Edit \`${path}\`` : "Edit",
+        title: path ? `Edit ${path}` : "Edit",
         kind: "edit",
         content:
           input && path
@@ -277,10 +277,10 @@ export function toolInfoFromToolUse(toolUse: any): ToolInfo {
     case "Glob": {
       let label = "Find";
       if (input.path) {
-        label += ` \`${input.path}\``;
+        label += ` ${input.path}`;
       }
       if (input.pattern) {
-        label += ` \`${input.pattern}\``;
+        label += ` ${input.pattern}`;
       }
       return {
         title: label,
@@ -543,11 +543,19 @@ export function toolUpdateFromToolResult(
     }
 
     case acpToolNames.bash:
-    case "edit":
-    case "Edit":
     case acpToolNames.write:
-    case "Write": {
+    case "edit": {
+      // ACP-proxied tools: results handled by MCP server, no content needed
       return {};
+    }
+
+    case "Edit":
+    case "Write": {
+      // Raw SDK tools: include result content so ACP clients can display it
+      return toAcpContentUpdate(
+        toolResult.content,
+        "is_error" in toolResult ? toolResult.is_error : false,
+      );
     }
 
     case "ExitPlanMode": {

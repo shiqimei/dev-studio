@@ -148,6 +148,7 @@ export interface SessionSnapshot {
   currentTurnId: string | null;
   turnToolCallIds: string[];
   turnStatus: TurnStatus | null;
+  queuedMessages: string[];
 }
 
 // ── Turn status ──────────────────────────────
@@ -228,8 +229,8 @@ export type Action =
   | { type: "SEND_MESSAGE"; text: string; images?: ImageAttachment[]; files?: FileAttachment[]; queueId?: string }
   | { type: "TEXT_CHUNK"; text: string }
   | { type: "THOUGHT_CHUNK"; text: string }
-  | { type: "TOOL_CALL"; toolCallId: string; kind: string; title: string; content: string; meta: any }
-  | { type: "TOOL_CALL_UPDATE"; toolCallId: string; status: string; title?: string; content?: string; meta: any }
+  | { type: "TOOL_CALL"; toolCallId: string; kind: string; title: string; content: string; rawInput?: unknown; meta: any }
+  | { type: "TOOL_CALL_UPDATE"; toolCallId: string; status: string; title?: string; kind?: string; content?: string; rawInput?: unknown; meta: any }
   | { type: "PLAN"; entries: PlanEntryItem[] }
   | { type: "PERMISSION"; title: string }
   | { type: "SESSION_INFO"; sessionId: string; models: string[]; modes: { id: string }[] }

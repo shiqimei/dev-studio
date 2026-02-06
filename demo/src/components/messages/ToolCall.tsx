@@ -38,7 +38,7 @@ interface Props {
 export function ToolCall({ kind, title, content, status, input, agentId, onNavigateToAgent }: Props) {
   const overview = (!title && content) ? toolOverview(kind, content) : "";
   const rawDisplayTitle = title || overview || (content && content.length <= 100 ? content : "");
-  const displayTitle = rawDisplayTitle ? stripToolError(rawDisplayTitle).text : "";
+  const displayTitle = rawDisplayTitle ? stripKindPrefix(stripToolError(rawDisplayTitle).text, kind) : "";
   const isEdit = kind === "Edit";
   const isReadOrWrite = kind === "Read" || kind === "Write";
   const isSearch = kind === "Grep" || kind === "Glob";
@@ -158,6 +158,14 @@ function PersistedOutput({ data }: { data: PersistedOutputData }) {
       )}
     </div>
   );
+}
+
+/** Strip redundant tool-name prefix from live-session titles (e.g. "Read /path" → "/path"). */
+function stripKindPrefix(text: string, kind: string): string {
+  if (!kind) return text;
+  // Match "Read ", "Edit ", "Write ", "grep ", "Find " etc. at start (case-insensitive)
+  const re = new RegExp(`^${kind}\\s+`, "i");
+  return text.replace(re, "");
 }
 
 /** Strip <tool_use_error> tags, returning the inner text. */

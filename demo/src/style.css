@@ -87,6 +87,7 @@
 .msg.user.msg-queued {
   opacity: 0.6;
   border-left: 2px solid var(--color-yellow);
+  border-radius: 0 5px 5px 0;
 }
 
 .queued-badge {
@@ -131,7 +132,7 @@
   align-items: center;
   gap: 8px;
   padding: 4px 8px;
-  border-radius: 4px;
+  border-radius: 0 4px 4px 0;
   background: rgba(255, 255, 255, 0.03);
   border-left: 2px solid var(--color-yellow);
   font-size: 12px;
@@ -366,7 +367,7 @@
   padding: 8px 12px;
   border-left: 3px solid #ef4444;
   background: rgba(239, 68, 68, 0.08);
-  border-radius: 4px;
+  border-radius: 0 4px 4px 0;
 }
 
 .error-label {
@@ -980,8 +981,8 @@
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 0.4; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.5); }
+  0%, 100% { opacity: 0.4; transform: scale(1.5); }
+  50% { opacity: 1; transform: scale(2); }
 }
 
 /* ── Mini protocol feed ──────────────────── */
@@ -1277,8 +1278,9 @@
   color: var(--color-dim);
 }
 
-.turn-status-dot {
+.turn-status-star {
+  margin-right: 4px;
   display: inline-block;
-  animation: pulse 1.5s ease-in-out infinite;
-  font-weight: 700;
+  width: 1.2em;
+  text-align: center;
 }

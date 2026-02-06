@@ -166,8 +166,8 @@ describe("demo/server/ uses ACP for data access, not filesystem", () => {
     expect(serverTs).toBeDefined();
     const source = readFileSync(serverTs!, "utf-8");
 
-    // session/list uses built-in ACP method
-    expect(source).toContain('unstable_listSessions');
+    // session/list uses extMethod
+    expect(source).toContain('extMethod("sessions/list"');
     // Other session operations use extMethod
     expect(source).toContain('extMethod("sessions/getHistory"');
     expect(source).toContain('extMethod("sessions/rename"');

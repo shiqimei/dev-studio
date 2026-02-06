@@ -22,10 +22,18 @@ export function startServer(port: number) {
   }
   const turnStates: Record<string, TurnState> = {};
 
-  // ── Message queue ──
-  let messageQueue: Array<{ id: string; text: string; images?: Array<{ data: string; mimeType: string }>; files?: Array<{ path: string; name: string }>; addedAt: number }> = [];
+  // ── Message queue (per-session) ──
+  type QueuedMessage = { id: string; text: string; images?: Array<{ data: string; mimeType: string }>; files?: Array<{ path: string; name: string }>; addedAt: number };
+  const messageQueues = new Map<string, QueuedMessage[]>();
   let processingPrompt = false;
   let queueIdCounter = 0;
+
+  function getQueue(sessionId: string | null): QueuedMessage[] {
+    if (!sessionId) return [];
+    let q = messageQueues.get(sessionId);
+    if (!q) { q = []; messageQueues.set(sessionId, q); }
+    return q;
+  }
 
   // Low-level: send raw string to all WS clients (no filtering, no instrumentation)
   function sendToAll(data: string) {
@@ -172,22 +180,24 @@ export function startServer(port: number) {
   }
 
   function drainQueue() {
-    if (messageQueue.length === 0) return;
-    const next = messageQueue.shift()!;
+    if (!currentSessionId) return;
+    const q = getQueue(currentSessionId);
+    if (q.length === 0) return;
+    const next = q.shift()!;
     broadcast({ type: "queue_drain_start", queueId: next.id });
     processPrompt(next.text, next.images, next.files);
   }
 
-  function clearQueue() {
-    messageQueue = [];
-    queueIdCounter = 0;
+  function clearSessionQueue(sessionId: string | null) {
+    if (!sessionId) return;
+    messageQueues.delete(sessionId);
   }
 
   async function broadcastSessions() {
     if (!acpConnection) return;
     try {
-      const result = await acpConnection.connection.unstable_listSessions({});
-      const sessions = result.sessions.map((s: any) => ({
+      const result = await acpConnection.connection.extMethod("sessions/list", {});
+      const sessions = ((result as any).sessions ?? []).map((s: any) => ({
         sessionId: s.sessionId,
         title: s.title ?? null,
         updatedAt: s.updatedAt ?? null,
@@ -289,9 +299,9 @@ export function startServer(port: number) {
           case "prompt": {
             if (!currentSessionId) return;
             if (processingPrompt) {
-              // Enqueue the message
+              // Enqueue the message for the current session
               const queueId = msg.queueId || `sq-${++queueIdCounter}`;
-              messageQueue.push({ id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
+              getQueue(currentSessionId).push({ id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
               broadcast({ type: "message_queued", queueId });
             } else {
               processPrompt(msg.text, msg.images, msg.files);
@@ -300,16 +310,17 @@ export function startServer(port: number) {
           }
 
           case "cancel_queued": {
-            const idx = messageQueue.findIndex((m) => m.id === msg.queueId);
+            if (!currentSessionId) break;
+            const q = getQueue(currentSessionId);
+            const idx = q.findIndex((m) => m.id === msg.queueId);
             if (idx !== -1) {
-              messageQueue.splice(idx, 1);
+              q.splice(idx, 1);
               broadcast({ type: "queue_cancelled", queueId: msg.queueId });
             }
             break;
           }
 
           case "new_session": {
-            clearQueue();
             try {
               const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
               currentSessionId = sessionId;
@@ -326,7 +337,6 @@ export function startServer(port: number) {
 
           case "switch_session":
           case "resume_session": {
-            clearQueue();
             try {
               const result = await acpConnection.connection.extMethod("sessions/getHistory", { sessionId: msg.sessionId });
               currentSessionId = msg.sessionId;
@@ -339,7 +349,6 @@ export function startServer(port: number) {
           }
 
           case "resume_subagent": {
-            clearQueue();
             const compositeId = `${msg.parentSessionId}:subagent:${msg.agentId}`;
             try {
               const result = await acpConnection.connection.extMethod("sessions/getSubagentHistory", {
@@ -374,6 +383,7 @@ export function startServer(port: number) {
               const deletedIds = (deleteResult.deletedIds as string[]) ?? [msg.sessionId];
               for (const id of deletedIds) {
                 liveSessionIds.delete(id);
+                clearSessionQueue(id);
                 if (currentSessionId === id) {
                   currentSessionId = null;
                 }
@@ -411,7 +421,7 @@ export function startServer(port: number) {
 
       close(ws) {
         clients.delete(ws);
-        if (clients.size === 0) clearQueue();
+        if (clients.size === 0) messageQueues.clear();
       },
     },
   });

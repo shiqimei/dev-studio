@@ -290,6 +290,14 @@ export function toAcpNotifications(
               backgroundTaskMap[`file:${info.outputFile}`] = chunk.tool_use_id;
           }
 
+          const resultUpdate = toolUpdateFromToolResult(chunk, toolUseCache[chunk.tool_use_id]);
+          // Re-derive title from the (now complete) toolUseCache input.
+          // During streaming, content_block_start had input: {}, producing
+          // generic titles like "Task".  The cache is updated with the full
+          // assistant message before tool_result processing, so we can now
+          // compute the correct title.
+          const derivedTitle = resultUpdate.title || toolInfoFromToolUse(toolUse).title;
+
           update = {
             _meta: {
               claudeCode: {
@@ -302,7 +310,8 @@ export function toAcpNotifications(
             sessionUpdate: "tool_call_update",
             status: "is_error" in chunk && chunk.is_error ? "failed" : "completed",
             rawOutput: chunk.content,
-            ...toolUpdateFromToolResult(chunk, toolUseCache[chunk.tool_use_id]),
+            ...resultUpdate,
+            title: derivedTitle,
           };
         }
         break;

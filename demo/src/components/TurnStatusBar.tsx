@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useWs } from "../context/WebSocketContext";
 import type { TurnStatus } from "../types";
 
+
 function formatDuration(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
   if (totalSeconds < 60) return `${totalSeconds}s`;
@@ -13,6 +14,19 @@ function formatDuration(ms: number): string {
 function formatTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
+}
+
+const SPARKLE_CHARS = ["·", "✻", "✽", "✶", "✳", "✢"];
+
+function SparkleStep() {
+  const [idx, setIdx] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setIdx((i) => (i + 1) % SPARKLE_CHARS.length), 250);
+    return () => clearInterval(id);
+  }, []);
+
+  return <span className="turn-status-star">{SPARKLE_CHARS[idx]}</span>;
 }
 
 function InProgressBar({ status }: { status: TurnStatus }) {
@@ -33,8 +47,8 @@ function InProgressBar({ status }: { status: TurnStatus }) {
 
   return (
     <div className="turn-status turn-status-active">
-      <span className="turn-status-dot">·</span>
-      {" "}Brewing... ({parts.join(" · ")})
+      <SparkleStep />
+      Brewing... ({parts.join(" · ")})
     </div>
   );
 }

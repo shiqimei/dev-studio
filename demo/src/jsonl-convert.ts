@@ -42,6 +42,21 @@ export function toolTitle(name: string, input: unknown): string {
       return truncate(String(inp.query ?? ""), 60);
     case "WebFetch":
       return truncate(String(inp.url ?? ""), 60);
+    case "TaskCreate":
+      return truncate(String(inp.subject ?? ""), 80);
+    case "TaskUpdate": {
+      const parts: string[] = [];
+      if (inp.taskId) parts.push(`#${inp.taskId}`);
+      if (inp.status) parts.push(String(inp.status));
+      if (inp.subject) parts.push(truncate(String(inp.subject), 50));
+      return parts.join(" — ") || "";
+    }
+    case "TaskGet":
+      return inp.taskId ? `#${inp.taskId}` : "";
+    case "TaskList":
+      return "";
+    case "TodoWrite":
+      return truncate(String(inp.todos ? `${(inp.todos as unknown[]).length} items` : ""), 60);
     default:
       return "";
   }

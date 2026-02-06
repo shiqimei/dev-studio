@@ -44,24 +44,24 @@ export function toolTitle(name: string, input: unknown): string {
     case "Edit":
       return shortPath(inp.file_path as string);
     case "Bash":
-      return truncate(String(inp.command ?? ""), 60);
+      return String(inp.command ?? "");
     case "Glob":
-      return truncate(String(inp.pattern ?? ""), 60);
+      return String(inp.pattern ?? "");
     case "Grep":
-      return truncate(String(inp.pattern ?? ""), 60);
+      return String(inp.pattern ?? "");
     case "Task":
-      return truncate(String(inp.description ?? ""), 60);
+      return String(inp.description ?? "");
     case "WebSearch":
-      return truncate(String(inp.query ?? ""), 60);
+      return String(inp.query ?? "");
     case "WebFetch":
-      return truncate(String(inp.url ?? ""), 60);
+      return String(inp.url ?? "");
     case "TaskCreate":
-      return truncate(String(inp.subject ?? ""), 80);
+      return String(inp.subject ?? "");
     case "TaskUpdate": {
       const parts: string[] = [];
       if (inp.taskId) parts.push(`#${inp.taskId}`);
       if (inp.status) parts.push(String(inp.status));
-      if (inp.subject) parts.push(truncate(String(inp.subject), 50));
+      if (inp.subject) parts.push(String(inp.subject));
       return parts.join(" — ") || "";
     }
     case "TaskGet":
@@ -69,7 +69,7 @@ export function toolTitle(name: string, input: unknown): string {
     case "TaskList":
       return "";
     case "TodoWrite":
-      return truncate(String(inp.todos ? `${(inp.todos as unknown[]).length} items` : ""), 60);
+      return inp.todos ? `${(inp.todos as unknown[]).length} items` : "";
     default:
       // MCP browser tools
       if (name.startsWith("mcp__claude-in-chrome__")) {
@@ -89,23 +89,23 @@ function browserToolTitle(name: string, inp: Record<string, unknown>): string {
         const coord = inp.coordinate as number[] | undefined;
         return coord ? `${action} (${coord[0]}, ${coord[1]})` : action;
       }
-      if (action === "type") return `type "${truncate(String(inp.text ?? ""), 40)}"`;
+      if (action === "type") return `type "${String(inp.text ?? "")}"`;
       if (action === "scroll") return `scroll ${inp.scroll_direction ?? ""}`;
-      if (action === "key") return `key ${truncate(String(inp.text ?? ""), 30)}`;
+      if (action === "key") return `key ${String(inp.text ?? "")}`;
       if (action === "wait") return `wait ${inp.duration ?? ""}s`;
       if (action === "zoom") return "zoom";
       return action;
     }
     case "navigate":
-      return truncate(String(inp.url ?? ""), 60);
+      return String(inp.url ?? "");
     case "read_page":
       return inp.filter ? String(inp.filter) : "read page";
     case "find":
-      return truncate(String(inp.query ?? ""), 60);
+      return String(inp.query ?? "");
     case "javascript_tool":
-      return truncate(String(inp.text ?? ""), 60);
+      return String(inp.text ?? "");
     case "form_input":
-      return `set ${inp.ref ?? ""} = ${truncate(String(inp.value ?? ""), 40)}`;
+      return `set ${inp.ref ?? ""} = ${String(inp.value ?? "")}`;
     case "tabs_context_mcp":
     case "tabs_create_mcp":
       return "";
@@ -122,9 +122,6 @@ function shortPath(p: unknown): string {
   return parts.length > 2 ? ".../" + parts.slice(-2).join("/") : p;
 }
 
-function truncate(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max) + "..." : s;
-}
 
 /**
  * Convert a JSONL content array to ContentBlock[].

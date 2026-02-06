@@ -1,17 +1,34 @@
-import { useState } from "react";
+import { useState, useRef, useLayoutEffect } from "react";
 import type { MessageEntry } from "../../types";
+
+/** Collapsed height ≈ 5-6 lines of text at 1.5 line-height */
+const COLLAPSED_HEIGHT = 130;
 
 interface Props {
   entry: MessageEntry;
+  isLatest: boolean;
 }
 
-export function UserMessage({ entry }: Props) {
+export function UserMessage({ entry, isLatest }: Props) {
   const [preview, setPreview] = useState<string | null>(null);
+  const [userExpanded, setUserExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const textRef = useRef<HTMLDivElement>(null);
+  const expanded = userExpanded || isLatest;
+
   const images = entry.content.filter((b) => b.type === "image");
   const textParts = entry.content
     .filter((b) => b.type === "text")
     .map((b) => (b as { text: string }).text);
   const text = textParts.join("\n");
+
+  useLayoutEffect(() => {
+    if (textRef.current) {
+      setOverflows(textRef.current.scrollHeight > COLLAPSED_HEIGHT);
+    }
+  }, [text]);
+
+  const collapsed = !expanded && overflows;
 
   return (
     <div className="msg user">
@@ -31,7 +48,26 @@ export function UserMessage({ entry }: Props) {
           })}
         </div>
       )}
-      {text && <span>{text}</span>}
+      {text && (
+        <div className="user-text-wrap">
+          <div
+            ref={textRef}
+            className={collapsed ? "user-text-collapsed" : undefined}
+          >
+            {text}
+          </div>
+          {collapsed && (
+            <div className="user-text-overlay" onClick={() => setUserExpanded(true)}>
+              <span>Show more</span>
+            </div>
+          )}
+          {overflows && expanded && !isLatest && (
+            <button className="user-collapse-btn" onClick={() => setUserExpanded(false)}>
+              Show less
+            </button>
+          )}
+        </div>
+      )}
       {preview && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 cursor-pointer"

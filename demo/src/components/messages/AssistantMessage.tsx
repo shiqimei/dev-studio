@@ -1,7 +1,27 @@
 import { Streamdown } from "streamdown";
-import { createCodePlugin } from "@streamdown/code";
+import { createCodePlugin, type CodeHighlighterPlugin } from "@streamdown/code";
+import { detectLanguage } from "../../lang-detect";
+import type { BundledLanguage } from "shiki";
 
-const code = createCodePlugin({ themes: ["monokai", "monokai"] });
+/** Wrap the code plugin to auto-detect language for untagged code blocks. */
+function withAutoDetect(plugin: CodeHighlighterPlugin): CodeHighlighterPlugin {
+  return {
+    ...plugin,
+    highlight(options, callback) {
+      const lang = options.language;
+      // If language is missing or not supported, detect from content
+      if (!lang || lang === "text" || lang === "plaintext" || !plugin.supportsLanguage(lang)) {
+        const detected = detectLanguage(options.code) as BundledLanguage;
+        if (detected !== "text" && plugin.supportsLanguage(detected)) {
+          return plugin.highlight({ ...options, language: detected }, callback);
+        }
+      }
+      return plugin.highlight(options, callback);
+    },
+  };
+}
+
+const code = withAutoDetect(createCodePlugin({ themes: ["monokai", "monokai"] }));
 const plugins = { code };
 
 interface Props {

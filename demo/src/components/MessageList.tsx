@@ -20,7 +20,7 @@ export function MessageList() {
         switch (entry.type) {
           case "message":
             return entry.role === "user" ? (
-              <UserMessage key={entry.id} entry={entry} />
+              <UserMessage key={entry.id} entry={entry} isLatest={idx === state.messages.length - 1} />
             ) : (
               <AssistantTurn
                 key={entry.id}

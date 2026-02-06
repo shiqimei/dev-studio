@@ -84,6 +84,54 @@
   padding: 10px;
 }
 
+.user-text-wrap {
+  position: relative;
+}
+
+.user-text-collapsed {
+  max-height: 130px;
+  overflow: hidden;
+}
+
+.user-text-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  background: linear-gradient(to bottom, transparent, var(--color-surface) 70%);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.user-text-overlay span {
+  font-size: 11px;
+  color: var(--color-dim);
+  padding-bottom: 2px;
+}
+
+.user-text-overlay:hover span {
+  color: var(--color-text);
+}
+
+.user-collapse-btn {
+  background: none;
+  border: none;
+  color: var(--color-dim);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 4px 0 0;
+  display: block;
+  width: 100%;
+  text-align: center;
+}
+
+.user-collapse-btn:hover {
+  color: var(--color-text);
+}
+
 .msg.assistant {
   color: var(--color-text);
 }
@@ -200,6 +248,62 @@
 .diff-text {
   white-space: pre;
   overflow-x: auto;
+}
+
+/* ── Code view (Read tool) ───────────────── */
+
+.code-view {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  padding-top: 4px !important;
+  max-height: 300px;
+}
+
+.code-line {
+  display: flex;
+  padding: 0 4px;
+}
+
+.code-lineno {
+  flex-shrink: 0;
+  width: 36px;
+  text-align: right;
+  padding-right: 10px;
+  color: #525252;
+  user-select: none;
+}
+
+.code-text {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── System reminder (collapsible) ───────── */
+
+.sys-reminder {
+  margin-top: 6px;
+  border-top: 1px solid var(--color-border);
+  padding-top: 4px;
+  font-size: 10px;
+  color: #525252;
+}
+
+.sys-reminder-badge {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #333;
+  color: #666;
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.sys-reminder-text {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ── Plan ─────────────────────────────────── */

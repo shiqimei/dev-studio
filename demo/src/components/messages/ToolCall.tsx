@@ -10,11 +10,12 @@ interface Props {
 }
 
 export function ToolCall({ kind, title, content, status, input }: Props) {
-  // Show short result text inline when there's no input-derived title
   const displayTitle = title || (content && content.length <= 100 ? content : "");
   const isEdit = kind === "Edit";
+  const isRead = kind === "Read";
   const hasDiff = isEdit && input && typeof input === "object" && "old_string" in (input as any);
-  const expandable = hasDiff || (content && (title || content.length > 100));
+  const hasCode = isRead && content && content.length > 100;
+  const expandable = hasDiff || hasCode || (content && (title || content.length > 100));
   const [open, setOpen] = useState(false);
   const statusLabel =
     status === "completed" ? "completed" : status === "failed" ? "failed" : "running";
@@ -32,10 +33,49 @@ export function ToolCall({ kind, title, content, status, input }: Props) {
       {open && hasDiff && (
         <DiffView input={input as Record<string, unknown>} filePath={title} />
       )}
-      {open && !hasDiff && content && <div className="tool-content">{content}</div>}
+      {open && hasCode && (
+        <CodeView content={content} filePath={title} />
+      )}
+      {open && !hasDiff && !hasCode && content && (
+        <PlainContent content={content} />
+      )}
     </div>
   );
 }
+
+// ── System reminder handling ────────────────
+
+const SYSTEM_REMINDER_RE = /<system-reminder>([\s\S]*?)<\/system-reminder>/g;
+
+function splitSystemReminders(text: string): { clean: string; reminders: string[] } {
+  const reminders: string[] = [];
+  const clean = text.replace(SYSTEM_REMINDER_RE, (_, body) => {
+    reminders.push(body.trim());
+    return "";
+  }).trim();
+  return { clean, reminders };
+}
+
+function SystemReminder({ text }: { text: string }) {
+  return (
+    <div className="sys-reminder">
+      <span className="sys-reminder-badge">system-reminder</span>
+      <span className="sys-reminder-text">{text}</span>
+    </div>
+  );
+}
+
+function PlainContent({ content }: { content: string }) {
+  const { clean, reminders } = splitSystemReminders(content);
+  return (
+    <div className="tool-content">
+      {clean && <div>{clean}</div>}
+      {reminders.map((r, i) => <SystemReminder key={i} text={r} />)}
+    </div>
+  );
+}
+
+// ── Shared utilities ────────────────────────
 
 const EXT_TO_LANG: Record<string, string> = {
   ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx",
@@ -53,7 +93,81 @@ function detectLang(filePath: string): string {
   return EXT_TO_LANG[ext] || "text";
 }
 
-interface HighlightedLine {
+function useShikiHighlight(code: string, lang: string) {
+  const [lines, setLines] = useState<ThemedToken[][] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    codeToTokens(code, { lang, theme: "monokai" })
+      .then((result) => {
+        if (!cancelled) setLines(result.tokens);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLines(code.split("\n").map((t) => [{ content: t, color: "#d4d4d4" } as ThemedToken]));
+        }
+      });
+    return () => { cancelled = true; };
+  }, [code, lang]);
+
+  return lines;
+}
+
+// ── CodeView (Read tool) ────────────────────
+
+interface ParsedLine {
+  lineNo: string;
+  text: string;
+}
+
+/** Parse cat -n style output: "   123→content" or "   123\tcontent" */
+function parseCatOutput(content: string): { lines: ParsedLine[]; rawCode: string } {
+  const rawLines = content.split("\n");
+  const parsed: ParsedLine[] = [];
+  const codeLines: string[] = [];
+
+  for (const line of rawLines) {
+    const m = line.match(/^\s*(\d+)[→\t](.*)$/);
+    if (m) {
+      parsed.push({ lineNo: m[1], text: m[2] });
+      codeLines.push(m[2]);
+    } else {
+      parsed.push({ lineNo: "", text: line });
+      codeLines.push(line);
+    }
+  }
+
+  return { lines: parsed, rawCode: codeLines.join("\n") };
+}
+
+function CodeView({ content, filePath }: { content: string; filePath: string }) {
+  const { clean, reminders } = splitSystemReminders(content);
+  const lang = detectLang(filePath);
+  const { lines: parsed, rawCode } = parseCatOutput(clean);
+  const highlighted = useShikiHighlight(rawCode, lang);
+
+  return (
+    <div className="tool-content code-view">
+      {parsed.map((line, i) => (
+        <div key={i} className="code-line">
+          {line.lineNo && <span className="code-lineno">{line.lineNo}</span>}
+          <span className="code-text">
+            {highlighted && highlighted[i]
+              ? highlighted[i].map((tok, j) => (
+                  <span key={j} style={{ color: tok.color }}>{tok.content || " "}</span>
+                ))
+              : (line.text || " ")}
+          </span>
+        </div>
+      ))}
+      {reminders.map((r, i) => <SystemReminder key={i} text={r} />)}
+    </div>
+  );
+}
+
+// ── DiffView (Edit tool) ────────────────────
+
+interface HighlightedDiffLine {
   tokens: ThemedToken[];
   type: "removed" | "added";
 }
@@ -61,31 +175,28 @@ interface HighlightedLine {
 function DiffView({ input, filePath }: { input: Record<string, unknown>; filePath: string }) {
   const oldStr = String(input.old_string ?? "");
   const newStr = String(input.new_string ?? "");
-  const [lines, setLines] = useState<HighlightedLine[] | null>(null);
+  const [lines, setLines] = useState<HighlightedDiffLine[] | null>(null);
   const lang = detectLang(filePath);
 
   useEffect(() => {
     let cancelled = false;
-    // Combine both strings for highlighting so Shiki sees full context
     const combined = oldStr + "\n" + newStr;
     codeToTokens(combined, { lang, theme: "monokai" })
       .then((result) => {
         if (cancelled) return;
         const oldLineCount = oldStr.split("\n").length;
-        const highlighted: HighlightedLine[] = [];
+        const highlighted: HighlightedDiffLine[] = [];
         for (let i = 0; i < result.tokens.length; i++) {
-          if (i < oldLineCount) {
-            highlighted.push({ tokens: result.tokens[i], type: "removed" });
-          } else {
-            highlighted.push({ tokens: result.tokens[i], type: "added" });
-          }
+          highlighted.push({
+            tokens: result.tokens[i],
+            type: i < oldLineCount ? "removed" : "added",
+          });
         }
         setLines(highlighted);
       })
       .catch(() => {
-        // Fallback: plain text
         if (cancelled) return;
-        const fallback: HighlightedLine[] = [
+        const fallback: HighlightedDiffLine[] = [
           ...oldStr.split("\n").map((t) => ({
             tokens: [{ content: t, color: "#d4d4d4" }] as ThemedToken[],
             type: "removed" as const,
@@ -101,7 +212,6 @@ function DiffView({ input, filePath }: { input: Record<string, unknown>; filePat
   }, [oldStr, newStr, lang]);
 
   if (!lines) {
-    // Plain-text fallback while loading
     return (
       <div className="tool-content diff-view">
         {oldStr.split("\n").map((line, i) => (

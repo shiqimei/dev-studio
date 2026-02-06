@@ -138,6 +138,7 @@ function SubagentItem({
   hasChildren = false,
   isExpanded = false,
   onToggle,
+  scrollRef,
 }: {
   child: SubagentChild;
   parentSessionId: string;
@@ -147,11 +148,12 @@ function SubagentItem({
   hasChildren?: boolean;
   isExpanded?: boolean;
   onToggle?: () => void;
+  scrollRef?: React.Ref<HTMLDivElement>;
 }) {
   const badge = AGENT_TYPE_STYLES[child.agentType] ?? AGENT_TYPE_STYLES.agent;
   const paddingLeft = 28 + depth * 16; // pl-7 = 28px base, +16px per depth level
   return (
-    <div className={`relative${depth > 0 ? " subagent-nested" : ""}`}>
+    <div ref={scrollRef} className={`relative${depth > 0 ? " subagent-nested" : ""}`}>
       <button
         onClick={onClick}
         style={{ paddingLeft: hasChildren ? paddingLeft + 18 : paddingLeft }}
@@ -275,9 +277,22 @@ function SessionContextMenu({
 function findAncestorPath(children: SubagentChild[], targetId: string): string[] | null {
   for (const child of children) {
     if (child.agentId === targetId) return [];
+    // Also match by sessionId for teammate children
+    if (child.sessionId === targetId) return [];
     if (child.children?.length) {
       const sub = findAncestorPath(child.children, targetId);
       if (sub !== null) return [child.agentId, ...sub];
+    }
+  }
+  return null;
+}
+
+/** Find the parent DiskSession that contains a teammate child with the given sessionId. */
+function findTeammateParent(diskSessions: DiskSession[], teammateSessionId: string): DiskSession | null {
+  for (const session of diskSessions) {
+    if (!session.children?.length) continue;
+    if (findAncestorPath(session.children, teammateSessionId) !== null) {
+      return session;
     }
   }
   return null;
@@ -292,13 +307,23 @@ export function SessionSidebar() {
   // Use pending session id for optimistic active highlighting
   const activeSessionId = state.switchingToSessionId ?? state.currentSessionId;
 
-  // Auto-expand sidebar tree when navigating to a sub-agent (e.g. clicking agent link in Task tool)
+  // Auto-expand sidebar tree when navigating to a sub-agent or teammate session
   useEffect(() => {
     if (!activeSessionId) return;
-    const subMatch = activeSessionId.match(/^(.+):subagent:(.+)$/);
-    if (!subMatch) return;
 
-    const [, parentId, agentId] = subMatch;
+    let parentId: string;
+    let targetId: string;
+
+    const subMatch = activeSessionId.match(/^(.+):subagent:(.+)$/);
+    if (subMatch) {
+      [, parentId, targetId] = subMatch;
+    } else {
+      // Check if activeSessionId is a teammate session nested under a parent
+      const parent = findTeammateParent(state.diskSessions, activeSessionId);
+      if (!parent) return;
+      parentId = parent.sessionId;
+      targetId = activeSessionId;
+    }
 
     // Expand the parent session
     setExpandedSessions((prev) => {
@@ -312,7 +337,7 @@ export function SessionSidebar() {
     const session = state.diskSessions.find((s) => s.sessionId === parentId);
     if (!session?.children?.length) return;
 
-    const ancestors = findAncestorPath(session.children, agentId);
+    const ancestors = findAncestorPath(session.children, targetId);
     if (!ancestors?.length) return;
 
     setExpandedAgents((prev) => {
@@ -322,6 +347,22 @@ export function SessionSidebar() {
       for (const id of missing) next.add(id);
       return next;
     });
+  }, [activeSessionId, state.diskSessions]);
+
+  // Scroll active sub-agent into view after tree expansion
+  const activeSubagentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!activeSessionId) return;
+    // Only scroll for sub-agent or teammate navigation
+    const isSubagent = activeSessionId.includes(":subagent:");
+    const isTeammate = !isSubagent && findTeammateParent(state.diskSessions, activeSessionId);
+    if (!isSubagent && !isTeammate) return;
+
+    // Delay to allow React to render the expanded tree
+    const timer = setTimeout(() => {
+      activeSubagentRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }, 50);
+    return () => clearTimeout(timer);
   }, [activeSessionId, state.diskSessions]);
 
   const toggleExpand = (sessionId: string) => {
@@ -346,17 +387,26 @@ export function SessionSidebar() {
     return children.map((child) => {
       const hasKids = (child.children?.length ?? 0) > 0;
       const isAgentExpanded = expandedAgents.has(child.agentId);
+      // Teammate sessions have their own sessionId — load via resumeSession
+      const isTeammate = !!child.sessionId;
+      const isActive = isTeammate
+        ? activeSessionId === child.sessionId
+        : activeSessionId === `${parentSessionId}:subagent:${child.agentId}`;
+      const handleClick = isTeammate
+        ? () => resumeSession(child.sessionId!)
+        : () => resumeSubagent(parentSessionId, child.agentId);
       return (
         <div key={child.agentId}>
           <SubagentItem
             child={child}
             parentSessionId={parentSessionId}
-            isActive={activeSessionId === `${parentSessionId}:subagent:${child.agentId}`}
-            onClick={() => resumeSubagent(parentSessionId, child.agentId)}
+            isActive={isActive}
+            onClick={handleClick}
             depth={depth}
             hasChildren={hasKids}
             isExpanded={isAgentExpanded}
             onToggle={() => toggleAgentExpand(child.agentId)}
+            scrollRef={isActive ? activeSubagentRef : undefined}
           />
           {hasKids && isAgentExpanded && renderSubagentTree(child.children!, parentSessionId, depth + 1)}
         </div>

@@ -1,10 +1,6 @@
 import path from "node:path";
 import { createAcpConnection, createNewSession, listSessions, resumeSession } from "./session.js";
 import type { AcpConnection } from "./types.js";
-import { getProjectDir } from "../../src/disk/paths.js";
-import { readSessionsIndex, deleteSessionFromDisk } from "../../src/disk/sessions-index.js";
-import { readSessionHistoryFull, readSubagentHistoryFull } from "../../src/disk/session-history.js";
-import { readSubagents } from "../../src/disk/subagents.js";
 
 export function startServer(port: number) {
   const clients = new Set<{ send: (data: string) => void }>();
@@ -25,39 +21,19 @@ export function startServer(port: number) {
 
   let acpConnection: AcpConnection | null = null;
 
-  const projectDir = getProjectDir();
-
-  function readDiskSessions() {
-    const entries = readSessionsIndex(projectDir);
-    return entries
-      .map((e) => {
-        const subagents = readSubagents(projectDir, e.sessionId);
-        const children = subagents.map((s) => ({
-          agentId: s.agentId,
-          taskPrompt: s.taskPrompt,
-          timestamp: s.timestamp,
-          agentType: s.agentType,
-        }));
-        return {
-          sessionId: e.sessionId,
-          title: e.firstPrompt?.slice(0, 100) ?? null,
-          updatedAt: e.modified ?? e.created ?? null,
-          created: e.created ?? null,
-          messageCount: e.messageCount ?? 0,
-          gitBranch: e.gitBranch ?? null,
-          projectPath: e.projectPath ?? null,
-          ...(children.length > 0 ? { children } : {}),
-        };
-      })
-      .sort((a, b) => {
-        const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-        const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-        return tb - ta;
-      });
+  async function readDiskSessions() {
+    if (!acpConnection) return [];
+    try {
+      const result = await acpConnection.connection.extMethod("sessions/listDisk", {});
+      return result.sessions as any[];
+    } catch (err: any) {
+      console.error("Failed to read disk sessions via ACP:", err.message);
+      return [];
+    }
   }
 
-  function broadcastDiskSessions() {
-    const sessions = readDiskSessions();
+  async function broadcastDiskSessions() {
+    const sessions = await readDiskSessions();
     const data = JSON.stringify({ type: "disk_sessions", sessions });
     for (const ws of clients) {
       try {
@@ -113,7 +89,7 @@ export function startServer(port: number) {
             currentSessionId = sessionId;
             liveSessionIds.add(sessionId);
             await broadcastSessionList();
-            broadcastDiskSessions();
+            await broadcastDiskSessions();
             broadcast({ type: "session_switched", sessionId: currentSessionId });
           } catch (err: any) {
             ws.send(JSON.stringify({ type: "error", text: err.message }));
@@ -121,8 +97,18 @@ export function startServer(port: number) {
         } else {
           // Re-joining client: send current state
           await broadcastSessionList();
-          broadcastDiskSessions();
+          await broadcastDiskSessions();
           if (currentSessionId) {
+            // Send session history so the reconnecting client can display content
+            try {
+              const subMatch = currentSessionId.match(/^(.+):subagent:(.+)$/);
+              const result = subMatch
+                ? await acpConnection.connection.extMethod("sessions/getSubagentHistory", { sessionId: subMatch[1], agentId: subMatch[2] })
+                : await acpConnection.connection.extMethod("sessions/getHistory", { sessionId: currentSessionId });
+              ws.send(JSON.stringify({ type: "session_history", sessionId: currentSessionId, entries: result.entries }));
+            } catch (err: any) {
+              console.error("Failed to load session history for reconnecting client:", err.message);
+            }
             broadcast({ type: "session_switched", sessionId: currentSessionId });
           }
         }
@@ -158,7 +144,7 @@ export function startServer(port: number) {
               broadcast({ type: "turn_end", stopReason: result.stopReason });
               // Refresh session list to pick up title changes
               await broadcastSessionList();
-              broadcastDiskSessions();
+              await broadcastDiskSessions();
             } catch (err: any) {
               broadcast({ type: "error", text: err.message });
               broadcast({ type: "turn_end", stopReason: "error" });
@@ -172,7 +158,7 @@ export function startServer(port: number) {
               currentSessionId = sessionId;
               liveSessionIds.add(sessionId);
               await broadcastSessionList();
-              broadcastDiskSessions();
+              await broadcastDiskSessions();
               broadcast({ type: "session_switched", sessionId: currentSessionId });
             } catch (err: any) {
               broadcast({ type: "error", text: err.message });
@@ -182,12 +168,10 @@ export function startServer(port: number) {
 
           case "switch_session":
           case "resume_session": {
-            if (msg.sessionId === currentSessionId) break;
             try {
-              // Load history from disk — fast, no ACP spawn
-              const entries = readSessionHistoryFull(projectDir, msg.sessionId);
+              const result = await acpConnection.connection.extMethod("sessions/getHistory", { sessionId: msg.sessionId });
               currentSessionId = msg.sessionId;
-              broadcast({ type: "session_history", sessionId: msg.sessionId, entries });
+              broadcast({ type: "session_history", sessionId: msg.sessionId, entries: result.entries });
               broadcast({ type: "session_switched", sessionId: currentSessionId });
             } catch (err: any) {
               broadcast({ type: "error", text: `Failed to load session: ${err.message}` });
@@ -198,9 +182,12 @@ export function startServer(port: number) {
           case "resume_subagent": {
             const compositeId = `${msg.parentSessionId}:subagent:${msg.agentId}`;
             try {
-              const entries = readSubagentHistoryFull(projectDir, msg.parentSessionId, msg.agentId);
+              const result = await acpConnection.connection.extMethod("sessions/getSubagentHistory", {
+                sessionId: msg.parentSessionId,
+                agentId: msg.agentId,
+              });
               currentSessionId = compositeId;
-              broadcast({ type: "session_history", sessionId: compositeId, entries });
+              broadcast({ type: "session_history", sessionId: compositeId, entries: result.entries });
               broadcast({ type: "session_switched", sessionId: compositeId });
             } catch (err: any) {
               broadcast({ type: "error", text: `Failed to load subagent: ${err.message}` });
@@ -208,17 +195,34 @@ export function startServer(port: number) {
             break;
           }
 
+          case "rename_session": {
+            const { sessionId, title } = msg;
+            console.log(`[rename_session] Renaming session ${sessionId} to "${title}"`);
+            const renameResult = await acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
+            if (renameResult.success) {
+              await broadcastDiskSessions();
+            }
+            break;
+          }
+
           case "delete_session": {
-            const deleted = deleteSessionFromDisk(projectDir, msg.sessionId);
-            if (deleted) {
-              liveSessionIds.delete(msg.sessionId);
-              // If we just deleted the active session, clear it
-              if (currentSessionId === msg.sessionId) {
-                currentSessionId = null;
+            console.log(`[delete_session] Deleting session ${msg.sessionId}`);
+            const deleteResult = await acpConnection.connection.extMethod("sessions/delete", { sessionId: msg.sessionId });
+            console.log(`[delete_session] Result: ${deleteResult.success}, deletedIds: ${(deleteResult.deletedIds as string[])?.join(", ")}`);
+            if (deleteResult.success) {
+              // Clean up all deleted sessions (parent + any teammate children)
+              const deletedIds = (deleteResult.deletedIds as string[]) ?? [msg.sessionId];
+              for (const id of deletedIds) {
+                liveSessionIds.delete(id);
+                if (currentSessionId === id) {
+                  currentSessionId = null;
+                }
               }
-              broadcastDiskSessions();
+              await broadcastDiskSessions();
               await broadcastSessionList();
-              broadcast({ type: "session_deleted", sessionId: msg.sessionId });
+            } else {
+              // Session not found in index — still refresh the list in case it was already gone
+              await broadcastDiskSessions();
             }
             break;
           }

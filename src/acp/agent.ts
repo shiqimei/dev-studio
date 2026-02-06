@@ -74,7 +74,7 @@ import { listPluginNames } from "../disk/plugins.js";
 import { listSkillNames } from "../disk/skills.js";
 import { readSessionsIndex, renameSessionOnDisk, deleteSessionFromDisk } from "../disk/sessions-index.js";
 import { readSessionHistoryFull, readSubagentHistoryFull } from "../disk/session-history.js";
-import { readSubagents, buildSubagentTree, readSessionTeamInfo } from "../disk/subagents.js";
+import { readSubagents, buildSubagentTree, readSessionTeamInfo, findTeamCreateInSession } from "../disk/subagents.js";
 import type { ManagedSession } from "../sdk/types.js";
 import type { Logger, NewSessionMeta, ToolUpdateMeta, ToolUseCache } from "./types.js";
 import type { BackgroundTerminal } from "./background-tasks.js";
@@ -792,6 +792,23 @@ export class ClaudeAcpAgent implements Agent {
           }
         }
 
+        // Fallback: for teams with teammates but no leader detected via first-line metadata,
+        // scan non-team sessions for TeamCreate tool calls to identify the leader.
+        for (const [teamName, group] of teamGroups) {
+          if (group.leaderSessionId || group.teammates.length === 0) continue;
+          const teammateIds = new Set(group.teammates);
+          for (const e of entries) {
+            if (teammateIds.has(e.sessionId)) continue;
+            if (teamInfoMap.has(e.sessionId)) continue;
+            const found = findTeamCreateInSession(projectDir, e.sessionId);
+            if (found === teamName) {
+              group.leaderSessionId = e.sessionId;
+              teamInfoMap.set(e.sessionId, { teamName });
+              break;
+            }
+          }
+        }
+
         // Collect teammate sessionIds that should be hidden from top-level
         const teammateSessionIds = new Set<string>();
         // Map: leader sessionId → teammate session entries to add as children
@@ -846,6 +863,7 @@ export class ClaudeAcpAgent implements Agent {
               gitBranch: e.gitBranch ?? null,
               projectPath: e.projectPath ?? null,
               ...(children.length > 0 ? { children } : {}),
+              ...(teamInfoMap.get(e.sessionId)?.teamName ? { teamName: teamInfoMap.get(e.sessionId)!.teamName } : {}),
             };
           })
           .sort((a, b) => {

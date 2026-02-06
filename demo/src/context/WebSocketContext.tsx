@@ -66,7 +66,6 @@ function uid(): string {
 const emptySnapshot: SessionSnapshot = {
   messages: [],
   tasks: {},
-  protoEntries: [],
   currentTurnId: null,
   turnToolCallIds: [],
 };
@@ -89,6 +88,7 @@ const initialState: AppState = {
   // Session management
   sessions: [],
   diskSessions: [],
+  diskSessionsLoaded: false,
   currentSessionId: null,
   switchingToSessionId: null,
   sessionHistory: {},
@@ -526,10 +526,11 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, sessions: action.sessions };
 
     case "DISK_SESSIONS":
-      return { ...state, diskSessions: action.sessions };
+      return { ...state, diskSessions: action.sessions, diskSessionsLoaded: true };
 
     case "SESSION_HISTORY": {
       const historyMessages = jsonlToEntries(action.entries);
+      console.log("[reducer] SESSION_HISTORY", action.sessionId, "rawEntries:", action.entries.length, "parsed:", historyMessages.length);
       return {
         ...state,
         sessionHistory: {
@@ -537,7 +538,6 @@ function reducer(state: AppState, action: Action): AppState {
           [action.sessionId]: {
             messages: historyMessages,
             tasks: {},
-            protoEntries: [],
             currentTurnId: null,
             turnToolCallIds: [],
           },
@@ -549,13 +549,15 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, switchingToSessionId: action.sessionId };
 
     case "SESSION_SWITCHED": {
-      // Save current session state to history
+      // Save current session state to history (but not when "switching" to the
+      // same session — that would overwrite freshly loaded SESSION_HISTORY data
+      // with potentially empty in-memory state, e.g. after page reload).
       const history = { ...state.sessionHistory };
-      if (state.currentSessionId) {
+      console.log("[reducer] SESSION_SWITCHED from", state.currentSessionId, "to", action.sessionId, "historyHas:", !!history[action.sessionId], "historyMsgs:", history[action.sessionId]?.messages?.length ?? 0, "currentMsgs:", state.messages.length);
+      if (state.currentSessionId && state.currentSessionId !== action.sessionId) {
         history[state.currentSessionId] = {
           messages: state.messages,
           tasks: state.tasks,
-          protoEntries: state.protoEntries,
           currentTurnId: state.currentTurnId,
           turnToolCallIds: state.turnToolCallIds,
         };
@@ -571,7 +573,7 @@ function reducer(state: AppState, action: Action): AppState {
         sessionHistory: history,
         messages: restored.messages,
         tasks: restored.tasks,
-        protoEntries: restored.protoEntries,
+        // protoEntries are global debug traffic — keep them across session switches
         currentTurnId: null,
         turnToolCallIds: restored.turnToolCallIds,
         busy: false,
@@ -625,6 +627,8 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   /** Tracks currentSessionId for the popstate handler without stale closures. */
   const currentSessionRef = useRef<string | null>(null);
   currentSessionRef.current = state.currentSessionId;
+  /** Tracks sessions that we've already requested history for (to avoid duplicate requests). */
+  const historyRequestedFor = useRef(new Set<string>());
 
   const send = useCallback((text: string, images?: ImageAttachment[]) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -678,6 +682,12 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(proto + "//" + location.host + "/ws");
       wsRef.current = ws;
+      historyRequestedFor.current.clear();
+      // Reset hash routing state so this connection can perform hash restore.
+      // Critical for React StrictMode: mount 1 may consume these refs then
+      // its WS gets closed; mount 2 needs fresh refs to retry the restore.
+      pendingHashRestore.current = parseSessionHash();
+      hashInitialized.current = false;
 
       ws.onopen = () => dispatch({ type: "WS_CONNECTED" });
       ws.onclose = () => {
@@ -772,6 +782,33 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [resumeSessionCb, resumeSubagentCb]);
+
+  // ── Fallback: ensure session content is loaded ──
+  // If we have a current session and are connected but messages is empty,
+  // explicitly request the session history after a short delay.
+  // This handles all race conditions (StrictMode double-mount, server push
+  // failing, etc.) by pulling data from the client side.
+  useEffect(() => {
+    if (!state.currentSessionId || !state.connected) return;
+    if (state.messages.length > 0) return;
+    if (historyRequestedFor.current.has(state.currentSessionId)) return;
+
+    const sessionId = state.currentSessionId;
+    const timer = setTimeout(() => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      historyRequestedFor.current.add(sessionId);
+      console.log("[fallback] requesting history for", sessionId);
+      const sub = sessionId.match(/^(.+):subagent:(.+)$/);
+      if (sub) {
+        ws.send(JSON.stringify({ type: "resume_subagent", parentSessionId: sub[1], agentId: sub[2] }));
+      } else {
+        ws.send(JSON.stringify({ type: "switch_session", sessionId }));
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [state.currentSessionId, state.connected, state.messages.length]);
 
   return (
     <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb, deleteSession: deleteSessionCb, renameSession: renameSessionCb }}>

@@ -7,16 +7,56 @@ export function startServer(port: number) {
   let currentSessionId: string | null = null;
   const liveSessionIds = new Set<string>();
 
+  // Low-level: send raw string to all WS clients (no filtering, no instrumentation)
+  function sendToAll(data: string) {
+    for (const ws of clients) {
+      try { ws.send(data); } catch {}
+    }
+  }
+
+  // Emit a protocol entry to the debug panel (bypasses sessionId filter)
+  function emitProto(dir: "send" | "recv", msg: unknown) {
+    sendToAll(JSON.stringify({ type: "protocol", dir, ts: Date.now(), msg }));
+  }
+
+  // Map WS message types to functionality-scoped method names for the debug panel
+  const WS_METHOD_MAP: Record<string, string> = {
+    // Incoming (frontend → server)
+    prompt:           "session/prompt",
+    new_session:      "sessions/new",
+    switch_session:   "sessions/switch",
+    resume_session:   "sessions/resume",
+    resume_subagent:  "sessions/resumeSubagent",
+    rename_session:   "sessions/rename",
+    delete_session:   "sessions/delete",
+    list_sessions:    "sessions/list",
+    // Outgoing (server → frontend)
+    session_switched: "sessions/switched",
+    session_list:     "sessions/list",
+    disk_sessions:    "sessions/disk",
+    session_info:     "sessions/info",
+    session_history:  "sessions/history",
+    turn_end:         "session/turnEnd",
+    error:            "app/error",
+    system:           "app/system",
+  };
+  function wsMethod(type: string): string {
+    return WS_METHOD_MAP[type] ?? `app/${type.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())}`;
+  }
+
+  const WS_NOISY = new Set(["text", "thought", "protocol"]);
+
   function broadcast(msg: object) {
     // Filter out session-specific updates that don't match the current session
     const m = msg as any;
     if (m.sessionId && m.sessionId !== currentSessionId) return;
-    const data = JSON.stringify(msg);
-    for (const ws of clients) {
-      try {
-        ws.send(data);
-      } catch {}
+
+    // Instrument outgoing app messages (skip noisy streaming + protocol entries)
+    if (m.type && !WS_NOISY.has(m.type)) {
+      emitProto("recv", { method: wsMethod(m.type), params: m });
     }
+
+    sendToAll(JSON.stringify(msg));
   }
 
   let acpConnection: AcpConnection | null = null;
@@ -34,12 +74,7 @@ export function startServer(port: number) {
 
   async function broadcastDiskSessions() {
     const sessions = await readDiskSessions();
-    const data = JSON.stringify({ type: "disk_sessions", sessions });
-    for (const ws of clients) {
-      try {
-        ws.send(data);
-      } catch {}
-    }
+    broadcast({ type: "disk_sessions", sessions });
   }
 
   async function broadcastSessionList() {
@@ -120,6 +155,8 @@ export function startServer(port: number) {
         );
 
         if (!acpConnection) return;
+
+        emitProto("send", { method: wsMethod(msg.type), params: msg });
 
         switch (msg.type) {
           case "prompt": {

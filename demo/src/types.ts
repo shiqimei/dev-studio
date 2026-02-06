@@ -103,13 +103,17 @@ export interface SessionMeta {
   isLive: boolean;
 }
 
-export type SubagentType = "code" | "explore" | "bash" | "agent";
+export type SubagentType = "code" | "explore" | "bash" | "plan" | "agent";
 
 export interface SubagentChild {
   agentId: string;
   taskPrompt: string;
   timestamp: string;
   agentType: SubagentType;
+  parentAgentId?: string;
+  children?: SubagentChild[];
+  /** Present for teammate sessions that have their own sessionId (loaded via resumeSession). */
+  sessionId?: string;
 }
 
 export interface DiskSession {
@@ -121,12 +125,13 @@ export interface DiskSession {
   gitBranch: string | null;
   projectPath: string | null;
   children?: SubagentChild[];
+  /** Present when this session is a team leader. */
+  teamName?: string;
 }
 
 export interface SessionSnapshot {
   messages: ChatEntry[];
   tasks: Record<string, TaskInfo>;
-  protoEntries: ProtoEntry[];
   currentTurnId: string | null;
   turnToolCallIds: string[];
 }
@@ -178,6 +183,7 @@ export interface AppState {
   // Session management
   sessions: SessionMeta[];
   diskSessions: DiskSession[];
+  diskSessionsLoaded: boolean;
   currentSessionId: string | null;
   switchingToSessionId: string | null;
   sessionHistory: Record<string, SessionSnapshot>;

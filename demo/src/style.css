@@ -816,6 +816,25 @@
   background: #ef444418;
 }
 
+.session-rename-input-wrapper {
+  padding: 4px;
+}
+
+.session-rename-input {
+  width: 100%;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text);
+  font-size: 12px;
+  padding: 4px 6px;
+  outline: none;
+}
+
+.session-rename-input:focus {
+  border-color: var(--color-accent);
+}
+
 .session-more-btn {
   font-size: 14px;
   line-height: 1;
@@ -835,4 +854,47 @@
 .subagent-badge.code    { background: #a78bfa14; color: var(--color-purple); }
 .subagent-badge.bash    { background: #0ea5e914; color: var(--color-blue); }
 .subagent-badge.explore { background: #00a67e14; color: var(--color-green); }
+.subagent-badge.plan    { background: #f9731614; color: #f97316; }
 .subagent-badge.agent   { background: #f59e0b14; color: var(--color-yellow); }
+
+/* Team leader badge */
+.team-badge {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  line-height: 16px;
+  background: #0ea5e914;
+  color: var(--color-blue);
+}
+
+/* Teammate sub-agent badge */
+.subagent-badge.teammate {
+  background: #0ea5e914;
+  color: var(--color-blue);
+}
+
+/* ── Nested subagent connector ────────────── */
+
+.subagent-nested {
+  border-left: 1px solid var(--color-border);
+  margin-left: 20px;
+}
+
+/* ── Sidebar loading spinner ─────────────── */
+
+.sidebar-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-dim);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

@@ -36,7 +36,7 @@ export interface JsonlEntry {
   [key: string]: unknown;
 }
 
-export type SubagentType = "code" | "explore" | "bash" | "agent";
+export type SubagentType = "code" | "explore" | "bash" | "plan" | "agent";
 
 export interface SubagentMeta {
   agentId: string;
@@ -45,4 +45,8 @@ export interface SubagentMeta {
   timestamp: string;
   taskPrompt: string;
   agentType: SubagentType;
+  /** Set when this agent was spawned by another sub-agent (not the parent session). */
+  parentAgentId?: string;
+  /** Populated during tree building — nested sub-agents spawned by this one. */
+  children?: SubagentMeta[];
 }

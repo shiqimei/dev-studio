@@ -86,6 +86,9 @@ function SessionItem({
       }`}
     >
       <div className="flex items-center gap-1">
+        {session.teamName && (
+          <span className="team-badge">Team</span>
+        )}
         <div
           className={`text-xs truncate flex-1 min-w-0 ${
             isActive ? "text-text font-medium" : "text-dim"
@@ -139,6 +142,7 @@ function SubagentItem({
   isExpanded = false,
   onToggle,
   scrollRef,
+  isTeammate = false,
 }: {
   child: SubagentChild;
   parentSessionId: string;
@@ -149,8 +153,11 @@ function SubagentItem({
   isExpanded?: boolean;
   onToggle?: () => void;
   scrollRef?: React.Ref<HTMLDivElement>;
+  isTeammate?: boolean;
 }) {
-  const badge = AGENT_TYPE_STYLES[child.agentType] ?? AGENT_TYPE_STYLES.agent;
+  const badge = isTeammate
+    ? { label: "Teammate", className: "subagent-badge teammate" }
+    : AGENT_TYPE_STYLES[child.agentType] ?? AGENT_TYPE_STYLES.agent;
   const paddingLeft = 28 + depth * 16; // pl-7 = 28px base, +16px per depth level
   return (
     <div ref={scrollRef} className={`relative${depth > 0 ? " subagent-nested" : ""}`}>
@@ -407,6 +414,7 @@ export function SessionSidebar() {
             isExpanded={isAgentExpanded}
             onToggle={() => toggleAgentExpand(child.agentId)}
             scrollRef={isActive ? activeSubagentRef : undefined}
+            isTeammate={isTeammate}
           />
           {hasKids && isAgentExpanded && renderSubagentTree(child.children!, parentSessionId, depth + 1)}
         </div>
@@ -436,7 +444,12 @@ export function SessionSidebar() {
 
       {/* Unified session list */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        {state.diskSessions.length === 0 && (
+        {state.diskSessions.length === 0 && !state.diskSessionsLoaded && (
+          <div className="flex items-center justify-center py-6">
+            <span className="sidebar-spinner" />
+          </div>
+        )}
+        {state.diskSessions.length === 0 && state.diskSessionsLoaded && (
           <div className="px-3 py-3 text-xs text-dim text-center">
             No sessions found
           </div>

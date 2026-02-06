@@ -21,7 +21,7 @@ function uid(): string {
  * Map raw tool names to pretty display names for the badge.
  */
 export function prettyToolName(name: string): string {
-  if (name.startsWith("mcp__claude-in-chrome__")) return "BrowserUse";
+  if (name.startsWith("mcp__claude-in-chrome__")) return "Browser";
   if (name.startsWith("mcp__")) {
     // mcp__server__tool → Server:Tool
     const parts = name.slice(5).split("__");
@@ -357,10 +357,5 @@ function extractResultText(content: unknown): string {
   } else {
     return "";
   }
-  // Strip "Tab Context:..." boilerplate from browser tool results
-  const tabCtxIdx = text.indexOf("\nTab Context:");
-  if (tabCtxIdx !== -1) text = text.slice(0, tabCtxIdx).trim();
-  const tabCtxIdx2 = text.indexOf("Tab Context:");
-  if (tabCtxIdx2 === 0) text = "";
   return text;
 }

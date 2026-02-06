@@ -98,9 +98,10 @@
   border-color: var(--color-purple);
 }
 
-.thought-hint {
+.tool-call .tool-title.thought-hint {
   color: var(--color-dim);
   font-style: italic;
+  font-weight: 400;
 }
 
 .thought-content {
@@ -169,6 +170,36 @@
   font-size: 11px;
   max-height: 200px;
   overflow-y: auto;
+}
+
+/* ── Diff view ───────────────────────────── */
+
+.diff-view {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  padding-top: 4px !important;
+}
+
+.diff-line {
+  display: flex;
+  padding: 0 4px;
+  border-radius: 2px;
+}
+
+.diff-line.removed { background: #7f1d1d40; color: #fca5a5; }
+.diff-line.added { background: #14532d40; color: #86efac; }
+
+.diff-marker {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  user-select: none;
+}
+
+.diff-text {
+  white-space: pre;
+  overflow-x: auto;
 }
 
 /* ── Plan ─────────────────────────────────── */

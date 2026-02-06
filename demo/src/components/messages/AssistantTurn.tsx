@@ -33,6 +33,7 @@ export function AssistantTurn({ entry, isLatest }: Props) {
                 title={block.title || ""}
                 content={block.result || ""}
                 status={block.status || "completed"}
+                input={block.input}
               />
             );
           default:

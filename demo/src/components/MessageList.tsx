@@ -29,7 +29,7 @@ export function MessageList() {
               />
             );
           case "system":
-            return <SystemMessage key={entry.id} text={entry.text} />;
+            return <SystemMessage key={entry.id} text={entry.text} isError={entry.isError} />;
           case "plan":
             return <Plan key={entry.id} entries={entry.entries} />;
           case "permission":

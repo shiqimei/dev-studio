@@ -67,6 +67,7 @@ export interface SystemEntry {
   type: "system";
   id: string;
   text: string;
+  isError?: boolean;
 }
 
 export interface PlanEntryItem {
@@ -118,6 +119,7 @@ export interface DiskSession {
   created: string | null;
   messageCount: number;
   gitBranch: string | null;
+  projectPath: string | null;
   children?: SubagentChild[];
 }
 
@@ -177,6 +179,7 @@ export interface AppState {
   sessions: SessionMeta[];
   diskSessions: DiskSession[];
   currentSessionId: string | null;
+  switchingToSessionId: string | null;
   sessionHistory: Record<string, SessionSnapshot>;
 }
 
@@ -205,5 +208,6 @@ export type Action =
   | { type: "SESSION_LIST"; sessions: SessionMeta[] }
   | { type: "DISK_SESSIONS"; sessions: DiskSession[] }
   | { type: "SESSION_HISTORY"; sessionId: string; entries: unknown[] }
+  | { type: "SESSION_SWITCH_PENDING"; sessionId: string }
   | { type: "SESSION_SWITCHED"; sessionId: string }
   | { type: "SESSION_TITLE_UPDATE"; sessionId: string; title: string };

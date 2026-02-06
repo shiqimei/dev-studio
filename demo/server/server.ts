@@ -2,7 +2,7 @@ import path from "node:path";
 import { createAcpConnection, createNewSession, listSessions, resumeSession } from "./session.js";
 import type { AcpConnection } from "./types.js";
 import { getProjectDir } from "../../src/disk/paths.js";
-import { readSessionsIndex } from "../../src/disk/sessions-index.js";
+import { readSessionsIndex, deleteSessionFromDisk } from "../../src/disk/sessions-index.js";
 import { readSessionHistoryFull, readSubagentHistoryFull } from "../../src/disk/session-history.js";
 import { readSubagents } from "../../src/disk/subagents.js";
 
@@ -45,6 +45,7 @@ export function startServer(port: number) {
           created: e.created ?? null,
           messageCount: e.messageCount ?? 0,
           gitBranch: e.gitBranch ?? null,
+          projectPath: e.projectPath ?? null,
           ...(children.length > 0 ? { children } : {}),
         };
       })
@@ -138,6 +139,12 @@ export function startServer(port: number) {
           case "prompt": {
             if (!currentSessionId) return;
             try {
+              // Lazily resume the ACP session if not already live
+              if (!liveSessionIds.has(currentSessionId)) {
+                await resumeSession(acpConnection.connection, currentSessionId);
+                liveSessionIds.add(currentSessionId);
+                await broadcastSessionList();
+              }
               const prompt: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [];
               if (msg.text) prompt.push({ type: "text", text: msg.text });
               for (const img of msg.images ?? []) {
@@ -173,32 +180,46 @@ export function startServer(port: number) {
             break;
           }
 
+          case "switch_session":
           case "resume_session": {
             if (msg.sessionId === currentSessionId) break;
-            currentSessionId = msg.sessionId;
-            // Load full conversation history from ~/.claude session JSONL file
-            const entries = readSessionHistoryFull(projectDir, msg.sessionId);
-            broadcast({ type: "session_history", sessionId: msg.sessionId, entries });
-            broadcast({ type: "session_switched", sessionId: currentSessionId });
-            // Resume non-live sessions via ACP so the user can continue chatting
-            if (!liveSessionIds.has(msg.sessionId)) {
-              try {
-                await resumeSession(acpConnection.connection, msg.sessionId);
-                liveSessionIds.add(msg.sessionId);
-                await broadcastSessionList();
-              } catch (err: any) {
-                broadcast({ type: "error", text: `Failed to resume session: ${err.message}` });
-              }
+            try {
+              // Load history from disk — fast, no ACP spawn
+              const entries = readSessionHistoryFull(projectDir, msg.sessionId);
+              currentSessionId = msg.sessionId;
+              broadcast({ type: "session_history", sessionId: msg.sessionId, entries });
+              broadcast({ type: "session_switched", sessionId: currentSessionId });
+            } catch (err: any) {
+              broadcast({ type: "error", text: `Failed to load session: ${err.message}` });
             }
             break;
           }
 
           case "resume_subagent": {
             const compositeId = `${msg.parentSessionId}:subagent:${msg.agentId}`;
-            currentSessionId = compositeId;
-            const entries = readSubagentHistoryFull(projectDir, msg.parentSessionId, msg.agentId);
-            broadcast({ type: "session_history", sessionId: compositeId, entries });
-            broadcast({ type: "session_switched", sessionId: compositeId });
+            try {
+              const entries = readSubagentHistoryFull(projectDir, msg.parentSessionId, msg.agentId);
+              currentSessionId = compositeId;
+              broadcast({ type: "session_history", sessionId: compositeId, entries });
+              broadcast({ type: "session_switched", sessionId: compositeId });
+            } catch (err: any) {
+              broadcast({ type: "error", text: `Failed to load subagent: ${err.message}` });
+            }
+            break;
+          }
+
+          case "delete_session": {
+            const deleted = deleteSessionFromDisk(projectDir, msg.sessionId);
+            if (deleted) {
+              liveSessionIds.delete(msg.sessionId);
+              // If we just deleted the active session, clear it
+              if (currentSessionId === msg.sessionId) {
+                currentSessionId = null;
+              }
+              broadcastDiskSessions();
+              await broadcastSessionList();
+              broadcast({ type: "session_deleted", sessionId: msg.sessionId });
+            }
             break;
           }
 

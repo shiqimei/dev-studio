@@ -54,6 +54,7 @@ const initialState: AppState = {
   sessions: [],
   diskSessions: [],
   currentSessionId: null,
+  switchingToSessionId: null,
   sessionHistory: {},
 };
 
@@ -439,7 +440,7 @@ function reducer(state: AppState, action: Action): AppState {
         busy: false,
         messages: [
           ...state.messages,
-          { type: "system", id: uid(), text: "Error: " + action.text },
+          { type: "system", id: uid(), text: action.text, isError: true },
         ],
       };
 
@@ -508,6 +509,9 @@ function reducer(state: AppState, action: Action): AppState {
       };
     }
 
+    case "SESSION_SWITCH_PENDING":
+      return { ...state, switchingToSessionId: action.sessionId };
+
     case "SESSION_SWITCHED": {
       // Save current session state to history
       const history = { ...state.sessionHistory };
@@ -527,6 +531,7 @@ function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         currentSessionId: action.sessionId,
+        switchingToSessionId: null,
         sessionHistory: history,
         messages: restored.messages,
         tasks: restored.tasks,
@@ -558,6 +563,7 @@ interface WsContextValue {
   newSession: () => void;
   resumeSession: (sessionId: string) => void;
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
+  deleteSession: (sessionId: string) => void;
 }
 
 const WsContext = createContext<WsContextValue | null>(null);
@@ -573,7 +579,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const wsRef = useRef<WebSocket | null>(null);
 
   const send = useCallback((text: string, images?: ImageAttachment[]) => {
-    if (!wsRef.current) return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     dispatch({ type: "SEND_MESSAGE", text, images });
     wsRef.current.send(
       JSON.stringify({
@@ -585,18 +591,24 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const newSession = useCallback(() => {
-    if (!wsRef.current) return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify({ type: "new_session" }));
   }, []);
 
   const resumeSessionCb = useCallback((sessionId: string) => {
-    if (!wsRef.current) return;
-    wsRef.current.send(JSON.stringify({ type: "resume_session", sessionId }));
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    dispatch({ type: "SESSION_SWITCH_PENDING", sessionId });
+    wsRef.current.send(JSON.stringify({ type: "switch_session", sessionId }));
   }, []);
 
   const resumeSubagentCb = useCallback((parentSessionId: string, agentId: string) => {
-    if (!wsRef.current) return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify({ type: "resume_subagent", parentSessionId, agentId }));
+  }, []);
+
+  const deleteSessionCb = useCallback((sessionId: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "delete_session", sessionId }));
   }, []);
 
   useEffect(() => {
@@ -644,7 +656,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   }, [state.tasks, state.busy]);
 
   return (
-    <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb }}>
+    <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb, deleteSession: deleteSessionCb }}>
       {children}
     </WsContext.Provider>
   );

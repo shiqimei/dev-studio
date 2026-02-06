@@ -20,7 +20,7 @@ import type {
   ImageAttachment,
 } from "../types";
 import { classifyTool } from "../utils";
-import { jsonlToEntries } from "../jsonl-convert";
+import { jsonlToEntries, prettyToolName } from "../jsonl-convert";
 
 let nextId = 0;
 function uid(): string {
@@ -253,10 +253,11 @@ function reducer(state: AppState, action: Action): AppState {
       }
 
       const [msgs, turnId] = ensureAssistantTurn(state.messages, state.currentTurnId);
+      const rawToolName = action.meta?.claudeCode?.toolName || action.kind || "tool";
       const toolBlock: ToolUseBlock = {
         type: "tool_use",
         id: action.toolCallId,
-        name: action.meta?.claudeCode?.toolName || action.kind || "tool",
+        name: prettyToolName(rawToolName),
         input: {},
         title: action.title || action.toolCallId,
         kind: action.kind || "tool",

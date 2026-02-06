@@ -18,6 +18,19 @@ function uid(): string {
 }
 
 /**
+ * Map raw tool names to pretty display names for the badge.
+ */
+export function prettyToolName(name: string): string {
+  if (name.startsWith("mcp__claude-in-chrome__")) return "BrowserUse";
+  if (name.startsWith("mcp__")) {
+    // mcp__server__tool → Server:Tool
+    const parts = name.slice(5).split("__");
+    return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(":");
+  }
+  return name;
+}
+
+/**
  * Generate a human-readable title for a tool_use block from its name and input.
  */
 export function toolTitle(name: string, input: unknown): string {
@@ -58,7 +71,48 @@ export function toolTitle(name: string, input: unknown): string {
     case "TodoWrite":
       return truncate(String(inp.todos ? `${(inp.todos as unknown[]).length} items` : ""), 60);
     default:
+      // MCP browser tools
+      if (name.startsWith("mcp__claude-in-chrome__")) {
+        return browserToolTitle(name, inp);
+      }
       return "";
+  }
+}
+
+function browserToolTitle(name: string, inp: Record<string, unknown>): string {
+  const tool = name.replace("mcp__claude-in-chrome__", "");
+  switch (tool) {
+    case "computer": {
+      const action = String(inp.action ?? "");
+      if (action === "screenshot") return "screenshot";
+      if (action === "left_click" || action === "right_click" || action === "double_click") {
+        const coord = inp.coordinate as number[] | undefined;
+        return coord ? `${action} (${coord[0]}, ${coord[1]})` : action;
+      }
+      if (action === "type") return `type "${truncate(String(inp.text ?? ""), 40)}"`;
+      if (action === "scroll") return `scroll ${inp.scroll_direction ?? ""}`;
+      if (action === "key") return `key ${truncate(String(inp.text ?? ""), 30)}`;
+      if (action === "wait") return `wait ${inp.duration ?? ""}s`;
+      if (action === "zoom") return "zoom";
+      return action;
+    }
+    case "navigate":
+      return truncate(String(inp.url ?? ""), 60);
+    case "read_page":
+      return inp.filter ? String(inp.filter) : "read page";
+    case "find":
+      return truncate(String(inp.query ?? ""), 60);
+    case "javascript_tool":
+      return truncate(String(inp.text ?? ""), 60);
+    case "form_input":
+      return `set ${inp.ref ?? ""} = ${truncate(String(inp.value ?? ""), 40)}`;
+    case "tabs_context_mcp":
+    case "tabs_create_mcp":
+      return "";
+    case "get_page_text":
+      return "extract text";
+    default:
+      return tool.replace(/_/g, " ");
   }
 }
 
@@ -102,16 +156,18 @@ function convertContentBlocks(content: unknown): ContentBlock[] {
         }
         break;
       }
-      case "tool_use":
+      case "tool_use": {
+        const rawName = String(block.name ?? "");
         blocks.push({
           type: "tool_use",
           id: String(block.id ?? ""),
-          name: String(block.name ?? ""),
+          name: prettyToolName(rawName),
           input: block.input,
-          title: toolTitle(String(block.name ?? ""), block.input),
-          status: "completed", // In history, tool calls have already completed
+          title: toolTitle(rawName, block.input),
+          status: "completed",
         });
         break;
+      }
       case "tool_result":
         blocks.push({
           type: "tool_result",
@@ -290,12 +346,21 @@ function mergeToolResults(entries: ChatEntry[], resultBlocks: ContentBlock[]): v
 }
 
 function extractResultText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
+  let text: string;
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
       .filter((c: any) => c?.type === "text" || typeof c === "string")
       .map((c: any) => (typeof c === "string" ? c : c.text ?? ""))
       .join("\n");
+  } else {
+    return "";
   }
-  return "";
+  // Strip "Tab Context:..." boilerplate from browser tool results
+  const tabCtxIdx = text.indexOf("\nTab Context:");
+  if (tabCtxIdx !== -1) text = text.slice(0, tabCtxIdx).trim();
+  const tabCtxIdx2 = text.indexOf("Tab Context:");
+  if (tabCtxIdx2 === 0) text = "";
+  return text;
 }

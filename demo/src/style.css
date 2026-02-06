@@ -421,6 +421,57 @@
   word-break: break-all;
 }
 
+/* ── Search results view (Grep/Glob) ─────── */
+
+.search-view {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  padding-top: 4px !important;
+  max-height: 300px;
+}
+
+.search-file-entry {
+  padding: 1px 4px;
+  color: var(--color-dim);
+}
+
+.search-file-group {
+  margin-bottom: 2px;
+}
+
+.search-file-group:last-child {
+  margin-bottom: 0;
+}
+
+.search-file-header {
+  padding: 2px 4px;
+  color: var(--color-purple);
+  font-weight: 500;
+  position: sticky;
+  top: 0;
+  background: var(--color-bg);
+}
+
+.search-match-line {
+  display: flex;
+  padding: 0 4px 0 8px;
+}
+
+.search-lineno {
+  flex-shrink: 0;
+  width: 36px;
+  text-align: right;
+  padding-right: 10px;
+  color: #525252;
+  user-select: none;
+}
+
+.search-text {
+  white-space: pre;
+  overflow-x: auto;
+}
+
 /* ── System reminder (collapsible) ───────── */
 
 .sys-reminder {

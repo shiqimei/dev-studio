@@ -361,6 +361,44 @@ function extractResultText(content: unknown): string {
   return text;
 }
 
+/**
+ * Generate a short overview from a tool's result content.
+ * Used as a fallback title when the input-derived title is empty.
+ */
+export function toolOverview(kind: string, content: string): string {
+  if (!content) return "";
+
+  switch (kind) {
+    case "SendMessage": {
+      try {
+        const msg = JSON.parse(content);
+        const from = msg.from || msg.sender || "";
+        const to = msg.recipient || msg.to || "";
+        const text = msg.content || msg.message || "";
+        if (from && to && text) {
+          const preview = text.length > 50 ? text.slice(0, 50) + "..." : text;
+          return `${from} → @${to}: ${preview}`;
+        }
+      } catch {
+        // Not JSON — ignore
+      }
+      return "";
+    }
+
+    case "TaskList": {
+      const matches = [...content.matchAll(/#\d+\s+\[(\w+)\]/g)];
+      if (matches.length === 0) return "";
+      const total = matches.length;
+      const completed = matches.filter((m) => m[1] === "completed").length;
+      if (completed > 0) return `${total} tasks, ${completed} completed`;
+      return `${total} tasks`;
+    }
+
+    default:
+      return "";
+  }
+}
+
 /** Extract agentId from Task tool result text (e.g. "agentId: a8ce50f"). */
 export function extractAgentId(text: string): string | undefined {
   const m = text.match(/agentId:\s*(\w+)/);

@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { codeToTokens, type ThemedToken } from "shiki";
+import { toolOverview } from "../../jsonl-convert";
 
 interface Props {
   kind: string;
@@ -12,12 +13,15 @@ interface Props {
 }
 
 export function ToolCall({ kind, title, content, status, input, agentId, onNavigateToAgent }: Props) {
-  const displayTitle = title || (content && content.length <= 100 ? content : "");
+  const overview = (!title && content) ? toolOverview(kind, content) : "";
+  const displayTitle = title || overview || (content && content.length <= 100 ? content : "");
   const isEdit = kind === "Edit";
   const isReadOrWrite = kind === "Read" || kind === "Write";
+  const isSearch = kind === "Grep" || kind === "Glob";
   const hasDiff = isEdit && input && typeof input === "object" && "old_string" in (input as any);
   const hasCode = isReadOrWrite && content && content.length > 100;
-  const expandable = hasDiff || hasCode || (content && (title || content.length > 100));
+  const hasSearchResults = isSearch && !!content;
+  const expandable = hasDiff || hasCode || hasSearchResults || (content && (title || content.length > 100));
   const [open, setOpen] = useState(false);
   const statusLabel =
     status === "completed" ? "completed" : status === "failed" ? "failed" : "running";
@@ -47,7 +51,10 @@ export function ToolCall({ kind, title, content, status, input, agentId, onNavig
       {open && hasCode && (
         <CodeView content={content} filePath={title} />
       )}
-      {open && !hasDiff && !hasCode && content && (
+      {open && hasSearchResults && (
+        <SearchResultsView content={content} />
+      )}
+      {open && !hasDiff && !hasCode && !hasSearchResults && content && (
         <PlainContent content={content} />
       )}
     </div>
@@ -169,6 +176,77 @@ function CodeView({ content, filePath }: { content: string; filePath: string }) 
                 ))
               : (line.text || " ")}
           </span>
+        </div>
+      ))}
+      {reminders.map((r, i) => <SystemReminder key={i} text={r} />)}
+    </div>
+  );
+}
+
+// ── SearchResultsView (Grep/Glob tool) ──────
+
+interface SearchEntry {
+  file: string;
+  lineNo?: string;
+  text?: string;
+}
+
+function parseSearchResults(content: string): { entries: SearchEntry[]; grouped: Map<string, SearchEntry[]>; hasContent: boolean } {
+  const lines = content.split("\n").filter((l) => l.trim());
+  const entries: SearchEntry[] = [];
+  let hasContent = false;
+
+  for (const line of lines) {
+    // Try content mode: file:line:content
+    const m = line.match(/^(.+?):(\d+):(.*)$/);
+    if (m) {
+      entries.push({ file: m[1], lineNo: m[2], text: m[3] });
+      hasContent = true;
+    } else {
+      // File path only (files_with_matches or glob output)
+      entries.push({ file: line.trim() });
+    }
+  }
+
+  // Group by file
+  const grouped = new Map<string, SearchEntry[]>();
+  for (const entry of entries) {
+    const existing = grouped.get(entry.file) || [];
+    existing.push(entry);
+    grouped.set(entry.file, existing);
+  }
+
+  return { entries, grouped, hasContent };
+}
+
+function SearchResultsView({ content }: { content: string }) {
+  const { clean, reminders } = splitSystemReminders(content);
+  const { entries, grouped, hasContent } = parseSearchResults(clean);
+
+  if (!hasContent) {
+    // File-only mode: simple list of paths
+    return (
+      <div className="tool-content search-view">
+        {entries.map((entry, i) => (
+          <div key={i} className="search-file-entry">{entry.file}</div>
+        ))}
+        {reminders.map((r, i) => <SystemReminder key={i} text={r} />)}
+      </div>
+    );
+  }
+
+  // Content mode: grouped by file with line numbers
+  return (
+    <div className="tool-content search-view">
+      {Array.from(grouped.entries()).map(([file, matches], gi) => (
+        <div key={gi} className="search-file-group">
+          <div className="search-file-header">{file}</div>
+          {matches.map((match, j) => (
+            <div key={j} className="search-match-line">
+              {match.lineNo && <span className="search-lineno">{match.lineNo}</span>}
+              <span className="search-text">{match.text ?? ""}</span>
+            </div>
+          ))}
         </div>
       ))}
       {reminders.map((r, i) => <SystemReminder key={i} text={r} />)}

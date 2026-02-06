@@ -3,7 +3,7 @@ import { createAcpConnection, createNewSession, listSessions, resumeSession } fr
 import type { AcpConnection } from "./types.js";
 import { getProjectDir } from "../../src/disk/paths.js";
 import { readSessionsIndex } from "../../src/disk/sessions-index.js";
-import { readSessionHistory as readHistory } from "../../src/disk/session-history.js";
+import { readSessionHistoryFull } from "../../src/disk/session-history.js";
 
 export function startServer(port: number) {
   const clients = new Set<{ send: (data: string) => void }>();
@@ -165,9 +165,9 @@ export function startServer(port: number) {
           case "resume_session": {
             if (msg.sessionId === currentSessionId) break;
             currentSessionId = msg.sessionId;
-            // Load conversation history from ~/.claude session file
-            const history = readHistory(projectDir, msg.sessionId);
-            broadcast({ type: "session_history", sessionId: msg.sessionId, messages: history });
+            // Load full conversation history from ~/.claude session JSONL file
+            const entries = readSessionHistoryFull(projectDir, msg.sessionId);
+            broadcast({ type: "session_history", sessionId: msg.sessionId, entries });
             broadcast({ type: "session_switched", sessionId: currentSessionId });
             // Resume non-live sessions via ACP so the user can continue chatting
             if (!liveSessionIds.has(msg.sessionId)) {

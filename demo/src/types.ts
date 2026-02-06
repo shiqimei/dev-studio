@@ -1,71 +1,95 @@
-// ── Chat messages ────────────────────────────
+// ── Content blocks (match JSONL content block types) ──
 
 export interface ImageAttachment {
   data: string;
   mimeType: string;
 }
 
-export interface UserMessage {
-  type: "user";
-  id: string;
+export interface TextBlock {
+  type: "text";
   text: string;
-  images?: ImageAttachment[];
+  _streaming?: boolean;
 }
 
-export interface AssistantMessage {
-  type: "assistant";
-  id: string;
-  text: string;
-  done: boolean;
+export interface ThinkingBlock {
+  type: "thinking";
+  thinking: string;
+  _streaming?: boolean;
 }
 
-export interface ThoughtMessage {
-  type: "thought";
+export interface ToolUseBlock {
+  type: "tool_use";
   id: string;
-  text: string;
+  name: string;
+  input: unknown;
+  // UI extensions (added during streaming or history post-processing)
+  title?: string;
+  kind?: string;
+  status?: "pending" | "completed" | "failed";
+  result?: string;
 }
 
-export interface SystemMessage {
+export interface ToolResultBlock {
+  type: "tool_result";
+  tool_use_id: string;
+  content: unknown;
+  is_error?: boolean;
+}
+
+export interface ImageBlock {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
+
+export type ContentBlock =
+  | TextBlock
+  | ThinkingBlock
+  | ToolUseBlock
+  | ToolResultBlock
+  | ImageBlock;
+
+// ── Turn entries (match JSONL user/assistant entries) ──
+
+export interface MessageEntry {
+  type: "message";
+  id: string;
+  role: "user" | "assistant";
+  content: ContentBlock[];
+  isMeta?: boolean;
+  _streaming?: boolean;
+}
+
+// ── Non-turn entries ──
+
+export interface SystemEntry {
   type: "system";
   id: string;
   text: string;
 }
 
-export interface ToolCallMessage {
-  type: "tool_call";
-  id: string;
-  toolCallId: string;
-  kind: string;
-  title: string;
-  content: string;
-  status: "pending" | "completed" | "failed";
-}
-
-export interface PlanEntry {
+export interface PlanEntryItem {
   content: string;
   status: "pending" | "in_progress" | "completed";
 }
 
-export interface PlanMessage {
+export interface PlanEntry {
   type: "plan";
   id: string;
-  entries: PlanEntry[];
+  entries: PlanEntryItem[];
 }
 
-export interface PermissionMessage {
+export interface PermissionEntry {
   type: "permission";
   id: string;
   title: string;
 }
 
-export type ChatMessage =
-  | UserMessage
-  | AssistantMessage
-  | ThoughtMessage
-  | SystemMessage
-  | ToolCallMessage
-  | PlanMessage
-  | PermissionMessage;
+export type ChatEntry =
+  | MessageEntry
+  | SystemEntry
+  | PlanEntry
+  | PermissionEntry;
 
 // ── Sessions ────────────────────────────────
 
@@ -87,11 +111,10 @@ export interface DiskSession {
 }
 
 export interface SessionSnapshot {
-  messages: ChatMessage[];
+  messages: ChatEntry[];
   tasks: Record<string, TaskInfo>;
   protoEntries: ProtoEntry[];
-  currentAssistantId: string | null;
-  currentThoughtId: string | null;
+  currentTurnId: string | null;
   turnToolCallIds: string[];
 }
 
@@ -127,9 +150,8 @@ export type DirFilter = "all" | "send" | "recv";
 export interface AppState {
   connected: boolean;
   busy: boolean;
-  messages: ChatMessage[];
-  currentAssistantId: string | null;
-  currentThoughtId: string | null;
+  messages: ChatEntry[];
+  currentTurnId: string | null;
   tasks: Record<string, TaskInfo>;
   peekStatus: Record<string, string>;
   turnToolCallIds: string[];
@@ -158,7 +180,7 @@ export type Action =
   | { type: "THOUGHT_CHUNK"; text: string }
   | { type: "TOOL_CALL"; toolCallId: string; kind: string; title: string; content: string; meta: any }
   | { type: "TOOL_CALL_UPDATE"; toolCallId: string; status: string; title?: string; content?: string; meta: any }
-  | { type: "PLAN"; entries: PlanEntry[] }
+  | { type: "PLAN"; entries: PlanEntryItem[] }
   | { type: "PERMISSION"; title: string }
   | { type: "SESSION_INFO"; sessionId: string; models: string[]; modes: { id: string }[] }
   | { type: "SYSTEM"; text: string }
@@ -171,6 +193,6 @@ export type Action =
   | { type: "TOGGLE_TASK_PANEL" }
   | { type: "SESSION_LIST"; sessions: SessionMeta[] }
   | { type: "DISK_SESSIONS"; sessions: DiskSession[] }
-  | { type: "SESSION_HISTORY"; sessionId: string; messages: Array<{ role: "user" | "assistant"; text: string }> }
+  | { type: "SESSION_HISTORY"; sessionId: string; entries: unknown[] }
   | { type: "SESSION_SWITCHED"; sessionId: string }
   | { type: "SESSION_TITLE_UPDATE"; sessionId: string; title: string };

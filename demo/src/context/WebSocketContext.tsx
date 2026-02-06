@@ -7,8 +7,20 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import type { AppState, Action, ChatMessage, SessionSnapshot, ImageAttachment } from "../types";
+import type {
+  AppState,
+  Action,
+  ChatEntry,
+  MessageEntry,
+  ContentBlock,
+  TextBlock,
+  ThinkingBlock,
+  ToolUseBlock,
+  SessionSnapshot,
+  ImageAttachment,
+} from "../types";
 import { classifyTool } from "../utils";
+import { jsonlToEntries } from "../jsonl-convert";
 
 let nextId = 0;
 function uid(): string {
@@ -19,8 +31,7 @@ const emptySnapshot: SessionSnapshot = {
   messages: [],
   tasks: {},
   protoEntries: [],
-  currentAssistantId: null,
-  currentThoughtId: null,
+  currentTurnId: null,
   turnToolCallIds: [],
 };
 
@@ -28,8 +39,7 @@ const initialState: AppState = {
   connected: false,
   busy: false,
   messages: [],
-  currentAssistantId: null,
-  currentThoughtId: null,
+  currentTurnId: null,
   tasks: {},
   peekStatus: {},
   turnToolCallIds: [],
@@ -47,15 +57,67 @@ const initialState: AppState = {
   sessionHistory: {},
 };
 
-function markAssistantDone(messages: ChatMessage[], currentAssistantId: string | null): ChatMessage[] {
-  if (!currentAssistantId) return messages;
+// ── Reducer helpers ──
+
+/** Get the current assistant turn from messages, or null. */
+function getCurrentTurn(messages: ChatEntry[], turnId: string | null): MessageEntry | null {
+  if (!turnId) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.type === "message" && m.id === turnId) return m;
+  }
+  return null;
+}
+
+/** Update the current turn's content in-place (immutably). */
+function updateTurnContent(
+  messages: ChatEntry[],
+  turnId: string,
+  updater: (content: ContentBlock[]) => ContentBlock[],
+): ChatEntry[] {
   return messages.map((m) =>
-    m.id === currentAssistantId && m.type === "assistant"
-      ? { ...m, done: true }
+    m.type === "message" && m.id === turnId
+      ? { ...m, content: updater(m.content) }
       : m,
   );
 }
 
+/** Finalize any streaming blocks in the current turn (set _streaming: false). */
+function finalizeStreaming(messages: ChatEntry[], turnId: string | null): ChatEntry[] {
+  if (!turnId) return messages;
+  return messages.map((m) => {
+    if (m.type !== "message" || m.id !== turnId) return m;
+    return {
+      ...m,
+      _streaming: false,
+      content: m.content.map((b) => {
+        if ((b.type === "text" || b.type === "thinking") && b._streaming) {
+          return { ...b, _streaming: false };
+        }
+        return b;
+      }),
+    };
+  });
+}
+
+/** Ensure an assistant turn exists, creating one if needed. Returns [messages, turnId]. */
+function ensureAssistantTurn(
+  messages: ChatEntry[],
+  currentTurnId: string | null,
+): [ChatEntry[], string] {
+  if (currentTurnId && getCurrentTurn(messages, currentTurnId)) {
+    return [messages, currentTurnId];
+  }
+  const newId = uid();
+  const turn: MessageEntry = {
+    type: "message",
+    id: newId,
+    role: "assistant",
+    content: [],
+    _streaming: true,
+  };
+  return [[...messages, turn], newId];
+}
 
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -69,71 +131,96 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, busy: action.busy };
 
     case "SEND_MESSAGE": {
+      const content: ContentBlock[] = [];
+      if (action.images?.length) {
+        for (const img of action.images) {
+          content.push({ type: "image", data: img.data, mimeType: img.mimeType });
+        }
+      }
+      if (action.text) {
+        content.push({ type: "text", text: action.text });
+      }
+      const userTurn: MessageEntry = {
+        type: "message",
+        id: uid(),
+        role: "user",
+        content,
+      };
       return {
         ...state,
         busy: true,
-        currentAssistantId: null,
-        currentThoughtId: null,
-        messages: [
-          ...state.messages,
-          {
-            type: "user",
-            id: uid(),
-            text: action.text,
-            ...(action.images?.length ? { images: action.images } : {}),
-          },
-        ],
+        currentTurnId: null,
+        messages: [...finalizeStreaming(state.messages, state.currentTurnId), userTurn],
       };
     }
 
     case "TEXT_CHUNK": {
-      if (state.currentAssistantId) {
+      const [msgs, turnId] = ensureAssistantTurn(state.messages, state.currentTurnId);
+      const turn = getCurrentTurn(msgs, turnId)!;
+      const lastBlock = turn.content[turn.content.length - 1];
+
+      if (lastBlock?.type === "text" && lastBlock._streaming) {
+        // Append to existing streaming text block
         return {
           ...state,
-          currentThoughtId: null,
-          messages: state.messages.map((m) =>
-            m.id === state.currentAssistantId && m.type === "assistant"
-              ? { ...m, text: m.text + action.text }
-              : m,
+          currentTurnId: turnId,
+          messages: updateTurnContent(msgs, turnId, (content) =>
+            content.map((b, i) =>
+              i === content.length - 1 && b.type === "text"
+                ? { ...b, text: b.text + action.text }
+                : b,
+            ),
           ),
         };
       }
-      const newId = uid();
+
+      // Finalize any previous streaming block, then add new text block
       return {
         ...state,
-        currentAssistantId: newId,
-        currentThoughtId: null,
-        messages: [
-          ...state.messages,
-          { type: "assistant", id: newId, text: action.text, done: false },
-        ],
+        currentTurnId: turnId,
+        messages: updateTurnContent(msgs, turnId, (content) => [
+          ...content.map((b) =>
+            (b.type === "text" || b.type === "thinking") && b._streaming
+              ? { ...b, _streaming: false }
+              : b,
+          ),
+          { type: "text" as const, text: action.text, _streaming: true },
+        ]),
       };
     }
 
     case "THOUGHT_CHUNK": {
-      if (state.currentThoughtId) {
+      const [msgs, turnId] = ensureAssistantTurn(state.messages, state.currentTurnId);
+      const turn = getCurrentTurn(msgs, turnId)!;
+      const lastBlock = turn.content[turn.content.length - 1];
+
+      if (lastBlock?.type === "thinking" && lastBlock._streaming) {
+        // Append to existing streaming thinking block
         return {
           ...state,
-          currentAssistantId: null,
-          messages: markAssistantDone(
-            state.messages.map((m) =>
-              m.id === state.currentThoughtId && m.type === "thought"
-                ? { ...m, text: m.text + action.text }
-                : m,
+          currentTurnId: turnId,
+          messages: updateTurnContent(msgs, turnId, (content) =>
+            content.map((b, i) =>
+              i === content.length - 1 && b.type === "thinking"
+                ? { ...b, thinking: b.thinking + action.text }
+                : b,
             ),
-            state.currentAssistantId,
           ),
         };
       }
-      const newId = uid();
+
+      // Finalize any previous streaming block, then add new thinking block
       return {
         ...state,
-        currentAssistantId: null,
-        currentThoughtId: newId,
-        messages: [
-          ...markAssistantDone(state.messages, state.currentAssistantId),
-          { type: "thought", id: newId, text: action.text },
-        ],
+        currentTurnId: turnId,
+        messages: updateTurnContent(msgs, turnId, (content) => [
+          ...content.map((b) =>
+            (b.type === "text" || b.type === "thinking") && b._streaming
+              ? { ...b, _streaming: false }
+              : b,
+          ),
+          { type: "thinking" as const, thinking: action.text, _streaming: true },
+        ]),
       };
     }
 
@@ -165,26 +252,33 @@ function reducer(state: AppState, action: Action): AppState {
         taskPanelOpen = true;
       }
 
+      const [msgs, turnId] = ensureAssistantTurn(state.messages, state.currentTurnId);
+      const toolBlock: ToolUseBlock = {
+        type: "tool_use",
+        id: action.toolCallId,
+        name: action.meta?.claudeCode?.toolName || action.kind || "tool",
+        input: {},
+        title: action.title || action.toolCallId,
+        kind: action.kind || "tool",
+        status: "pending",
+      };
+
       return {
         ...state,
-        currentAssistantId: null,
-        currentThoughtId: null,
+        currentTurnId: turnId,
         taskPanelOpen,
         tasks: { ...state.tasks, [action.toolCallId]: newTask },
         peekStatus: newPeek,
         turnToolCallIds: [...state.turnToolCallIds, action.toolCallId],
-        messages: [
-          ...markAssistantDone(state.messages, state.currentAssistantId),
-          {
-            type: "tool_call",
-            id: uid(),
-            toolCallId: action.toolCallId,
-            kind: action.kind || "tool",
-            title: action.title || action.toolCallId,
-            content: action.content,
-            status: "pending",
-          },
-        ],
+        messages: updateTurnContent(msgs, turnId, (content) => [
+          // Finalize any streaming blocks
+          ...content.map((b) =>
+            (b.type === "text" || b.type === "thinking") && b._streaming
+              ? { ...b, _streaming: false }
+              : b,
+          ),
+          toolBlock,
+        ]),
       };
     }
 
@@ -221,48 +315,59 @@ function reducer(state: AppState, action: Action): AppState {
         }
       }
 
+      // Update the tool_use block in whichever turn contains it
+      const newStatus =
+        action.status === "completed"
+          ? ("completed" as const)
+          : action.status === "failed"
+            ? ("failed" as const)
+            : undefined;
+
       return {
         ...state,
         tasks: updatedTasks,
         peekStatus: newPeek,
-        messages: state.messages.map((m) =>
-          m.type === "tool_call" && m.toolCallId === action.toolCallId
-            ? {
-                ...m,
-                status:
-                  action.status === "completed"
-                    ? ("completed" as const)
-                    : action.status === "failed"
-                      ? ("failed" as const)
-                      : m.status,
-                title: action.title || m.title,
-                content: action.content || m.content,
-              }
-            : m,
-        ),
+        messages: state.messages.map((m) => {
+          if (m.type !== "message" || m.role !== "assistant") return m;
+          const hasBlock = m.content.some(
+            (b) => b.type === "tool_use" && b.id === action.toolCallId,
+          );
+          if (!hasBlock) return m;
+          return {
+            ...m,
+            content: m.content.map((b) =>
+              b.type === "tool_use" && b.id === action.toolCallId
+                ? {
+                    ...b,
+                    status: newStatus ?? b.status,
+                    title: action.title || b.title,
+                    result: action.content || b.result,
+                  }
+                : b,
+            ),
+          };
+        }),
       };
     }
 
     case "PLAN":
       return {
         ...state,
-        currentAssistantId: null,
-        currentThoughtId: null,
         messages: [
-          ...markAssistantDone(state.messages, state.currentAssistantId),
+          ...finalizeStreaming(state.messages, state.currentTurnId),
           { type: "plan", id: uid(), entries: action.entries },
         ],
+        currentTurnId: null,
       };
 
     case "PERMISSION":
       return {
         ...state,
-        currentAssistantId: null,
-        currentThoughtId: null,
         messages: [
-          ...markAssistantDone(state.messages, state.currentAssistantId),
+          ...finalizeStreaming(state.messages, state.currentTurnId),
           { type: "permission", id: uid(), title: action.title },
         ],
+        currentTurnId: null,
       };
 
     case "SESSION_INFO":
@@ -287,12 +392,11 @@ function reducer(state: AppState, action: Action): AppState {
     case "SYSTEM":
       return {
         ...state,
-        currentAssistantId: null,
-        currentThoughtId: null,
         messages: [
-          ...markAssistantDone(state.messages, state.currentAssistantId),
+          ...finalizeStreaming(state.messages, state.currentTurnId),
           { type: "system", id: uid(), text: action.text },
         ],
+        currentTurnId: null,
       };
 
     case "TURN_END": {
@@ -316,16 +420,11 @@ function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         busy: false,
-        currentAssistantId: null,
-        currentThoughtId: null,
+        currentTurnId: null,
         turnToolCallIds: [],
         tasks: updatedTasks,
         taskPanelOpen,
-        messages: state.messages.map((m) =>
-          m.id === state.currentAssistantId && m.type === "assistant"
-            ? { ...m, done: true }
-            : m,
-        ),
+        messages: finalizeStreaming(state.messages, state.currentTurnId),
       };
     }
 
@@ -388,13 +487,7 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, diskSessions: action.sessions };
 
     case "SESSION_HISTORY": {
-      // Convert history messages into ChatMessage format and store in sessionHistory
-      const historyMessages: ChatMessage[] = action.messages.map((m) => {
-        if (m.role === "user") {
-          return { type: "user" as const, id: uid(), text: m.text };
-        }
-        return { type: "assistant" as const, id: uid(), text: m.text, done: true };
-      });
+      const historyMessages = jsonlToEntries(action.entries);
       return {
         ...state,
         sessionHistory: {
@@ -403,8 +496,7 @@ function reducer(state: AppState, action: Action): AppState {
             messages: historyMessages,
             tasks: {},
             protoEntries: [],
-            currentAssistantId: null,
-            currentThoughtId: null,
+            currentTurnId: null,
             turnToolCallIds: [],
           },
         },
@@ -419,8 +511,7 @@ function reducer(state: AppState, action: Action): AppState {
           messages: state.messages,
           tasks: state.tasks,
           protoEntries: state.protoEntries,
-          currentAssistantId: state.currentAssistantId,
-          currentThoughtId: state.currentThoughtId,
+          currentTurnId: state.currentTurnId,
           turnToolCallIds: state.turnToolCallIds,
         };
       }
@@ -435,8 +526,7 @@ function reducer(state: AppState, action: Action): AppState {
         messages: restored.messages,
         tasks: restored.tasks,
         protoEntries: restored.protoEntries,
-        currentAssistantId: null,
-        currentThoughtId: null,
+        currentTurnId: null,
         turnToolCallIds: restored.turnToolCallIds,
         busy: false,
         peekStatus: {},
@@ -623,7 +713,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       dispatch({ type: "DISK_SESSIONS", sessions: msg.sessions });
       break;
     case "session_history":
-      dispatch({ type: "SESSION_HISTORY", sessionId: msg.sessionId, messages: msg.messages });
+      dispatch({ type: "SESSION_HISTORY", sessionId: msg.sessionId, entries: msg.entries ?? [] });
       break;
     case "session_switched":
       dispatch({ type: "SESSION_SWITCHED", sessionId: msg.sessionId });

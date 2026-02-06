@@ -1,7 +1,7 @@
-import type { PlanEntry } from "../../types";
+import type { PlanEntryItem } from "../../types";
 
 interface Props {
-  entries: PlanEntry[];
+  entries: PlanEntryItem[];
 }
 
 export function Plan({ entries }: Props) {

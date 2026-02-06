@@ -71,7 +71,8 @@ export {
   getSkillsDir,
 } from "./disk/paths.js";
 export { readSessionsIndex } from "./disk/sessions-index.js";
-export { readSessionHistory } from "./disk/session-history.js";
+export { readSessionHistory, readSessionHistoryFull } from "./disk/session-history.js";
+export type { JsonlEntry } from "./disk/types.js";
 export { readStatsCache } from "./disk/stats.js";
 export type { DailyActivity, StatsCache } from "./disk/stats.js";
 export { readSessionTasks, getSessionTasksDir, listSessionsWithTasks } from "./disk/tasks.js";

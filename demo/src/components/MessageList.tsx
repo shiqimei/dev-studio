@@ -1,10 +1,8 @@
 import { useWs } from "../context/WebSocketContext";
 import { useAutoScroll } from "../hooks/useAutoScroll";
 import { UserMessage } from "./messages/UserMessage";
-import { AssistantMessage } from "./messages/AssistantMessage";
-import { ThoughtMessage } from "./messages/ThoughtMessage";
+import { AssistantTurn } from "./messages/AssistantTurn";
 import { SystemMessage } from "./messages/SystemMessage";
-import { ToolCall } from "./messages/ToolCall";
 import { Plan } from "./messages/Plan";
 import { Permission } from "./messages/Permission";
 
@@ -18,36 +16,20 @@ export function MessageList() {
       onScroll={onScroll}
       className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-1"
     >
-      {state.messages.map((msg) => {
-        switch (msg.type) {
-          case "user":
-            return <UserMessage key={msg.id} text={msg.text} images={msg.images} />;
-          case "assistant":
-            return (
-              <AssistantMessage
-                key={msg.id}
-                text={msg.text}
-                done={msg.done}
-              />
+      {state.messages.map((entry) => {
+        switch (entry.type) {
+          case "message":
+            return entry.role === "user" ? (
+              <UserMessage key={entry.id} entry={entry} />
+            ) : (
+              <AssistantTurn key={entry.id} entry={entry} />
             );
-          case "thought":
-            return <ThoughtMessage key={msg.id} text={msg.text} />;
           case "system":
-            return <SystemMessage key={msg.id} text={msg.text} />;
-          case "tool_call":
-            return (
-              <ToolCall
-                key={msg.id}
-                kind={msg.kind}
-                title={msg.title}
-                content={msg.content}
-                status={msg.status}
-              />
-            );
+            return <SystemMessage key={entry.id} text={entry.text} />;
           case "plan":
-            return <Plan key={msg.id} entries={msg.entries} />;
+            return <Plan key={entry.id} entries={entry.entries} />;
           case "permission":
-            return <Permission key={msg.id} title={msg.title} />;
+            return <Permission key={entry.id} title={entry.title} />;
         }
       })}
     </div>

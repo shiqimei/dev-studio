@@ -4,7 +4,7 @@
  */
 import * as fs from "node:fs";
 import { getSessionJsonlPath } from "./paths.js";
-import type { HistoryMessage } from "./types.js";
+import type { HistoryMessage, JsonlEntry } from "./types.js";
 
 /**
  * Reads a session's JSONL conversation file and extracts user/assistant messages.
@@ -49,6 +49,38 @@ export function readSessionHistory(projectDir: string, sessionId: string): Histo
     }
 
     return messages;
+  } catch {
+    return [];
+  }
+}
+
+/** Entry types to include when reading full session history. */
+const CONTENT_ENTRY_TYPES = new Set(["user", "assistant", "system", "result"]);
+
+/**
+ * Reads a session's JSONL conversation file and returns the raw parsed entries.
+ * Includes user, assistant, system, and result entries with all content blocks preserved.
+ * Filters out control messages, stream_events, keep_alive, etc.
+ */
+export function readSessionHistoryFull(projectDir: string, sessionId: string): JsonlEntry[] {
+  const jsonlPath = getSessionJsonlPath(projectDir, sessionId);
+  try {
+    const raw = fs.readFileSync(jsonlPath, "utf-8");
+    const lines = raw.split("\n").filter(Boolean);
+    const entries: JsonlEntry[] = [];
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as JsonlEntry;
+        if (CONTENT_ENTRY_TYPES.has(entry.type)) {
+          entries.push(entry);
+        }
+      } catch {
+        // Skip malformed lines
+      }
+    }
+
+    return entries;
   } catch {
     return [];
   }

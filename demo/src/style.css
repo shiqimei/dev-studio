@@ -118,6 +118,62 @@
   border-color: var(--color-red);
 }
 
+/* Pinned queued messages above input */
+.queued-pin-area {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.queued-pin-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid var(--color-yellow);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.queued-pin-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-yellow);
+  flex-shrink: 0;
+}
+
+.queued-pin-text {
+  color: var(--color-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.queued-pin-cancel {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--color-dim);
+  font-size: 10px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.queued-pin-cancel:hover {
+  color: var(--color-red);
+  border-color: var(--color-red);
+}
+
 .user-text-wrap {
   position: relative;
 }
@@ -368,6 +424,8 @@
 .tool-call .tool-status.completed { color: var(--color-green); }
 .tool-call .tool-status.failed { color: var(--color-red); }
 
+.tool-call .tool-content.tool-error { color: var(--color-red); }
+
 .tool-call .agent-link {
   font-size: 10px;
   color: var(--color-purple);
@@ -392,8 +450,6 @@
   border-top: 1px solid var(--color-border);
   color: var(--color-dim);
   font-size: 11px;
-  max-height: 200px;
-  overflow-y: auto;
 }
 
 /* ── Diff view ───────────────────────────── */
@@ -433,7 +489,6 @@
   font-size: 11px;
   line-height: 1.5;
   padding-top: 4px !important;
-  max-height: 300px;
 }
 
 .code-line {
@@ -462,7 +517,6 @@
   font-size: 11px;
   line-height: 1.5;
   padding-top: 4px !important;
-  max-height: 300px;
 }
 
 .search-file-entry {
@@ -561,8 +615,6 @@
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--color-dim);
-  max-height: 300px;
-  overflow-y: auto;
 }
 
 /* ── System reminder (collapsible) ───────── */
@@ -596,7 +648,6 @@
 
 .task-result-view {
   font-size: 12px;
-  max-height: 400px;
 }
 
 .task-result-header {
@@ -657,8 +708,6 @@
   margin-top: 4px;
   padding-top: 4px;
   border-top: 1px solid var(--color-border);
-  max-height: 200px;
-  overflow-y: auto;
 }
 
 /* ── Plan ─────────────────────────────────── */
@@ -1208,4 +1257,28 @@
 
 .file-chip-remove:hover {
   color: var(--color-red);
+}
+
+/* ── Turn status bar ─────────────────────── */
+
+.turn-status {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 4px;
+  line-height: 1.4;
+  user-select: none;
+}
+
+.turn-status-active {
+  color: var(--color-yellow);
+}
+
+.turn-status-done {
+  color: var(--color-dim);
+}
+
+.turn-status-dot {
+  display: inline-block;
+  animation: pulse 1.5s ease-in-out infinite;
+  font-weight: 700;
 }

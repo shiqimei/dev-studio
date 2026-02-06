@@ -5,10 +5,11 @@ import { AssistantTurn } from "./messages/AssistantTurn";
 import { SystemMessage } from "./messages/SystemMessage";
 import { Plan } from "./messages/Plan";
 import { Permission } from "./messages/Permission";
+import { TurnStatusBar } from "./TurnStatusBar";
 
 export function MessageList() {
   const { state } = useWs();
-  const { ref, onScroll } = useAutoScroll<HTMLDivElement>(state.messages);
+  const { ref, onScroll } = useAutoScroll<HTMLDivElement>(state.messages, state.turnStatus);
 
   return (
     <div
@@ -36,6 +37,7 @@ export function MessageList() {
             return <Permission key={entry.id} title={entry.title} />;
         }
       })}
+      <TurnStatusBar />
     </div>
   );
 }

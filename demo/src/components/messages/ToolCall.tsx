@@ -37,7 +37,8 @@ interface Props {
 
 export function ToolCall({ kind, title, content, status, input, agentId, onNavigateToAgent }: Props) {
   const overview = (!title && content) ? toolOverview(kind, content) : "";
-  const displayTitle = title || overview || (content && content.length <= 100 ? content : "");
+  const rawDisplayTitle = title || overview || (content && content.length <= 100 ? content : "");
+  const displayTitle = rawDisplayTitle ? stripToolError(rawDisplayTitle).text : "";
   const isEdit = kind === "Edit";
   const isReadOrWrite = kind === "Read" || kind === "Write";
   const isSearch = kind === "Grep" || kind === "Glob";
@@ -159,8 +160,16 @@ function PersistedOutput({ data }: { data: PersistedOutputData }) {
   );
 }
 
+/** Strip <tool_use_error> tags, returning the inner text. */
+function stripToolError(text: string): { text: string; isError: boolean } {
+  const m = text.match(/<tool_use_error>([\s\S]*?)<\/tool_use_error>/);
+  if (m) return { text: m[1].trim(), isError: true };
+  return { text, isError: false };
+}
+
 function PlainContent({ content }: { content: string }) {
-  const { clean, reminders } = splitSystemReminders(content);
+  const { clean: rawClean, reminders } = splitSystemReminders(content);
+  const { text: clean, isError } = stripToolError(rawClean);
   const persisted = parsePersistedOutput(clean);
 
   if (persisted) {
@@ -175,8 +184,8 @@ function PlainContent({ content }: { content: string }) {
 
   const hasAnsi = /\x1b\[/.test(clean);
   return (
-    <div className="tool-content">
-      {clean && (hasAnsi ? <AnsiText text={clean} /> : <div>{clean}</div>)}
+    <div className={`tool-content${isError ? " tool-error" : ""}`}>
+      {clean && (hasAnsi ? <AnsiText text={clean} /> : <pre className="ansi-text">{clean}</pre>)}
       {reminders.map((r, i) => <SystemReminder key={i} text={r} />)}
     </div>
   );

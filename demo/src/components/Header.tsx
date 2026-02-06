@@ -6,14 +6,14 @@ export function Header() {
   const statusClass = state.connected ? "connected" : "error";
 
   // Find current session title
-  const currentSession = state.sessions.find(
+  const currentSession = state.diskSessions.find(
     (s) => s.sessionId === state.currentSessionId,
   );
   const rawTitle = currentSession?.title;
   const sessionLabel =
     (rawTitle ? stripCliXml(rawTitle) || rawTitle.replace(/<[^>]+>/g, "").trim() : null) ||
     (state.currentSessionId
-      ? state.currentSessionId.slice(0, 8) + "..."
+      ? state.currentSessionId.slice(0, 8)
       : null);
 
   return (

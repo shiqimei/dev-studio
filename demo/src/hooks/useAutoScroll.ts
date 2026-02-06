@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback } from "react";
 
-export function useAutoScroll<T extends HTMLElement>(dep: unknown) {
+export function useAutoScroll<T extends HTMLElement>(...deps: unknown[]) {
   const ref = useRef<T>(null);
   const autoScroll = useRef(true);
 
@@ -16,7 +16,7 @@ export function useAutoScroll<T extends HTMLElement>(dep: unknown) {
     if (el && autoScroll.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [dep]);
+  }, deps);
 
   return { ref, onScroll };
 }

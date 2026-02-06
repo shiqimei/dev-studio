@@ -22,13 +22,17 @@ function uid(): string {
  */
 export function prettyToolName(name: string): string {
   if (name.startsWith("mcp__claude-in-chrome__")) return "Browser";
+  // Strip mcp__acp__ prefix (case-insensitive) → just the tool name
+  if (/^mcp__acp__/i.test(name)) {
+    return name.replace(/^mcp__acp__/i, "");
+  }
   if (name.startsWith("mcp__")) {
     // mcp__server__tool → Server:Tool
     const parts = name.slice(5).split("__");
     return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(":");
   }
-  // Strip ACP: prefix and title-case (e.g. "ACP:READ" → "Read")
-  if (name.startsWith("ACP:")) {
+  // Strip ACP: prefix (case-insensitive, e.g. "ACP:READ" → "Read")
+  if (/^acp:/i.test(name)) {
     const base = name.slice(4);
     return base.charAt(0).toUpperCase() + base.slice(1).toLowerCase();
   }
@@ -42,10 +46,14 @@ export function toolTitle(name: string, input: unknown): string {
   const inp = input as Record<string, unknown> | null;
   if (!inp) return "";
 
-  // Normalize ACP: prefixed names (e.g. "ACP:READ" → "Read")
-  const normalized = name.startsWith("ACP:")
-    ? name.slice(4).charAt(0).toUpperCase() + name.slice(5).toLowerCase()
-    : name;
+  // Normalize ACP-prefixed names (case-insensitive):
+  // "mcp__acp__Read" → "Read", "ACP:READ" → "Read"
+  let normalized = name;
+  if (/^mcp__acp__/i.test(name)) {
+    normalized = name.replace(/^mcp__acp__/i, "");
+  } else if (/^acp:/i.test(name)) {
+    normalized = name.slice(4).charAt(0).toUpperCase() + name.slice(5).toLowerCase();
+  }
 
   // Return just the argument — the tool name is shown in the badge
   switch (normalized) {

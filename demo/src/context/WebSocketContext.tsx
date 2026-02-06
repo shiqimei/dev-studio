@@ -17,6 +17,7 @@ import type {
   ThinkingBlock,
   ToolUseBlock,
   SessionSnapshot,
+  TurnStatus,
   ImageAttachment,
   FileAttachment,
   SlashCommand,
@@ -71,6 +72,7 @@ const emptySnapshot: SessionSnapshot = {
   tasks: {},
   currentTurnId: null,
   turnToolCallIds: [],
+  turnStatus: null,
 };
 
 const initialState: AppState = {
@@ -88,9 +90,9 @@ const initialState: AppState = {
   dirFilter: "all",
   textFilter: "",
   debugCollapsed: false,
+  turnStatus: null,
   startTime: Date.now(),
   // Session management
-  sessions: [],
   diskSessions: [],
   diskSessionsLoaded: false,
   currentSessionId: null,
@@ -211,6 +213,7 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         busy: true,
         currentTurnId: null,
+        turnStatus: null,
         messages: [...finalizeStreaming(state.messages, state.currentTurnId), userTurn],
       };
     }
@@ -220,11 +223,17 @@ function reducer(state: AppState, action: Action): AppState {
       const turn = getCurrentTurn(msgs, turnId)!;
       const lastBlock = turn.content[turn.content.length - 1];
 
+      // Accumulate approximate token count in turnStatus
+      const textTurnStatus = state.turnStatus?.status === "in_progress"
+        ? { ...state.turnStatus, approxTokens: (state.turnStatus.approxTokens ?? 0) + Math.ceil(action.text.length / 4) }
+        : state.turnStatus;
+
       if (lastBlock?.type === "text" && lastBlock._streaming) {
         // Append to existing streaming text block
         return {
           ...state,
           currentTurnId: turnId,
+          turnStatus: textTurnStatus,
           messages: updateTurnContent(msgs, turnId, (content) =>
             content.map((b, i) =>
               i === content.length - 1 && b.type === "text"
@@ -239,6 +248,7 @@ function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         currentTurnId: turnId,
+        turnStatus: textTurnStatus,
         messages: updateTurnContent(msgs, turnId, (content) => [
           ...content.map((b) => {
             const c = completePendingTools(b);
@@ -256,11 +266,27 @@ function reducer(state: AppState, action: Action): AppState {
       const turn = getCurrentTurn(msgs, turnId)!;
       const lastBlock = turn.content[turn.content.length - 1];
 
+      // Accumulate thinking duration and token count in turnStatus
+      let thoughtTurnStatus = state.turnStatus;
+      if (thoughtTurnStatus?.status === "in_progress") {
+        const isNewThinkingBlock = !(lastBlock?.type === "thinking" && lastBlock._streaming);
+        thoughtTurnStatus = {
+          ...thoughtTurnStatus,
+          approxTokens: (thoughtTurnStatus.approxTokens ?? 0) + Math.ceil(action.text.length / 4),
+          // Track thinking start time — we'll compute duration at TURN_END from server stats
+          // but also keep a client-side approximation
+          thinkingDurationMs: isNewThinkingBlock
+            ? (thoughtTurnStatus.thinkingDurationMs ?? 0)
+            : (thoughtTurnStatus.thinkingDurationMs ?? 0),
+        };
+      }
+
       if (lastBlock?.type === "thinking" && lastBlock._streaming) {
         // Append to existing streaming thinking block
         return {
           ...state,
           currentTurnId: turnId,
+          turnStatus: thoughtTurnStatus,
           messages: updateTurnContent(msgs, turnId, (content) =>
             content.map((b, i) =>
               i === content.length - 1 && b.type === "thinking"
@@ -275,6 +301,7 @@ function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         currentTurnId: turnId,
+        turnStatus: thoughtTurnStatus,
         messages: updateTurnContent(msgs, turnId, (content) => [
           ...content.map((b) => {
             const c = completePendingTools(b);
@@ -458,7 +485,12 @@ function reducer(state: AppState, action: Action): AppState {
         ],
       };
 
-    case "SYSTEM":
+    case "SYSTEM": {
+      // Deduplicate: skip if the same system text was already shown in this session
+      const isDupe = state.messages.some(
+        (m) => m.type === "system" && m.text === action.text,
+      );
+      if (isDupe) return state;
       return {
         ...state,
         messages: [
@@ -466,6 +498,18 @@ function reducer(state: AppState, action: Action): AppState {
           { type: "system", id: uid(), text: action.text },
         ],
         currentTurnId: null,
+      };
+    }
+
+    case "TURN_START":
+      return {
+        ...state,
+        turnStatus: {
+          status: "in_progress",
+          startedAt: action.startedAt,
+          approxTokens: 0,
+          thinkingDurationMs: 0,
+        },
       };
 
     case "TURN_END": {
@@ -486,6 +530,22 @@ function reducer(state: AppState, action: Action): AppState {
         taskPanelOpen = true;
       }
 
+      // Build completed turn status from server-provided stats
+      const completedStatus: TurnStatus | null = action.durationMs != null
+        ? {
+            status: "completed",
+            startedAt: state.turnStatus?.startedAt ?? Date.now(),
+            endedAt: Date.now(),
+            durationMs: action.durationMs,
+            outputTokens: action.outputTokens,
+            thinkingDurationMs: action.thinkingDurationMs,
+            costUsd: action.costUsd,
+            approxTokens: state.turnStatus?.approxTokens,
+          }
+        : state.turnStatus
+          ? { ...state.turnStatus, status: "completed", endedAt: Date.now(), durationMs: Date.now() - state.turnStatus.startedAt }
+          : null;
+
       return {
         ...state,
         // Stay busy if there are queued messages (server will auto-drain next)
@@ -494,6 +554,7 @@ function reducer(state: AppState, action: Action): AppState {
         turnToolCallIds: [],
         tasks: updatedTasks,
         taskPanelOpen,
+        turnStatus: completedStatus,
         messages: finalizeStreaming(state.messages, state.currentTurnId),
       };
     }
@@ -550,10 +611,7 @@ function reducer(state: AppState, action: Action): AppState {
 
     // ── Session management actions ────────────
 
-    case "SESSION_LIST":
-      return { ...state, sessions: action.sessions };
-
-    case "DISK_SESSIONS":
+    case "SESSIONS":
       return { ...state, diskSessions: action.sessions, diskSessionsLoaded: true };
 
     case "SESSION_HISTORY": {
@@ -568,6 +626,7 @@ function reducer(state: AppState, action: Action): AppState {
             tasks: {},
             currentTurnId: null,
             turnToolCallIds: [],
+            turnStatus: null,
           },
         },
       };
@@ -588,22 +647,43 @@ function reducer(state: AppState, action: Action): AppState {
           tasks: state.tasks,
           currentTurnId: state.currentTurnId,
           turnToolCallIds: state.turnToolCallIds,
+          turnStatus: state.turnStatus,
         };
       }
 
       // Restore target session state from history or use empty defaults
       const restored = history[action.sessionId] ?? emptySnapshot;
 
+      // Ensure the new session appears in diskSessions (it may not have a
+      // JSONL file yet if it was just created)
+      let diskSessions = state.diskSessions;
+      if (!diskSessions.some((s) => s.sessionId === action.sessionId)) {
+        diskSessions = [
+          {
+            sessionId: action.sessionId,
+            title: null,
+            updatedAt: new Date().toISOString(),
+            created: new Date().toISOString(),
+            messageCount: 0,
+            gitBranch: null,
+            projectPath: null,
+          },
+          ...diskSessions,
+        ];
+      }
+
       return {
         ...state,
         currentSessionId: action.sessionId,
         switchingToSessionId: null,
         sessionHistory: history,
+        diskSessions,
         messages: restored.messages,
         tasks: restored.tasks,
         // protoEntries are global debug traffic — keep them across session switches
         currentTurnId: null,
         turnToolCallIds: restored.turnToolCallIds,
+        turnStatus: restored.turnStatus,
         busy: false,
         queuedMessages: [],
         peekStatus: {},
@@ -613,7 +693,7 @@ function reducer(state: AppState, action: Action): AppState {
     case "SESSION_TITLE_UPDATE":
       return {
         ...state,
-        sessions: state.sessions.map((s) =>
+        diskSessions: state.diskSessions.map((s) =>
           s.sessionId === action.sessionId ? { ...s, title: action.title } : s,
         ),
       };
@@ -959,18 +1039,24 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
     case "system":
       dispatch({ type: "SYSTEM", text: msg.text });
       break;
+    case "turn_start":
+      dispatch({ type: "TURN_START", startedAt: msg.startedAt ?? Date.now() });
+      break;
     case "turn_end":
-      dispatch({ type: "TURN_END" });
+      dispatch({
+        type: "TURN_END",
+        durationMs: msg.durationMs,
+        outputTokens: msg.outputTokens,
+        thinkingDurationMs: msg.thinkingDurationMs,
+        costUsd: msg.costUsd,
+      });
       break;
     case "error":
       dispatch({ type: "ERROR", text: msg.text });
       break;
     // Session management messages
-    case "session_list":
-      dispatch({ type: "SESSION_LIST", sessions: msg.sessions });
-      break;
-    case "disk_sessions":
-      dispatch({ type: "DISK_SESSIONS", sessions: msg.sessions });
+    case "sessions":
+      dispatch({ type: "SESSIONS", sessions: msg.sessions });
       break;
     case "session_history":
       dispatch({ type: "SESSION_HISTORY", sessionId: msg.sessionId, entries: msg.entries ?? [] });

@@ -1,6 +1,6 @@
-import { useRef, useCallback, useState, useEffect } from "react";
+import { useRef, useCallback, useState, useEffect, useMemo } from "react";
 import { useWs } from "../context/WebSocketContext";
-import type { ImageAttachment, FileAttachment, SlashCommand } from "../types";
+import type { ImageAttachment, FileAttachment, SlashCommand, MessageEntry } from "../types";
 
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -53,7 +53,7 @@ function basename(path: string): string {
 }
 
 export function ChatInput() {
-  const { state, send, searchFiles } = useWs();
+  const { state, send, cancelQueued, searchFiles } = useWs();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [files, setFiles] = useState<FileAttachment[]>([]);
@@ -279,6 +279,15 @@ export function ChatInput() {
     }
   }, [slashIdx, mentionIdx, slashOpen, mentionOpen]);
 
+  // Collect queued message entries for the pinned queue area
+  const queuedEntries = useMemo(() => {
+    if (state.queuedMessages.length === 0) return [];
+    const queuedSet = new Set(state.queuedMessages);
+    return state.messages.filter(
+      (m) => m.type === "message" && m.role === "user" && (m as MessageEntry)._queueId && queuedSet.has((m as MessageEntry)._queueId!),
+    ) as MessageEntry[];
+  }, [state.messages, state.queuedMessages]);
+
   const isSubagentView = state.currentSessionId?.includes(":subagent:") ?? false;
   const disabled = !state.connected;
 
@@ -294,6 +303,31 @@ export function ChatInput() {
 
   return (
     <div className="border-t border-border px-5 py-3 shrink-0 relative">
+      {/* Pinned queued messages */}
+      {queuedEntries.length > 0 && (
+        <div className="queued-pin-area">
+          {queuedEntries.map((entry) => {
+            const text = entry.content
+              .filter((b) => b.type === "text")
+              .map((b) => (b as { text: string }).text)
+              .join(" ");
+            const truncated = text.length > 80 ? text.slice(0, 80) + "..." : text;
+            return (
+              <div key={entry.id} className="queued-pin-item">
+                <span className="queued-pin-label">queued</span>
+                <span className="queued-pin-text">{truncated || "..."}</span>
+                <button
+                  type="button"
+                  className="queued-pin-cancel"
+                  onClick={() => cancelQueued(entry._queueId!)}
+                >
+                  x
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
       {/* Autocomplete dropdown */}
       {showAutocomplete && (
         <div

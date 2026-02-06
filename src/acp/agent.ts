@@ -766,114 +766,6 @@ export class ClaudeAcpAgent implements Agent {
 
   async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     switch (method) {
-      case "sessions/listDisk": {
-        const cwd = params.cwd as string | undefined;
-        const projectDir = getProjectDir(cwd);
-        const entries = readSessionsIndex(projectDir);
-
-        // Read team metadata for each session
-        const teamInfoMap = new Map<string, { teamName: string; agentName?: string }>();
-        for (const e of entries) {
-          const info = readSessionTeamInfo(projectDir, e.sessionId);
-          if (info) teamInfoMap.set(e.sessionId, info);
-        }
-
-        // Group teammates by teamName → { leader sessionId, teammate sessionIds[] }
-        const teamGroups = new Map<string, { leaderSessionId: string | null; teammates: string[] }>();
-        for (const [sessionId, info] of teamInfoMap) {
-          if (!teamGroups.has(info.teamName)) {
-            teamGroups.set(info.teamName, { leaderSessionId: null, teammates: [] });
-          }
-          const group = teamGroups.get(info.teamName)!;
-          if (info.agentName) {
-            group.teammates.push(sessionId);
-          } else {
-            group.leaderSessionId = sessionId;
-          }
-        }
-
-        // Fallback: for teams with teammates but no leader detected via first-line metadata,
-        // scan non-team sessions for TeamCreate tool calls to identify the leader.
-        for (const [teamName, group] of teamGroups) {
-          if (group.leaderSessionId || group.teammates.length === 0) continue;
-          const teammateIds = new Set(group.teammates);
-          for (const e of entries) {
-            if (teammateIds.has(e.sessionId)) continue;
-            if (teamInfoMap.has(e.sessionId)) continue;
-            const found = findTeamCreateInSession(projectDir, e.sessionId);
-            if (found === teamName) {
-              group.leaderSessionId = e.sessionId;
-              teamInfoMap.set(e.sessionId, { teamName });
-              break;
-            }
-          }
-        }
-
-        // Collect teammate sessionIds that should be hidden from top-level
-        const teammateSessionIds = new Set<string>();
-        // Map: leader sessionId → teammate session entries to add as children
-        const leaderTeammates = new Map<string, typeof entries>();
-        for (const [, group] of teamGroups) {
-          if (group.leaderSessionId && group.teammates.length > 0) {
-            const teammateEntries = entries.filter((e) => group.teammates.includes(e.sessionId));
-            leaderTeammates.set(group.leaderSessionId, teammateEntries);
-            for (const id of group.teammates) teammateSessionIds.add(id);
-          }
-        }
-
-        const sessions = entries
-          .filter((e) => !teammateSessionIds.has(e.sessionId))
-          .map((e) => {
-            const subagents = readSubagents(projectDir, e.sessionId);
-            const tree = buildSubagentTree(subagents);
-            const children: any[] = tree.map(function mapNode(s: any): any {
-              return {
-                agentId: s.agentId,
-                taskPrompt: s.taskPrompt,
-                timestamp: s.timestamp,
-                agentType: s.agentType,
-                ...(s.parentAgentId ? { parentAgentId: s.parentAgentId } : {}),
-                ...(s.children && s.children.length > 0
-                  ? { children: s.children.map(mapNode) }
-                  : {}),
-              };
-            });
-
-            // Append teammate sessions as children of the team leader
-            const teammates = leaderTeammates.get(e.sessionId);
-            if (teammates) {
-              for (const tm of teammates) {
-                const tmInfo = teamInfoMap.get(tm.sessionId);
-                children.push({
-                  agentId: tm.sessionId,
-                  sessionId: tm.sessionId,
-                  taskPrompt: tmInfo?.agentName ?? tm.firstPrompt?.slice(0, 100) ?? "Teammate",
-                  timestamp: tm.created ?? tm.modified ?? "",
-                  agentType: "code" as const,
-                });
-              }
-            }
-
-            return {
-              sessionId: e.sessionId,
-              title: e.firstPrompt?.slice(0, 100) ?? null,
-              updatedAt: e.modified ?? e.created ?? null,
-              created: e.created ?? null,
-              messageCount: e.messageCount ?? 0,
-              gitBranch: e.gitBranch ?? null,
-              projectPath: e.projectPath ?? null,
-              ...(children.length > 0 ? { children } : {}),
-              ...(teamInfoMap.get(e.sessionId)?.teamName ? { teamName: teamInfoMap.get(e.sessionId)!.teamName } : {}),
-            };
-          })
-          .sort((a, b) => {
-            const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-            const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-            return tb - ta;
-          });
-        return { sessions };
-      }
-
       case "sessions/getHistory": {
         const sessionId = params.sessionId as string;
         if (!sessionId) throw new Error("sessionId is required");
@@ -1350,51 +1242,114 @@ export class ClaudeAcpAgent implements Agent {
   }
 
   async unstable_listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
-    const sessionsMap = new Map<string, { sessionId: string; cwd: string; title: string | null; updatedAt: string | null }>();
+    const cwd = params.cwd ?? undefined;
+    const projectDir = getProjectDir(cwd);
+    const entries = readSessionsIndex(projectDir);
 
-    // Read sessions from ~/.claude/projects on disk
-    const projectsDir = path.join(CLAUDE_CONFIG_DIR, "projects");
-    try {
-      const projectDirs = params.cwd
-        ? [path.join(projectsDir, params.cwd.replace(/\//g, "-"))]
-        : fs.readdirSync(projectsDir, { withFileTypes: true })
-            .filter((d) => d.isDirectory())
-            .map((d) => path.join(projectsDir, d.name));
+    // Read team metadata for each session
+    const teamInfoMap = new Map<string, { teamName: string; agentName?: string }>();
+    for (const e of entries) {
+      const info = readSessionTeamInfo(projectDir, e.sessionId);
+      if (info) teamInfoMap.set(e.sessionId, info);
+    }
 
-      for (const dir of projectDirs) {
-        const entries = readSessionsIndex(dir);
-        for (const entry of entries) {
-          const cwd = entry.projectPath || dir.replace(projectsDir + "/", "").replace(/-/g, "/");
-          if (params.cwd && cwd !== params.cwd) continue;
-          sessionsMap.set(entry.sessionId, {
-            sessionId: entry.sessionId,
-            cwd,
-            title: entry.firstPrompt?.slice(0, 100) ?? null,
-            updatedAt: entry.modified ?? entry.created ?? null,
-          });
+    // Group teammates by teamName → { leader sessionId, teammate sessionIds[] }
+    const teamGroups = new Map<string, { leaderSessionId: string | null; teammates: string[] }>();
+    for (const [sessionId, info] of teamInfoMap) {
+      if (!teamGroups.has(info.teamName)) {
+        teamGroups.set(info.teamName, { leaderSessionId: null, teammates: [] });
+      }
+      const group = teamGroups.get(info.teamName)!;
+      if (info.agentName) {
+        group.teammates.push(sessionId);
+      } else {
+        group.leaderSessionId = sessionId;
+      }
+    }
+
+    // Fallback: for teams with teammates but no leader detected via first-line metadata,
+    // scan non-team sessions for TeamCreate tool calls to identify the leader.
+    for (const [teamName, group] of teamGroups) {
+      if (group.leaderSessionId || group.teammates.length === 0) continue;
+      const teammateIds = new Set(group.teammates);
+      for (const e of entries) {
+        if (teammateIds.has(e.sessionId)) continue;
+        if (teamInfoMap.has(e.sessionId)) continue;
+        const found = findTeamCreateInSession(projectDir, e.sessionId);
+        if (found === teamName) {
+          group.leaderSessionId = e.sessionId;
+          teamInfoMap.set(e.sessionId, { teamName });
+          break;
         }
       }
-    } catch {
-      // ~/.claude/projects may not exist
     }
 
-    // Overlay in-memory sessions (they have more up-to-date metadata)
-    for (const [id, s] of Object.entries(this.sessions)) {
-      if (params.cwd && s.cwd !== params.cwd) continue;
-      sessionsMap.set(id, {
-        sessionId: id,
-        cwd: s.cwd,
-        title: s.title,
-        updatedAt: s.updatedAt,
+    // Collect teammate sessionIds that should be hidden from top-level
+    const teammateSessionIds = new Set<string>();
+    // Map: leader sessionId → teammate session entries to add as children
+    const leaderTeammates = new Map<string, typeof entries>();
+    for (const [, group] of teamGroups) {
+      if (group.leaderSessionId && group.teammates.length > 0) {
+        const teammateEntries = entries.filter((e) => group.teammates.includes(e.sessionId));
+        leaderTeammates.set(group.leaderSessionId, teammateEntries);
+        for (const id of group.teammates) teammateSessionIds.add(id);
+      }
+    }
+
+    const sessions = entries
+      .filter((e) => !teammateSessionIds.has(e.sessionId))
+      .map((e) => {
+        const subagents = readSubagents(projectDir, e.sessionId);
+        const tree = buildSubagentTree(subagents);
+        const children: any[] = tree.map(function mapNode(s: any): any {
+          return {
+            agentId: s.agentId,
+            taskPrompt: s.taskPrompt,
+            timestamp: s.timestamp,
+            agentType: s.agentType,
+            ...(s.parentAgentId ? { parentAgentId: s.parentAgentId } : {}),
+            ...(s.children && s.children.length > 0
+              ? { children: s.children.map(mapNode) }
+              : {}),
+          };
+        });
+
+        // Append teammate sessions as children of the team leader
+        const teammates = leaderTeammates.get(e.sessionId);
+        if (teammates) {
+          for (const tm of teammates) {
+            const tmInfo = teamInfoMap.get(tm.sessionId);
+            children.push({
+              agentId: tm.sessionId,
+              sessionId: tm.sessionId,
+              taskPrompt: tmInfo?.agentName ?? tm.firstPrompt?.slice(0, 100) ?? "Teammate",
+              timestamp: tm.created ?? tm.modified ?? "",
+              agentType: "code" as const,
+            });
+          }
+        }
+
+        const sessionCwd = e.projectPath || cwd || process.cwd();
+        return {
+          sessionId: e.sessionId,
+          cwd: sessionCwd,
+          title: e.firstPrompt?.slice(0, 100) ?? null,
+          updatedAt: e.modified ?? e.created ?? null,
+          _meta: {
+            created: e.created ?? null,
+            messageCount: e.messageCount ?? 0,
+            gitBranch: e.gitBranch ?? null,
+            projectPath: e.projectPath ?? null,
+            ...(children.length > 0 ? { children } : {}),
+            ...(teamInfoMap.get(e.sessionId)?.teamName ? { teamName: teamInfoMap.get(e.sessionId)!.teamName } : {}),
+          },
+        };
+      })
+      .sort((a, b) => {
+        const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+        const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+        return tb - ta;
       });
-    }
-
-    const sessions = Array.from(sessionsMap.values()).sort((a, b) => {
-      const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-      const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-      return tb - ta;
-    });
-
     return { sessions };
   }
 }

@@ -161,13 +161,14 @@ describe("demo/server/ uses ACP for data access, not filesystem", () => {
     expect(violations, `Server files use filesystem directly instead of ACP:\n${violations.join("\n")}`).toEqual([]);
   });
 
-  it("server.ts uses extMethod for disk session operations", () => {
+  it("server.ts uses ACP methods for session operations", () => {
     const serverTs = serverFiles.find((f) => f.endsWith("server.ts"));
     expect(serverTs).toBeDefined();
     const source = readFileSync(serverTs!, "utf-8");
 
-    // Verify extMethod calls exist for session operations
-    expect(source).toContain('extMethod("sessions/listDisk"');
+    // session/list uses built-in ACP method
+    expect(source).toContain('unstable_listSessions');
+    // Other session operations use extMethod
     expect(source).toContain('extMethod("sessions/getHistory"');
     expect(source).toContain('extMethod("sessions/rename"');
     expect(source).toContain('extMethod("sessions/delete"');

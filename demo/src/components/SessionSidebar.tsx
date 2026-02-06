@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { useWs } from "../context/WebSocketContext";
 import type { DiskSession, SubagentChild, SubagentType } from "../types";
 
@@ -222,9 +222,20 @@ function SessionContextMenu({
     return () => document.removeEventListener("click", handleClickOutside, true);
   }, [onClose]);
 
+  const [flipped, setFlipped] = useState(false);
+
   useEffect(() => {
     if (renaming) inputRef.current?.focus();
   }, [renaming]);
+
+  useLayoutEffect(() => {
+    if (menuRef.current) {
+      const rect = menuRef.current.getBoundingClientRect();
+      if (rect.bottom > window.innerHeight) {
+        setFlipped(true);
+      }
+    }
+  }, [anchorPos]);
 
   const submitRename = () => {
     const trimmed = renameValue.trim();
@@ -237,8 +248,10 @@ function SessionContextMenu({
   const style: React.CSSProperties = {
     position: "fixed",
     left: anchorPos.x,
-    top: anchorPos.y,
     zIndex: 50,
+    ...(flipped
+      ? { bottom: window.innerHeight - anchorPos.y }
+      : { top: anchorPos.y }),
   };
 
   return (
@@ -423,7 +436,7 @@ export function SessionSidebar() {
   };
 
   const liveSessionIds = new Set(
-    state.sessions.filter((s) => s.isLive).map((s) => s.sessionId),
+    state.diskSessions.filter((s) => s.isLive).map((s) => s.sessionId),
   );
 
   return (

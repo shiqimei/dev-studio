@@ -114,14 +114,6 @@ export type ChatEntry =
 
 // ── Sessions ────────────────────────────────
 
-export interface SessionMeta {
-  sessionId: string;
-  title: string | null;
-  updatedAt: string | null;
-  cwd: string;
-  isLive: boolean;
-}
-
 export type SubagentType = "code" | "explore" | "bash" | "plan" | "agent";
 
 export interface SubagentChild {
@@ -146,6 +138,8 @@ export interface DiskSession {
   children?: SubagentChild[];
   /** Present when this session is a team leader. */
   teamName?: string;
+  /** True when this session is active in the ACP connection. */
+  isLive?: boolean;
 }
 
 export interface SessionSnapshot {
@@ -153,6 +147,20 @@ export interface SessionSnapshot {
   tasks: Record<string, TaskInfo>;
   currentTurnId: string | null;
   turnToolCallIds: string[];
+  turnStatus: TurnStatus | null;
+}
+
+// ── Turn status ──────────────────────────────
+
+export interface TurnStatus {
+  status: "in_progress" | "completed" | "error";
+  startedAt: number;
+  endedAt?: number;
+  durationMs?: number;
+  approxTokens?: number;
+  outputTokens?: number;
+  thinkingDurationMs?: number;
+  costUsd?: number;
 }
 
 // ── Tasks ────────────────────────────────────
@@ -199,9 +207,9 @@ export interface AppState {
   dirFilter: DirFilter;
   textFilter: string;
   debugCollapsed: boolean;
+  turnStatus: TurnStatus | null;
   startTime: number;
   // Session management
-  sessions: SessionMeta[];
   diskSessions: DiskSession[];
   diskSessionsLoaded: boolean;
   currentSessionId: string | null;
@@ -226,15 +234,15 @@ export type Action =
   | { type: "PERMISSION"; title: string }
   | { type: "SESSION_INFO"; sessionId: string; models: string[]; modes: { id: string }[] }
   | { type: "SYSTEM"; text: string }
-  | { type: "TURN_END" }
+  | { type: "TURN_START"; startedAt: number }
+  | { type: "TURN_END"; durationMs?: number; outputTokens?: number; thinkingDurationMs?: number; costUsd?: number }
   | { type: "ERROR"; text: string }
   | { type: "PROTOCOL"; dir: "send" | "recv"; ts: number; msg: unknown }
   | { type: "SET_DIR_FILTER"; filter: DirFilter }
   | { type: "SET_TEXT_FILTER"; filter: string }
   | { type: "TOGGLE_DEBUG_COLLAPSE" }
   | { type: "TOGGLE_TASK_PANEL" }
-  | { type: "SESSION_LIST"; sessions: SessionMeta[] }
-  | { type: "DISK_SESSIONS"; sessions: DiskSession[] }
+  | { type: "SESSIONS"; sessions: DiskSession[] }
   | { type: "SESSION_HISTORY"; sessionId: string; entries: unknown[] }
   | { type: "SESSION_SWITCH_PENDING"; sessionId: string }
   | { type: "SESSION_SWITCHED"; sessionId: string }

@@ -1,5 +1,9 @@
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import path from "node:path";
+
+// Resolve system-installed claude binary at module load time
+let systemClaudePath = "";
+try { systemClaudePath = execSync("which claude", { encoding: "utf-8" }).trim(); } catch {}
 import { Readable, Writable } from "node:stream";
 import { ReadableStream, WritableStream } from "node:stream/web";
 import {
@@ -88,6 +92,10 @@ export async function createAcpConnection(
       ...process.env,
       CLAUDE_MODEL: process.env.CLAUDE_MODEL || "opus",
       MAX_THINKING_TOKENS: process.env.MAX_THINKING_TOKENS || "31999",
+      // Use system-installed claude binary if available (for latest model/version)
+      ...(process.env.CLAUDE_CODE_EXECUTABLE || systemClaudePath
+        ? { CLAUDE_CODE_EXECUTABLE: process.env.CLAUDE_CODE_EXECUTABLE || systemClaudePath }
+        : {}),
     },
   });
 
@@ -162,13 +170,3 @@ export async function resumeSession(
   return { sessionId: response.sessionId };
 }
 
-/**
- * List all active sessions.
- */
-export async function listSessions(
-  connection: ClientSideConnection,
-): Promise<{ sessions: Array<{ sessionId: string; title?: string | null; updatedAt?: string | null; cwd: string }> }> {
-  const cwd = process.env.ACP_CWD || process.cwd();
-  const response = await connection.unstable_listSessions({ cwd });
-  return { sessions: response.sessions };
-}

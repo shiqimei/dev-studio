@@ -88,6 +88,10 @@
   color: var(--color-text);
 }
 
+.msg.assistant [data-streamdown="inline-code"] {
+  color: #6ADAFF;
+}
+
 .msg.thought {
   color: var(--color-dim);
   font-style: italic;

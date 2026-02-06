@@ -146,6 +146,10 @@
 .tool-call .tool-title {
   color: var(--color-text);
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .tool-call .tool-status {

@@ -534,6 +534,19 @@ export class ClaudeAcpAgent implements Agent {
             throw RequestError.authRequired();
           }
 
+          // Update toolUseCache with complete tool_use blocks from the final
+          // assistant message.  During streaming, content_block_start only has
+          // input: {} — the complete input arrives here.
+          if (message.type === "assistant" && Array.isArray(message.message.content)) {
+            for (const item of message.message.content) {
+              const t = (item as any).type;
+              const id = (item as any).id;
+              if (["tool_use", "server_tool_use", "mcp_tool_use"].includes(t) && id) {
+                this.toolUseCache[id] = item;
+              }
+            }
+          }
+
           const content =
             message.type === "assistant"
               ? message.message.content.filter(
@@ -546,7 +559,8 @@ export class ClaudeAcpAgent implements Agent {
                 ? message.message.content.filter(
                     (item) =>
                       ![
-                        "tool_result",
+                        // Keep "tool_result" — it generates tool_call_update with
+                        // status + content for client-side tools (Read, Edit, etc.)
                         "tool_search_tool_result",
                         "web_fetch_tool_result",
                         "web_search_tool_result",

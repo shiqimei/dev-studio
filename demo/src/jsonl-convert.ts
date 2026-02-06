@@ -22,30 +22,28 @@ function uid(): string {
  */
 export function toolTitle(name: string, input: unknown): string {
   const inp = input as Record<string, unknown> | null;
-  if (!inp) return name;
+  if (!inp) return "";
 
-  // Common tool patterns
+  // Return just the argument — the tool name is shown in the badge
   switch (name) {
     case "Read":
-      return `Read ${shortPath(inp.file_path as string)}`;
     case "Write":
-      return `Write ${shortPath(inp.file_path as string)}`;
     case "Edit":
-      return `Edit ${shortPath(inp.file_path as string)}`;
+      return shortPath(inp.file_path as string);
     case "Bash":
-      return `Bash ${truncate(String(inp.command ?? ""), 60)}`;
+      return truncate(String(inp.command ?? ""), 60);
     case "Glob":
-      return `Glob ${truncate(String(inp.pattern ?? ""), 60)}`;
+      return truncate(String(inp.pattern ?? ""), 60);
     case "Grep":
-      return `Grep ${truncate(String(inp.pattern ?? ""), 60)}`;
+      return truncate(String(inp.pattern ?? ""), 60);
     case "Task":
-      return `Task ${truncate(String(inp.description ?? ""), 60)}`;
+      return truncate(String(inp.description ?? ""), 60);
     case "WebSearch":
-      return `WebSearch ${truncate(String(inp.query ?? ""), 60)}`;
+      return truncate(String(inp.query ?? ""), 60);
     case "WebFetch":
-      return `WebFetch ${truncate(String(inp.url ?? ""), 60)}`;
+      return truncate(String(inp.url ?? ""), 60);
     default:
-      return name;
+      return "";
   }
 }
 

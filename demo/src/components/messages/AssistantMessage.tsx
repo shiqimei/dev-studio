@@ -1,6 +1,7 @@
 import { Streamdown } from "streamdown";
-import { code } from "@streamdown/code";
+import { createCodePlugin } from "@streamdown/code";
 
+const code = createCodePlugin({ themes: ["monokai", "monokai"] });
 const plugins = { code };
 
 interface Props {

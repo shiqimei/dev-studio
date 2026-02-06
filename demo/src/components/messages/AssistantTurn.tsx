@@ -26,8 +26,8 @@ export function AssistantTurn({ entry }: Props) {
             return (
               <ToolCall
                 key={i}
-                kind={block.kind || "tool"}
-                title={block.title || block.name}
+                kind={block.name}
+                title={block.title || ""}
                 content={block.result || ""}
                 status={block.status || "completed"}
               />

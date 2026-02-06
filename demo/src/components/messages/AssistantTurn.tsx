@@ -2,7 +2,8 @@ import type { MessageEntry } from "../../types";
 import { useWs } from "../../context/WebSocketContext";
 import { AssistantMessage } from "./AssistantMessage";
 import { ThoughtMessage } from "./ThoughtMessage";
-import { ToolCall } from "./ToolCall";
+import { ToolCall, parseTaskResult } from "./ToolCall";
+import { TaskNotification } from "./TaskNotification";
 
 interface Props {
   entry: MessageEntry;
@@ -19,7 +20,11 @@ export function AssistantTurn({ entry, isLatest }: Props) {
     <>
       {entry.content.map((block, i) => {
         switch (block.type) {
-          case "text":
+          case "text": {
+            const taskData = block.text.includes("<task-notification") ? parseTaskResult(block.text) : null;
+            if (taskData && taskData.status) {
+              return <TaskNotification key={i} text={block.text} />;
+            }
             return (
               <AssistantMessage
                 key={i}
@@ -27,6 +32,7 @@ export function AssistantTurn({ entry, isLatest }: Props) {
                 done={!block._streaming}
               />
             );
+          }
           case "thinking":
             return (
               <ThoughtMessage key={i} text={block.thinking} isLatest={isLatest} />

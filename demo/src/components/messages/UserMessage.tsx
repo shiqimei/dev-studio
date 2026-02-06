@@ -1,5 +1,8 @@
 import { useState, useRef, useLayoutEffect, type ReactNode } from "react";
+import { useWs } from "../../context/WebSocketContext";
 import type { MessageEntry } from "../../types";
+import { TaskNotification } from "./TaskNotification";
+import { parseTaskResult } from "./ToolCall";
 
 /** Collapsed height ≈ 5-6 lines of text at 1.5 line-height */
 const COLLAPSED_HEIGHT = 130;
@@ -13,6 +16,10 @@ const XML_TAG_RE =
 /** Teammate message tags with attributes. */
 const TEAMMATE_RE =
   /<teammate-message\s+([^>]*)>([\s\S]*?)<\/teammate-message>/g;
+
+/** Task notification tags (with or without attributes). */
+const TASK_NOTIFICATION_RE =
+  /<task-notification(?:\s[^>]*)?>[\s\S]*?<\/task-notification>/g;
 
 /** Extract attribute values from an opening tag's attribute string. */
 function parseAttrs(attrStr: string): Record<string, string> {
@@ -31,24 +38,47 @@ interface TeammateSegment {
   color?: string;
   content: string;
 }
-type Segment = TextSegment | TagSegment | TeammateSegment;
+interface TaskNotificationSegment { kind: "task-notification"; raw: string }
+type Segment = TextSegment | TagSegment | TeammateSegment | TaskNotificationSegment;
 
 function parseUserText(raw: string): Segment[] {
-  // First pass: split on teammate-message tags
+  // First pass: split on task-notification and teammate-message tags
+  // Build a unified list of matches sorted by position
+  TASK_NOTIFICATION_RE.lastIndex = 0;
   TEAMMATE_RE.lastIndex = 0;
+
+  interface RawMatch { index: number; length: number; segment: Segment }
+  const matches: RawMatch[] = [];
+
+  for (const m of raw.matchAll(TASK_NOTIFICATION_RE)) {
+    matches.push({
+      index: m.index!,
+      length: m[0].length,
+      segment: { kind: "task-notification", raw: m[0] },
+    });
+  }
+  for (const m of raw.matchAll(TEAMMATE_RE)) {
+    const attrs = parseAttrs(m[1]);
+    matches.push({
+      index: m.index!,
+      length: m[0].length,
+      segment: {
+        kind: "teammate",
+        teammateId: attrs.teammate_id ?? "unknown",
+        color: attrs.color,
+        content: m[2],
+      },
+    });
+  }
+  matches.sort((a, b) => a.index - b.index);
+
   const topSegments: Segment[] = [];
   let lastIndex = 0;
-  for (const m of raw.matchAll(TEAMMATE_RE)) {
+  for (const m of matches) {
     const before = raw.slice(lastIndex, m.index);
     if (before) topSegments.push({ kind: "text", text: before });
-    const attrs = parseAttrs(m[1]);
-    topSegments.push({
-      kind: "teammate",
-      teammateId: attrs.teammate_id ?? "unknown",
-      color: attrs.color,
-      content: m[2],
-    });
-    lastIndex = m.index! + m[0].length;
+    topSegments.push(m.segment);
+    lastIndex = m.index + m.length;
   }
   const after = raw.slice(lastIndex);
   if (after) topSegments.push({ kind: "text", text: after });
@@ -96,6 +126,12 @@ function renderSegments(segments: Segment[]): ReactNode[] {
       flushCommand();
       const trimmed = seg.text.trim();
       if (trimmed) nodes.push(<span key={nodes.length}>{trimmed}</span>);
+    } else if (seg.kind === "task-notification") {
+      flushCommand();
+      const data = parseTaskResult(seg.raw);
+      if (data && data.status) {
+        nodes.push(<TaskNotification key={`tn-${nodes.length}`} text={seg.raw} />);
+      }
     } else if (seg.kind === "teammate") {
       flushCommand();
       nodes.push(
@@ -235,7 +271,8 @@ function hasXmlTags(text: string): boolean {
   // Reset lastIndex since these are global regexes
   XML_TAG_RE.lastIndex = 0;
   TEAMMATE_RE.lastIndex = 0;
-  return XML_TAG_RE.test(text) || TEAMMATE_RE.test(text);
+  TASK_NOTIFICATION_RE.lastIndex = 0;
+  return XML_TAG_RE.test(text) || TEAMMATE_RE.test(text) || TASK_NOTIFICATION_RE.test(text);
 }
 
 // ── Component ───────────────────────────────
@@ -246,13 +283,16 @@ interface Props {
 }
 
 export function UserMessage({ entry, isLatest }: Props) {
+  const { state, cancelQueued } = useWs();
   const [preview, setPreview] = useState<string | null>(null);
   const [userExpanded, setUserExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const textRef = useRef<HTMLDivElement>(null);
   const expanded = userExpanded || isLatest;
+  const isQueued = !!(entry._queueId && state.queuedMessages.includes(entry._queueId));
 
   const images = entry.content.filter((b) => b.type === "image");
+  const fileBlocks = entry.content.filter((b) => b.type === "file");
   const textParts = entry.content
     .filter((b) => b.type === "text")
     .map((b) => (b as { text: string }).text);
@@ -274,11 +314,33 @@ export function UserMessage({ entry, isLatest }: Props) {
   // If XML was detected but all tags were hidden/empty, suppress the text entirely
   const hideText = hadXml && !showParsed;
 
-  // Hide the entire bubble if nothing to show (all-hidden XML, no images)
-  if (hideText && images.length === 0) return null;
+  // Hide the entire bubble if nothing to show (all-hidden XML, no images, no files)
+  if (hideText && images.length === 0 && fileBlocks.length === 0) return null;
 
   return (
-    <div className="msg user">
+    <div className={`msg user${isQueued ? " msg-queued" : ""}`}>
+      {isQueued && (
+        <div className="queued-badge">
+          <span>Queued</span>
+          <button
+            type="button"
+            className="queued-cancel"
+            onClick={() => cancelQueued(entry._queueId!)}
+          >
+            x
+          </button>
+        </div>
+      )}
+      {fileBlocks.length > 0 && (
+        <div className="flex gap-2 mb-2 flex-wrap">
+          {fileBlocks.map((fb, i) => (
+            <span key={i} className="file-chip file-chip-readonly">
+              <span className="file-chip-icon">@</span>
+              <span className="file-chip-name" title={(fb as any).path}>{(fb as any).name}</span>
+            </span>
+          ))}
+        </div>
+      )}
       {images.length > 0 && (
         <div className="flex gap-2 mb-2 flex-wrap">
           {images.map((img, i) => {

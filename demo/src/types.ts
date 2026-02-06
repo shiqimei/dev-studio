@@ -5,6 +5,17 @@ export interface ImageAttachment {
   mimeType: string;
 }
 
+export interface FileAttachment {
+  path: string;
+  name: string;
+}
+
+export interface SlashCommand {
+  name: string;
+  description: string;
+  inputHint?: string;
+}
+
 export interface TextBlock {
   type: "text";
   text: string;
@@ -43,12 +54,19 @@ export interface ImageBlock {
   mimeType: string;
 }
 
+export interface FileBlock {
+  type: "file";
+  path: string;
+  name: string;
+}
+
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock
   | ToolUseBlock
   | ToolResultBlock
-  | ImageBlock;
+  | ImageBlock
+  | FileBlock;
 
 // ── Turn entries (match JSONL user/assistant entries) ──
 
@@ -59,6 +77,7 @@ export interface MessageEntry {
   content: ContentBlock[];
   isMeta?: boolean;
   _streaming?: boolean;
+  _queueId?: string;
 }
 
 // ── Non-turn entries ──
@@ -168,6 +187,7 @@ export type DirFilter = "all" | "send" | "recv";
 export interface AppState {
   connected: boolean;
   busy: boolean;
+  queuedMessages: string[];
   messages: ChatEntry[];
   currentTurnId: string | null;
   tasks: Record<string, TaskInfo>;
@@ -187,6 +207,8 @@ export interface AppState {
   currentSessionId: string | null;
   switchingToSessionId: string | null;
   sessionHistory: Record<string, SessionSnapshot>;
+  // Slash commands
+  commands: SlashCommand[];
 }
 
 // ── Actions ─────────────────────────────────
@@ -195,7 +217,7 @@ export type Action =
   | { type: "WS_CONNECTED" }
   | { type: "WS_DISCONNECTED" }
   | { type: "SET_BUSY"; busy: boolean }
-  | { type: "SEND_MESSAGE"; text: string; images?: ImageAttachment[] }
+  | { type: "SEND_MESSAGE"; text: string; images?: ImageAttachment[]; files?: FileAttachment[]; queueId?: string }
   | { type: "TEXT_CHUNK"; text: string }
   | { type: "THOUGHT_CHUNK"; text: string }
   | { type: "TOOL_CALL"; toolCallId: string; kind: string; title: string; content: string; meta: any }
@@ -216,4 +238,8 @@ export type Action =
   | { type: "SESSION_HISTORY"; sessionId: string; entries: unknown[] }
   | { type: "SESSION_SWITCH_PENDING"; sessionId: string }
   | { type: "SESSION_SWITCHED"; sessionId: string }
-  | { type: "SESSION_TITLE_UPDATE"; sessionId: string; title: string };
+  | { type: "SESSION_TITLE_UPDATE"; sessionId: string; title: string }
+  | { type: "MESSAGE_QUEUED"; queueId: string }
+  | { type: "QUEUE_DRAIN_START"; queueId: string }
+  | { type: "QUEUE_CANCELLED"; queueId: string }
+  | { type: "COMMANDS"; commands: SlashCommand[] };

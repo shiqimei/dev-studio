@@ -1,6 +1,6 @@
-import { useRef, useCallback, useState } from "react";
+import { useRef, useCallback, useState, useEffect } from "react";
 import { useWs } from "../context/WebSocketContext";
-import type { ImageAttachment } from "../types";
+import type { ImageAttachment, FileAttachment, SlashCommand } from "../types";
 
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -47,24 +47,172 @@ function toSupportedImage(blob: Blob): Promise<{ data: string; mimeType: string 
   });
 }
 
+/** Get the basename from a file path. */
+function basename(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
 export function ChatInput() {
-  const { state, send } = useWs();
+  const { state, send, searchFiles } = useWs();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [images, setImages] = useState<ImageAttachment[]>([]);
+  const [files, setFiles] = useState<FileAttachment[]>([]);
+
+  // ── Slash command autocomplete state ──
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashFiltered, setSlashFiltered] = useState<SlashCommand[]>([]);
+  const [slashIdx, setSlashIdx] = useState(0);
+
+  // ── @mention file autocomplete state ──
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionResults, setMentionResults] = useState<string[]>([]);
+  const [mentionIdx, setMentionIdx] = useState(0);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const handleSend = useCallback(() => {
     const text = inputRef.current?.value.trim() ?? "";
-    if ((!text && images.length === 0) || state.busy) return;
-    send(text, images.length > 0 ? images : undefined);
+    if (!text && images.length === 0 && files.length === 0) return;
+    send(text, images.length > 0 ? images : undefined, files.length > 0 ? files : undefined);
     if (inputRef.current) {
       inputRef.current.value = "";
       inputRef.current.style.height = "auto";
     }
     setImages([]);
-  }, [state.busy, send, images]);
+    setFiles([]);
+    setSlashOpen(false);
+    setMentionOpen(false);
+  }, [send, images, files]);
+
+  // ── Detect slash commands and @mentions on input ──
+  const checkAutocomplete = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const val = el.value;
+    const cursor = el.selectionStart ?? val.length;
+
+    // Slash command: only at start of input
+    if (val.startsWith("/") && !val.includes(" ")) {
+      const query = val.slice(1).toLowerCase();
+      const filtered = state.commands.filter((c) =>
+        c.name.toLowerCase().includes(query),
+      );
+      setSlashFiltered(filtered);
+      setSlashOpen(filtered.length > 0);
+      setSlashIdx(0);
+      setMentionOpen(false);
+      return;
+    }
+    setSlashOpen(false);
+
+    // @mention: find `@` preceded by whitespace or at start
+    const textBeforeCursor = val.slice(0, cursor);
+    const atMatch = textBeforeCursor.match(/(^|[\s])@([^\s]*)$/);
+    if (atMatch) {
+      const query = atMatch[2];
+      // Debounce the file search
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => {
+        searchFiles(query, (results) => {
+          setMentionResults(results);
+          setMentionOpen(results.length > 0);
+          setMentionIdx(0);
+        });
+      }, 150);
+      return;
+    }
+    setMentionOpen(false);
+  }, [state.commands, searchFiles]);
+
+  // Clean up debounce on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, []);
+
+  const selectSlashCommand = useCallback((cmd: SlashCommand) => {
+    if (!inputRef.current) return;
+    inputRef.current.value = `/${cmd.name} `;
+    inputRef.current.focus();
+    setSlashOpen(false);
+    // Trigger height recalc
+    inputRef.current.style.height = "auto";
+    inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px";
+  }, []);
+
+  const selectFile = useCallback((filePath: string) => {
+    if (!inputRef.current) return;
+    const val = inputRef.current.value;
+    const cursor = inputRef.current.selectionStart ?? val.length;
+    const textBeforeCursor = val.slice(0, cursor);
+    // Remove the @query portion
+    const atIdx = textBeforeCursor.lastIndexOf("@");
+    if (atIdx === -1) return;
+    const before = val.slice(0, atIdx);
+    const after = val.slice(cursor);
+    inputRef.current.value = before + after;
+    inputRef.current.selectionStart = inputRef.current.selectionEnd = before.length;
+    inputRef.current.focus();
+
+    // Resolve to absolute path (cwd-relative)
+    setFiles((prev) => {
+      if (prev.some((f) => f.path === filePath)) return prev;
+      return [...prev, { path: filePath, name: basename(filePath) }];
+    });
+    setMentionOpen(false);
+  }, []);
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // ── Autocomplete keyboard navigation ──
+      if (slashOpen && slashFiltered.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSlashIdx((i) => Math.min(i + 1, slashFiltered.length - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSlashIdx((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+          e.preventDefault();
+          selectSlashCommand(slashFiltered[slashIdx]);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setSlashOpen(false);
+          return;
+        }
+      }
+
+      if (mentionOpen && mentionResults.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setMentionIdx((i) => Math.min(i + 1, mentionResults.length - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setMentionIdx((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+          e.preventDefault();
+          selectFile(mentionResults[mentionIdx]);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setMentionOpen(false);
+          return;
+        }
+      }
+
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleSend();
@@ -86,7 +234,7 @@ export function ChatInput() {
         });
       }
     },
-    [handleSend],
+    [handleSend, slashOpen, slashFiltered, slashIdx, selectSlashCommand, mentionOpen, mentionResults, mentionIdx, selectFile],
   );
 
   const onInput = useCallback(() => {
@@ -94,7 +242,8 @@ export function ChatInput() {
     if (!el) return;
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 120) + "px";
-  }, []);
+    checkAutocomplete();
+  }, [checkAutocomplete]);
 
   const onPaste = useCallback(
     (e: React.ClipboardEvent) => {
@@ -117,8 +266,21 @@ export function ChatInput() {
     setImages((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
+  const removeFile = useCallback((index: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  // Scroll active dropdown item into view
+  useEffect(() => {
+    if (!dropdownRef.current) return;
+    const active = dropdownRef.current.querySelector(".autocomplete-active");
+    if (active) {
+      active.scrollIntoView({ block: "nearest" });
+    }
+  }, [slashIdx, mentionIdx, slashOpen, mentionOpen]);
+
   const isSubagentView = state.currentSessionId?.includes(":subagent:") ?? false;
-  const disabled = !state.connected || state.busy;
+  const disabled = !state.connected;
 
   if (isSubagentView) {
     return (
@@ -128,12 +290,47 @@ export function ChatInput() {
     );
   }
 
+  const showAutocomplete = slashOpen || mentionOpen;
+
   return (
-    <div className="border-t border-border px-5 py-3 shrink-0">
-      {images.length > 0 && (
+    <div className="border-t border-border px-5 py-3 shrink-0 relative">
+      {/* Autocomplete dropdown */}
+      {showAutocomplete && (
+        <div
+          ref={dropdownRef}
+          className="autocomplete-dropdown"
+        >
+          {slashOpen && slashFiltered.map((cmd, i) => (
+            <div
+              key={cmd.name}
+              className={`autocomplete-item${i === slashIdx ? " autocomplete-active" : ""}`}
+              onMouseDown={(e) => { e.preventDefault(); selectSlashCommand(cmd); }}
+              onMouseEnter={() => setSlashIdx(i)}
+            >
+              <span className="autocomplete-name">/{cmd.name}</span>
+              {cmd.description && (
+                <span className="autocomplete-desc">{cmd.description}</span>
+              )}
+            </div>
+          ))}
+          {mentionOpen && mentionResults.map((filePath, i) => (
+            <div
+              key={filePath}
+              className={`autocomplete-item${i === mentionIdx ? " autocomplete-active" : ""}`}
+              onMouseDown={(e) => { e.preventDefault(); selectFile(filePath); }}
+              onMouseEnter={() => setMentionIdx(i)}
+            >
+              <span className="autocomplete-name">@{basename(filePath)}</span>
+              <span className="autocomplete-desc">{filePath}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {/* Attachment chips: images + files */}
+      {(images.length > 0 || files.length > 0) && (
         <div className="flex gap-2 mb-2 flex-wrap">
           {images.map((img, i) => (
-            <div key={i} className="relative group">
+            <div key={`img-${i}`} className="relative group">
               <img
                 src={`data:${img.mimeType};base64,${img.data}`}
                 alt={`Pasted image ${i + 1}`}
@@ -148,13 +345,26 @@ export function ChatInput() {
               </button>
             </div>
           ))}
+          {files.map((file, i) => (
+            <div key={`file-${file.path}`} className="file-chip group">
+              <span className="file-chip-icon">@</span>
+              <span className="file-chip-name" title={file.path}>{file.name}</span>
+              <button
+                type="button"
+                onClick={() => removeFile(i)}
+                className="file-chip-remove opacity-0 group-hover:opacity-100"
+              >
+                x
+              </button>
+            </div>
+          ))}
         </div>
       )}
       <div className="flex gap-2">
         <textarea
           ref={inputRef}
           rows={1}
-          placeholder={images.length > 0 ? "Add a message or send image..." : "Send a message..."}
+          placeholder={images.length > 0 ? "Add a message or send image..." : files.length > 0 ? "Add a message or send files..." : "Send a message... (/ for commands, @ for files)"}
           disabled={disabled}
           onKeyDown={onKeyDown}
           onInput={onInput}
@@ -166,7 +376,7 @@ export function ChatInput() {
           onClick={handleSend}
           className="bg-text text-bg border-none rounded-md h-9 px-4 py-2 font-mono text-sm font-medium cursor-pointer self-end hover:opacity-90 disabled:opacity-50 disabled:pointer-events-none"
         >
-          Send
+          {state.busy ? "Queue" : "Send"}
         </button>
       </div>
     </div>

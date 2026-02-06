@@ -84,6 +84,40 @@
   padding: 10px;
 }
 
+.msg.user.msg-queued {
+  opacity: 0.6;
+  border-left: 2px solid var(--color-yellow);
+}
+
+.queued-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-yellow);
+}
+
+.queued-cancel {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--color-dim);
+  font-size: 10px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+}
+
+.queued-cancel:hover {
+  color: var(--color-red);
+  border-color: var(--color-red);
+}
+
 .user-text-wrap {
   position: relative;
 }
@@ -448,9 +482,6 @@
   padding: 2px 4px;
   color: var(--color-purple);
   font-weight: 500;
-  position: sticky;
-  top: 0;
-  background: var(--color-bg);
 }
 
 .search-match-line {
@@ -470,6 +501,68 @@
 .search-text {
   white-space: pre;
   overflow-x: auto;
+}
+
+/* ── ANSI text (Bash output) ─────────────── */
+
+.ansi-text {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-dim);
+}
+
+/* ── Persisted output (truncated Bash) ───── */
+
+.persisted-output {
+  font-size: 11px;
+}
+
+.persisted-output-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.persisted-output-badge {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #f59e0b14;
+  color: var(--color-yellow);
+}
+
+.persisted-output-size {
+  font-size: 10px;
+  color: var(--color-dim);
+}
+
+.persisted-output-path {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #525252;
+  word-break: break-all;
+  margin-bottom: 6px;
+}
+
+.persisted-output-preview {
+  border-top: 1px solid var(--color-border);
+  padding-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-dim);
+  max-height: 300px;
+  overflow-y: auto;
 }
 
 /* ── System reminder (collapsible) ───────── */
@@ -497,6 +590,75 @@
 .sys-reminder-text {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── Task result view (TaskOutput / task-notification) ── */
+
+.task-result-view {
+  font-size: 12px;
+  max-height: 400px;
+}
+
+.task-result-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.task-result-status {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.task-result-status.completed { color: var(--color-green); }
+.task-result-status.failed { color: var(--color-red); }
+.task-result-status.pending { color: var(--color-yellow); }
+
+.task-result-id {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--color-dim);
+}
+
+.task-result-type {
+  font-size: 10px;
+  color: var(--color-dim);
+}
+
+.task-result-summary {
+  color: var(--color-text);
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.task-result-path {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--color-dim);
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+
+.task-result-body {
+  border-top: 1px solid var(--color-border);
+  padding-top: 6px;
+  color: var(--color-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.task-notification-body {
+  font-size: 12px;
+  color: var(--color-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--color-border);
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 /* ── Plan ─────────────────────────────────── */
@@ -948,4 +1110,102 @@
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* ── Autocomplete dropdown ───────────────── */
+
+.autocomplete-dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 20px;
+  right: 20px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 4px;
+  margin-bottom: 4px;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.5);
+  z-index: 20;
+}
+
+.autocomplete-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.autocomplete-item:hover,
+.autocomplete-item.autocomplete-active {
+  background: var(--color-border);
+}
+
+.autocomplete-name {
+  color: var(--color-text);
+  font-weight: 500;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.autocomplete-desc {
+  color: var(--color-dim);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* ── File chip ───────────────────────────── */
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #a78bfa10;
+  border: 1px solid #a78bfa25;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  position: relative;
+}
+
+.file-chip-readonly {
+  cursor: default;
+}
+
+.file-chip-icon {
+  color: var(--color-purple);
+  font-weight: 600;
+}
+
+.file-chip-name {
+  color: var(--color-text);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-chip-remove {
+  background: none;
+  border: none;
+  color: var(--color-dim);
+  font-size: 10px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.file-chip-remove:hover {
+  color: var(--color-red);
 }

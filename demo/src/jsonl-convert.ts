@@ -27,6 +27,11 @@ export function prettyToolName(name: string): string {
     const parts = name.slice(5).split("__");
     return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(":");
   }
+  // Strip ACP: prefix and title-case (e.g. "ACP:READ" → "Read")
+  if (name.startsWith("ACP:")) {
+    const base = name.slice(4);
+    return base.charAt(0).toUpperCase() + base.slice(1).toLowerCase();
+  }
   return name;
 }
 
@@ -37,8 +42,13 @@ export function toolTitle(name: string, input: unknown): string {
   const inp = input as Record<string, unknown> | null;
   if (!inp) return "";
 
+  // Normalize ACP: prefixed names (e.g. "ACP:READ" → "Read")
+  const normalized = name.startsWith("ACP:")
+    ? name.slice(4).charAt(0).toUpperCase() + name.slice(5).toLowerCase()
+    : name;
+
   // Return just the argument — the tool name is shown in the badge
-  switch (name) {
+  switch (normalized) {
     case "Read":
     case "Write":
     case "Edit":
@@ -278,6 +288,8 @@ export function jsonlToEntries(rawEntries: unknown[]): ChatEntry[] {
           text = "";
         } else if (subtype === "status") {
           text = String((entry as any).status ?? "");
+        } else if (subtype === "local_command") {
+          text = formatLocalCommand(String((entry as any).content ?? ""));
         } else {
           text = `[${subtype}]`;
         }
@@ -312,6 +324,29 @@ function formatDuration(ms: number): string {
   const h = Math.floor(m / 60);
   const remM = m % 60;
   return remM > 0 ? `${h}h ${remM}m` : `${h}h`;
+}
+
+/** Extract display text from local_command content XML. */
+function formatLocalCommand(content: string): string {
+  // Command invocation: <command-name>/foo</command-name> <command-args>bar</command-args>
+  const nameMatch = content.match(/<command-name>([\s\S]*?)<\/command-name>/);
+  if (nameMatch) {
+    const name = nameMatch[1].trim();
+    const argsMatch = content.match(/<command-args>([\s\S]*?)<\/command-args>/);
+    const args = argsMatch ? argsMatch[1].trim() : "";
+    return args ? `${name} ${args}` : name;
+  }
+  // Stdout response: <local-command-stdout>...</local-command-stdout>
+  const stdoutMatch = content.match(/<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/);
+  if (stdoutMatch) {
+    const out = stdoutMatch[1].trim();
+    return out || "";
+  }
+  // Caveat: <local-command-caveat>...</local-command-caveat>
+  const caveatMatch = content.match(/<local-command-caveat>([\s\S]*?)<\/local-command-caveat>/);
+  if (caveatMatch) return caveatMatch[1].trim();
+  // Fallback: strip all tags
+  return content.replace(/<[^>]+>/g, "").trim();
 }
 
 /**

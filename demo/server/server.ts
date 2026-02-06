@@ -1,4 +1,5 @@
 import path from "node:path";
+import { execSync } from "node:child_process";
 import { createAcpConnection, createNewSession, listSessions, resumeSession } from "./session.js";
 import type { AcpConnection } from "./types.js";
 
@@ -6,6 +7,11 @@ export function startServer(port: number) {
   const clients = new Set<{ send: (data: string) => void }>();
   let currentSessionId: string | null = null;
   const liveSessionIds = new Set<string>();
+
+  // ── Message queue ──
+  let messageQueue: Array<{ id: string; text: string; images?: Array<{ data: string; mimeType: string }>; files?: Array<{ path: string; name: string }>; addedAt: number }> = [];
+  let processingPrompt = false;
+  let queueIdCounter = 0;
 
   // Low-level: send raw string to all WS clients (no filtering, no instrumentation)
   function sendToAll(data: string) {
@@ -30,7 +36,12 @@ export function startServer(port: number) {
     rename_session:   "sessions/rename",
     delete_session:   "sessions/delete",
     list_sessions:    "sessions/list",
+    cancel_queued:    "queue/cancel",
+    list_files:       "files/search",
     // Outgoing (server → frontend)
+    message_queued:   "queue/enqueue",
+    queue_drain_start:"queue/drainStart",
+    queue_cancelled:  "queue/cancelled",
     session_switched: "sessions/switched",
     session_list:     "sessions/list",
     disk_sessions:    "sessions/disk",
@@ -60,6 +71,59 @@ export function startServer(port: number) {
   }
 
   let acpConnection: AcpConnection | null = null;
+
+  async function processPrompt(text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>) {
+    if (!acpConnection || !currentSessionId) return;
+    processingPrompt = true;
+    try {
+      // Lazily resume the ACP session if not already live
+      if (!liveSessionIds.has(currentSessionId)) {
+        await resumeSession(acpConnection.connection, currentSessionId);
+        liveSessionIds.add(currentSessionId);
+        await broadcastSessionList();
+      }
+      const prompt: Array<{ type: string; text?: string; data?: string; mimeType?: string; resource?: { uri: string; text: string; mimeType: string } }> = [];
+      if (text) prompt.push({ type: "text", text });
+      for (const img of images ?? []) {
+        prompt.push({ type: "image", data: img.data, mimeType: img.mimeType });
+      }
+      for (const file of files ?? []) {
+        try {
+          const content = await Bun.file(file.path).text();
+          const ext = file.name.split(".").pop() ?? "";
+          const mimeMap: Record<string, string> = { ts: "text/typescript", tsx: "text/typescript", js: "text/javascript", json: "application/json", md: "text/markdown", css: "text/css", html: "text/html" };
+          prompt.push({ type: "resource", resource: { uri: `file://${file.path}`, text: content, mimeType: mimeMap[ext] ?? "text/plain" } });
+        } catch { /* skip unreadable files */ }
+      }
+      if (prompt.length === 0) { processingPrompt = false; drainQueue(); return; }
+      const result = await acpConnection.connection.prompt({
+        sessionId: currentSessionId,
+        prompt,
+      });
+      broadcast({ type: "turn_end", stopReason: result.stopReason });
+      // Refresh session list to pick up title changes
+      await broadcastSessionList();
+      await broadcastDiskSessions();
+    } catch (err: any) {
+      broadcast({ type: "error", text: err.message });
+      broadcast({ type: "turn_end", stopReason: "error" });
+    } finally {
+      processingPrompt = false;
+      drainQueue();
+    }
+  }
+
+  function drainQueue() {
+    if (messageQueue.length === 0) return;
+    const next = messageQueue.shift()!;
+    broadcast({ type: "queue_drain_start", queueId: next.id });
+    processPrompt(next.text, next.images, next.files);
+  }
+
+  function clearQueue() {
+    messageQueue = [];
+    queueIdCounter = 0;
+  }
 
   async function readDiskSessions() {
     if (!acpConnection) return [];
@@ -161,42 +225,35 @@ export function startServer(port: number) {
         switch (msg.type) {
           case "prompt": {
             if (!currentSessionId) return;
-            try {
-              // Lazily resume the ACP session if not already live
-              if (!liveSessionIds.has(currentSessionId)) {
-                await resumeSession(acpConnection.connection, currentSessionId);
-                liveSessionIds.add(currentSessionId);
-                await broadcastSessionList();
-              }
-              const prompt: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [];
-              if (msg.text) prompt.push({ type: "text", text: msg.text });
-              for (const img of msg.images ?? []) {
-                prompt.push({ type: "image", data: img.data, mimeType: img.mimeType });
-              }
-              if (prompt.length === 0) return;
-              const result = await acpConnection.connection.prompt({
-                sessionId: currentSessionId,
-                prompt,
-              });
-              broadcast({ type: "turn_end", stopReason: result.stopReason });
-              // Refresh session list to pick up title changes
-              await broadcastSessionList();
-              await broadcastDiskSessions();
-            } catch (err: any) {
-              broadcast({ type: "error", text: err.message });
-              broadcast({ type: "turn_end", stopReason: "error" });
+            if (processingPrompt) {
+              // Enqueue the message
+              const queueId = msg.queueId || `sq-${++queueIdCounter}`;
+              messageQueue.push({ id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
+              broadcast({ type: "message_queued", queueId });
+            } else {
+              processPrompt(msg.text, msg.images, msg.files);
+            }
+            break;
+          }
+
+          case "cancel_queued": {
+            const idx = messageQueue.findIndex((m) => m.id === msg.queueId);
+            if (idx !== -1) {
+              messageQueue.splice(idx, 1);
+              broadcast({ type: "queue_cancelled", queueId: msg.queueId });
             }
             break;
           }
 
           case "new_session": {
+            clearQueue();
             try {
               const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
               currentSessionId = sessionId;
               liveSessionIds.add(sessionId);
+              broadcast({ type: "session_switched", sessionId: currentSessionId });
               await broadcastSessionList();
               await broadcastDiskSessions();
-              broadcast({ type: "session_switched", sessionId: currentSessionId });
             } catch (err: any) {
               broadcast({ type: "error", text: err.message });
             }
@@ -205,6 +262,7 @@ export function startServer(port: number) {
 
           case "switch_session":
           case "resume_session": {
+            clearQueue();
             try {
               const result = await acpConnection.connection.extMethod("sessions/getHistory", { sessionId: msg.sessionId });
               currentSessionId = msg.sessionId;
@@ -217,6 +275,7 @@ export function startServer(port: number) {
           }
 
           case "resume_subagent": {
+            clearQueue();
             const compositeId = `${msg.parentSessionId}:subagent:${msg.agentId}`;
             try {
               const result = await acpConnection.connection.extMethod("sessions/getSubagentHistory", {
@@ -264,6 +323,22 @@ export function startServer(port: number) {
             break;
           }
 
+          case "list_files": {
+            try {
+              const raw = execSync("git ls-files", { encoding: "utf-8", cwd: process.cwd(), maxBuffer: 1024 * 1024 });
+              const query = (msg.query ?? "").toLowerCase();
+              let files = raw.split("\n").filter(Boolean);
+              if (query) {
+                files = files.filter((f) => f.toLowerCase().includes(query));
+              }
+              files = files.slice(0, 50);
+              ws.send(JSON.stringify({ type: "file_list", files, query: msg.query ?? "" }));
+            } catch {
+              ws.send(JSON.stringify({ type: "file_list", files: [], query: msg.query ?? "" }));
+            }
+            break;
+          }
+
           case "list_sessions": {
             await broadcastSessionList();
             break;
@@ -273,6 +348,7 @@ export function startServer(port: number) {
 
       close(ws) {
         clients.delete(ws);
+        if (clients.size === 0) clearQueue();
       },
     },
   });

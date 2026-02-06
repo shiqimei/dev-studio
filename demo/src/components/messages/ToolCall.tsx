@@ -1,6 +1,29 @@
 import { useState, useEffect } from "react";
 import { codeToTokens, type ThemedToken } from "shiki";
+import { Streamdown } from "streamdown";
+import { createCodePlugin, type CodeHighlighterPlugin } from "@streamdown/code";
+import { detectLanguage } from "../../lang-detect";
 import { toolOverview } from "../../jsonl-convert";
+import type { BundledLanguage } from "shiki";
+
+/** Streamdown code plugin for rendering markdown in task results. */
+function withAutoDetect(plugin: CodeHighlighterPlugin): CodeHighlighterPlugin {
+  return {
+    ...plugin,
+    highlight(options, callback) {
+      const lang = options.language;
+      if (!lang || lang === "text" || lang === "plaintext" || !plugin.supportsLanguage(lang)) {
+        const detected = detectLanguage(options.code) as BundledLanguage;
+        if (detected !== "text" && plugin.supportsLanguage(detected)) {
+          return plugin.highlight({ ...options, language: detected }, callback);
+        }
+      }
+      return plugin.highlight(options, callback);
+    },
+  };
+}
+const sdCode = withAutoDetect(createCodePlugin({ themes: ["monokai", "monokai"] }));
+const sdPlugins = { code: sdCode };
 
 interface Props {
   kind: string;
@@ -21,7 +44,8 @@ export function ToolCall({ kind, title, content, status, input, agentId, onNavig
   const hasDiff = isEdit && input && typeof input === "object" && "old_string" in (input as any);
   const hasCode = isReadOrWrite && content && content.length > 100;
   const hasSearchResults = isSearch && !!content;
-  const expandable = hasDiff || hasCode || hasSearchResults || (content && (title || content.length > 100));
+  const taskResult = content ? parseTaskResult(content) : null;
+  const expandable = hasDiff || hasCode || hasSearchResults || !!taskResult || (content && (title || content.length > 100));
   const [open, setOpen] = useState(false);
   const statusLabel =
     status === "completed" ? "completed" : status === "failed" ? "failed" : "running";
@@ -54,7 +78,10 @@ export function ToolCall({ kind, title, content, status, input, agentId, onNavig
       {open && hasSearchResults && (
         <SearchResultsView content={content} />
       )}
-      {open && !hasDiff && !hasCode && !hasSearchResults && content && (
+      {open && taskResult && (
+        <TaskResultView data={taskResult} />
+      )}
+      {open && !hasDiff && !hasCode && !hasSearchResults && !taskResult && content && (
         <PlainContent content={content} />
       )}
     </div>
@@ -83,12 +110,282 @@ function SystemReminder({ text }: { text: string }) {
   );
 }
 
+// ── Persisted output handling ────────────────
+
+const PERSISTED_OUTPUT_RE = /<persisted-output>([\s\S]*?)(?:<\/persisted-output>|$)/;
+
+interface PersistedOutputData {
+  size: string;
+  path: string;
+  preview: string;
+}
+
+function parsePersistedOutput(text: string): { data: PersistedOutputData; rest: string } | null {
+  const m = text.match(PERSISTED_OUTPUT_RE);
+  if (!m) return null;
+  const inner = m[1].trim();
+  const sizeMatch = inner.match(/Output too large \(([^)]+)\)/);
+  const pathMatch = inner.match(/Full output saved to:\s*(\S+)/);
+  const previewMatch = inner.match(/Preview \(first [^)]+\):\s*([\s\S]*)/);
+
+  if (!sizeMatch) return null;
+
+  const rest = text.replace(PERSISTED_OUTPUT_RE, "").trim();
+  return {
+    data: {
+      size: sizeMatch[1],
+      path: pathMatch ? pathMatch[1] : "",
+      preview: previewMatch ? previewMatch[1].trim() : "",
+    },
+    rest,
+  };
+}
+
+function PersistedOutput({ data }: { data: PersistedOutputData }) {
+  const hasAnsi = /\x1b\[/.test(data.preview);
+  return (
+    <div className="persisted-output">
+      <div className="persisted-output-header">
+        <span className="persisted-output-badge">truncated</span>
+        <span className="persisted-output-size">Output too large ({data.size})</span>
+      </div>
+      {data.path && <div className="persisted-output-path">{data.path}</div>}
+      {data.preview && (
+        <div className="persisted-output-preview">
+          {hasAnsi ? <AnsiText text={data.preview} /> : data.preview}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PlainContent({ content }: { content: string }) {
   const { clean, reminders } = splitSystemReminders(content);
+  const persisted = parsePersistedOutput(clean);
+
+  if (persisted) {
+    return (
+      <div className="tool-content">
+        <PersistedOutput data={persisted.data} />
+        {persisted.rest && <div>{persisted.rest}</div>}
+        {reminders.map((r, i) => <SystemReminder key={i} text={r} />)}
+      </div>
+    );
+  }
+
+  const hasAnsi = /\x1b\[/.test(clean);
   return (
     <div className="tool-content">
-      {clean && <div>{clean}</div>}
+      {clean && (hasAnsi ? <AnsiText text={clean} /> : <div>{clean}</div>)}
       {reminders.map((r, i) => <SystemReminder key={i} text={r} />)}
+    </div>
+  );
+}
+
+// ── ANSI escape code rendering ──────────────
+
+/** Standard 8-color palette (SGR 30-37 / 40-47). */
+const ANSI_COLORS = [
+  "#000", "#c23621", "#25bc26", "#bbbb00",
+  "#492ee1", "#d338d3", "#33bbc8", "#cbcccd",
+];
+/** Bright 8-color palette (SGR 90-97 / 100-107). */
+const ANSI_BRIGHT = [
+  "#666", "#ff6e67", "#5ff967", "#fefb67",
+  "#6871ff", "#ff76ff", "#5ffdff", "#fefefe",
+];
+
+/** 256-color palette lookup. */
+function color256(n: number): string | undefined {
+  if (n < 8) return ANSI_COLORS[n];
+  if (n < 16) return ANSI_BRIGHT[n - 8];
+  if (n < 232) {
+    // 6x6x6 color cube
+    const idx = n - 16;
+    const r = Math.floor(idx / 36), g = Math.floor((idx % 36) / 6), b = idx % 6;
+    const ch = (v: number) => v === 0 ? 0 : 55 + v * 40;
+    return `rgb(${ch(r)},${ch(g)},${ch(b)})`;
+  }
+  // Grayscale ramp 232-255
+  const v = 8 + (n - 232) * 10;
+  return `rgb(${v},${v},${v})`;
+}
+
+interface AnsiSpan {
+  text: string;
+  style: React.CSSProperties;
+}
+
+/** Parse ANSI SGR escape codes into styled spans. */
+function parseAnsi(text: string): AnsiSpan[] {
+  const spans: AnsiSpan[] = [];
+  let fg: string | undefined;
+  let bg: string | undefined;
+  let bold = false;
+  let dim = false;
+  let italic = false;
+  let underline = false;
+  let strikethrough = false;
+
+  // Split on ESC[ ... m sequences
+  const parts = text.split(/\x1b\[([0-9;]*)m/);
+
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 0) {
+      // Text segment
+      if (parts[i]) {
+        const style: React.CSSProperties = {};
+        if (fg) style.color = fg;
+        if (bg) style.backgroundColor = bg;
+        if (bold) style.fontWeight = "bold";
+        if (dim) style.opacity = 0.6;
+        if (italic) style.fontStyle = "italic";
+        if (underline) style.textDecoration = "underline";
+        if (strikethrough) style.textDecoration = (style.textDecoration ? style.textDecoration + " line-through" : "line-through");
+        spans.push({ text: parts[i], style });
+      }
+    } else {
+      // SGR parameter segment
+      const codes = parts[i] ? parts[i].split(";").map(Number) : [0];
+      for (let j = 0; j < codes.length; j++) {
+        const c = codes[j];
+        if (c === 0) { fg = bg = undefined; bold = dim = italic = underline = strikethrough = false; }
+        else if (c === 1) bold = true;
+        else if (c === 2) dim = true;
+        else if (c === 3) italic = true;
+        else if (c === 4) underline = true;
+        else if (c === 9) strikethrough = true;
+        else if (c === 22) { bold = false; dim = false; }
+        else if (c === 23) italic = false;
+        else if (c === 24) underline = false;
+        else if (c === 29) strikethrough = false;
+        else if (c >= 30 && c <= 37) fg = ANSI_COLORS[c - 30];
+        else if (c === 38) {
+          // Extended foreground: 38;5;N or 38;2;R;G;B
+          if (codes[j + 1] === 5) { fg = color256(codes[j + 2] ?? 0); j += 2; }
+          else if (codes[j + 1] === 2) { fg = `rgb(${codes[j+2]??0},${codes[j+3]??0},${codes[j+4]??0})`; j += 4; }
+        }
+        else if (c === 39) fg = undefined;
+        else if (c >= 40 && c <= 47) bg = ANSI_COLORS[c - 40];
+        else if (c === 48) {
+          if (codes[j + 1] === 5) { bg = color256(codes[j + 2] ?? 0); j += 2; }
+          else if (codes[j + 1] === 2) { bg = `rgb(${codes[j+2]??0},${codes[j+3]??0},${codes[j+4]??0})`; j += 4; }
+        }
+        else if (c === 49) bg = undefined;
+        else if (c >= 90 && c <= 97) fg = ANSI_BRIGHT[c - 90];
+        else if (c >= 100 && c <= 107) bg = ANSI_BRIGHT[c - 100];
+      }
+    }
+  }
+
+  return spans;
+}
+
+function AnsiText({ text }: { text: string }) {
+  const spans = parseAnsi(text);
+  return (
+    <pre className="ansi-text">
+      {spans.map((s, i) =>
+        Object.keys(s.style).length > 0
+          ? <span key={i} style={s.style}>{s.text}</span>
+          : <span key={i}>{s.text}</span>
+      )}
+    </pre>
+  );
+}
+
+// ── Task result parsing & view ──────────────
+
+interface TaskResultData {
+  taskId?: string;
+  status?: string;
+  summary?: string;
+  body?: string;       // The main text body (output or result)
+  taskType?: string;
+  outputPath?: string;  // Full output file path for truncated results
+}
+
+/** Extract a simple XML tag value: `<tag>value</tag>` */
+function xmlTag(text: string, tag: string): string | undefined {
+  const re = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`);
+  const m = text.match(re);
+  return m ? m[1].trim() : undefined;
+}
+
+/**
+ * Try to parse TaskOutput XML format:
+ *   <retrieval_status>success</retrieval_status> <task_id>...</task_id> ...
+ */
+function parseTaskOutput(text: string): TaskResultData | null {
+  if (!text.includes("<retrieval_status>") && !text.includes("<task_id>")) return null;
+  const status = xmlTag(text, "status") || xmlTag(text, "retrieval_status");
+  const taskId = xmlTag(text, "task_id");
+  const taskType = xmlTag(text, "task_type");
+
+  // <output> may contain truncated content — match greedily to end or closing tag
+  let body: string | undefined;
+  const outputMatch = text.match(/<output>([\s\S]*?)(?:<\/output>|$)/);
+  if (outputMatch) body = outputMatch[1].trim();
+
+  // Extract full output path from truncation notice
+  let outputPath: string | undefined;
+  const pathMatch = text.match(/Full output:\s*(\S+)/);
+  if (pathMatch) outputPath = pathMatch[1].replace(/\]$/, "");
+
+  return { taskId, status, taskType, body, outputPath };
+}
+
+/**
+ * Try to parse task-notification XML format:
+ *   <task-notification>...<task-id>...</task-id><status>...</status>...
+ */
+function parseTaskNotification(text: string): TaskResultData | null {
+  if (!text.includes("<task-notification>") && !text.includes("<task-notification ")) return null;
+  const taskId = xmlTag(text, "task-id");
+  const status = xmlTag(text, "status");
+  const summary = xmlTag(text, "summary");
+  const body = xmlTag(text, "result");
+  return { taskId, status, summary, body };
+}
+
+/** Detect and parse task-related XML from content. */
+export function parseTaskResult(content: string): TaskResultData | null {
+  return parseTaskOutput(content) || parseTaskNotification(content);
+}
+
+function TaskResultView({ data }: { data: TaskResultData }) {
+  const statusClass = data.status === "completed" || data.status === "success"
+    ? "completed"
+    : data.status === "failed" || data.status === "error"
+      ? "failed"
+      : "pending";
+
+  return (
+    <div className="tool-content task-result-view">
+      <div className="task-result-header">
+        <span className={`task-result-status ${statusClass}`}>
+          {data.status || "unknown"}
+        </span>
+        {data.taskId && (
+          <span className="task-result-id">{data.taskId}</span>
+        )}
+        {data.taskType && (
+          <span className="task-result-type">{data.taskType}</span>
+        )}
+      </div>
+      {data.summary && (
+        <div className="task-result-summary">{data.summary}</div>
+      )}
+      {data.outputPath && (
+        <div className="task-result-path">{data.outputPath}</div>
+      )}
+      {data.body && (
+        <div className="task-result-body">
+          <Streamdown mode="static" isAnimating={false} plugins={sdPlugins}>
+            {data.body}
+          </Streamdown>
+        </div>
+      )}
     </div>
   );
 }

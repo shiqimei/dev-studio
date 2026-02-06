@@ -74,7 +74,11 @@ export class WebClient implements Client {
         this.broadcast({
           type: "commands",
           sessionId: params.sessionId,
-          commands: update.availableCommands.map((c) => c.name),
+          commands: update.availableCommands.map((c) => ({
+            name: c.name,
+            description: (c as any).description ?? "",
+            inputHint: (c as any).inputHint,
+          })),
         });
         break;
 

@@ -18,6 +18,9 @@ import type {
   ToolUseBlock,
   SessionSnapshot,
   ImageAttachment,
+  FileAttachment,
+  SlashCommand,
+  FileBlock,
 } from "../types";
 import { classifyTool } from "../utils";
 import { jsonlToEntries, prettyToolName, extractAgentId } from "../jsonl-convert";
@@ -73,6 +76,7 @@ const emptySnapshot: SessionSnapshot = {
 const initialState: AppState = {
   connected: false,
   busy: false,
+  queuedMessages: [],
   messages: [],
   currentTurnId: null,
   tasks: {},
@@ -92,6 +96,8 @@ const initialState: AppState = {
   currentSessionId: null,
   switchingToSessionId: null,
   sessionHistory: {},
+  // Slash commands
+  commands: [],
 };
 
 // ── Reducer helpers ──
@@ -137,6 +143,18 @@ function finalizeStreaming(messages: ChatEntry[], turnId: string | null): ChatEn
   });
 }
 
+/**
+ * Mark pending tool_use blocks as completed.
+ * Called when new content (text/thinking/tool) arrives — the model only produces
+ * new content after a tool result, so any "pending" tool_use blocks are done.
+ */
+function completePendingTools(block: ContentBlock): ContentBlock {
+  if (block.type === "tool_use" && block.status === "pending") {
+    return { ...block, status: "completed" };
+  }
+  return block;
+}
+
 /** Ensure an assistant turn exists, creating one if needed. Returns [messages, turnId]. */
 function ensureAssistantTurn(
   messages: ChatEntry[],
@@ -162,7 +180,7 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, connected: true, busy: false, startTime: Date.now() };
 
     case "WS_DISCONNECTED":
-      return { ...state, connected: false, busy: false };
+      return { ...state, connected: false, busy: false, queuedMessages: [] };
 
     case "SET_BUSY":
       return { ...state, busy: action.busy };
@@ -174,6 +192,11 @@ function reducer(state: AppState, action: Action): AppState {
           content.push({ type: "image", data: img.data, mimeType: img.mimeType });
         }
       }
+      if (action.files?.length) {
+        for (const file of action.files) {
+          content.push({ type: "file", path: file.path, name: file.name } as FileBlock);
+        }
+      }
       if (action.text) {
         content.push({ type: "text", text: action.text });
       }
@@ -182,6 +205,7 @@ function reducer(state: AppState, action: Action): AppState {
         id: uid(),
         role: "user",
         content,
+        _queueId: action.queueId,
       };
       return {
         ...state,
@@ -205,7 +229,7 @@ function reducer(state: AppState, action: Action): AppState {
             content.map((b, i) =>
               i === content.length - 1 && b.type === "text"
                 ? { ...b, text: b.text + action.text }
-                : b,
+                : completePendingTools(b),
             ),
           ),
         };
@@ -216,11 +240,12 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         currentTurnId: turnId,
         messages: updateTurnContent(msgs, turnId, (content) => [
-          ...content.map((b) =>
-            (b.type === "text" || b.type === "thinking") && b._streaming
-              ? { ...b, _streaming: false }
-              : b,
-          ),
+          ...content.map((b) => {
+            const c = completePendingTools(b);
+            return (c.type === "text" || c.type === "thinking") && c._streaming
+              ? { ...c, _streaming: false }
+              : c;
+          }),
           { type: "text" as const, text: action.text, _streaming: true },
         ]),
       };
@@ -240,7 +265,7 @@ function reducer(state: AppState, action: Action): AppState {
             content.map((b, i) =>
               i === content.length - 1 && b.type === "thinking"
                 ? { ...b, thinking: b.thinking + action.text }
-                : b,
+                : completePendingTools(b),
             ),
           ),
         };
@@ -251,11 +276,12 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         currentTurnId: turnId,
         messages: updateTurnContent(msgs, turnId, (content) => [
-          ...content.map((b) =>
-            (b.type === "text" || b.type === "thinking") && b._streaming
-              ? { ...b, _streaming: false }
-              : b,
-          ),
+          ...content.map((b) => {
+            const c = completePendingTools(b);
+            return (c.type === "text" || c.type === "thinking") && c._streaming
+              ? { ...c, _streaming: false }
+              : c;
+          }),
           { type: "thinking" as const, thinking: action.text, _streaming: true },
         ]),
       };
@@ -309,12 +335,13 @@ function reducer(state: AppState, action: Action): AppState {
         peekStatus: newPeek,
         turnToolCallIds: [...state.turnToolCallIds, action.toolCallId],
         messages: updateTurnContent(msgs, turnId, (content) => [
-          // Finalize any streaming blocks
-          ...content.map((b) =>
-            (b.type === "text" || b.type === "thinking") && b._streaming
-              ? { ...b, _streaming: false }
-              : b,
-          ),
+          // Finalize any streaming blocks and complete pending tools
+          ...content.map((b) => {
+            const c = completePendingTools(b);
+            return (c.type === "text" || c.type === "thinking") && c._streaming
+              ? { ...c, _streaming: false }
+              : c;
+          }),
           toolBlock,
         ]),
       };
@@ -461,7 +488,8 @@ function reducer(state: AppState, action: Action): AppState {
 
       return {
         ...state,
-        busy: false,
+        // Stay busy if there are queued messages (server will auto-drain next)
+        busy: state.queuedMessages.length > 0,
         currentTurnId: null,
         turnToolCallIds: [],
         tasks: updatedTasks,
@@ -577,6 +605,7 @@ function reducer(state: AppState, action: Action): AppState {
         currentTurnId: null,
         turnToolCallIds: restored.turnToolCallIds,
         busy: false,
+        queuedMessages: [],
         peekStatus: {},
       };
     }
@@ -589,6 +618,32 @@ function reducer(state: AppState, action: Action): AppState {
         ),
       };
 
+    // ── Queue management actions ────────────
+    case "MESSAGE_QUEUED":
+      return {
+        ...state,
+        queuedMessages: [...state.queuedMessages, action.queueId],
+      };
+
+    case "QUEUE_DRAIN_START":
+      return {
+        ...state,
+        busy: true,
+        queuedMessages: state.queuedMessages.filter((id) => id !== action.queueId),
+      };
+
+    case "QUEUE_CANCELLED":
+      return {
+        ...state,
+        queuedMessages: state.queuedMessages.filter((id) => id !== action.queueId),
+        messages: state.messages.filter(
+          (m) => !(m.type === "message" && m.role === "user" && (m as MessageEntry)._queueId === action.queueId),
+        ),
+      };
+
+    case "COMMANDS":
+      return { ...state, commands: action.commands };
+
     default:
       return state;
   }
@@ -597,12 +652,14 @@ function reducer(state: AppState, action: Action): AppState {
 interface WsContextValue {
   state: AppState;
   dispatch: React.Dispatch<Action>;
-  send: (text: string, images?: ImageAttachment[]) => void;
+  send: (text: string, images?: ImageAttachment[], files?: FileAttachment[]) => void;
   newSession: () => void;
   resumeSession: (sessionId: string) => void;
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
   deleteSession: (sessionId: string) => void;
   renameSession: (sessionId: string, title: string) => void;
+  cancelQueued: (queueId: string) => void;
+  searchFiles: (query: string, callback: (files: string[]) => void) => void;
 }
 
 const WsContext = createContext<WsContextValue | null>(null);
@@ -630,14 +687,17 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   /** Tracks sessions that we've already requested history for (to avoid duplicate requests). */
   const historyRequestedFor = useRef(new Set<string>());
 
-  const send = useCallback((text: string, images?: ImageAttachment[]) => {
+  const send = useCallback((text: string, images?: ImageAttachment[], files?: FileAttachment[]) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    dispatch({ type: "SEND_MESSAGE", text, images });
+    const queueId = `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    dispatch({ type: "SEND_MESSAGE", text, images, files, queueId });
     wsRef.current.send(
       JSON.stringify({
         type: "prompt",
         text,
+        queueId,
         ...(images?.length ? { images } : {}),
+        ...(files?.length ? { files } : {}),
       }),
     );
   }, []);
@@ -673,6 +733,19 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     wsRef.current.send(JSON.stringify({ type: "rename_session", sessionId, title }));
   }, []);
 
+  const cancelQueued = useCallback((queueId: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "cancel_queued", queueId }));
+  }, []);
+
+  const fileSearchCallbacks = useRef<Map<string, (files: string[]) => void>>(new Map());
+
+  const searchFiles = useCallback((query: string, callback: (files: string[]) => void) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    fileSearchCallbacks.current.set(query, callback);
+    wsRef.current.send(JSON.stringify({ type: "list_files", query }));
+  }, []);
+
   useEffect(() => {
     let disposed = false;
     let reconnectTimer: ReturnType<typeof setTimeout>;
@@ -700,6 +773,15 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data);
         console.log("[WS RAW]", msg.type, JSON.parse(JSON.stringify(msg)));
+        // Intercept file_list responses before general dispatch
+        if (msg.type === "file_list") {
+          const cb = fileSearchCallbacks.current.get(msg.query ?? "");
+          if (cb) {
+            fileSearchCallbacks.current.delete(msg.query ?? "");
+            cb(msg.files ?? []);
+          }
+          return;
+        }
         handleMsg(msg, dispatch);
       };
     }
@@ -811,7 +893,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   }, [state.currentSessionId, state.connected, state.messages.length]);
 
   return (
-    <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb, deleteSession: deleteSessionCb, renameSession: renameSessionCb }}>
+    <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb, deleteSession: deleteSessionCb, renameSession: renameSessionCb, cancelQueued, searchFiles }}>
       {children}
     </WsContext.Provider>
   );
@@ -898,6 +980,19 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       break;
     case "session_title_update":
       dispatch({ type: "SESSION_TITLE_UPDATE", sessionId: msg.sessionId, title: msg.title });
+      break;
+    // Queue messages
+    case "message_queued":
+      dispatch({ type: "MESSAGE_QUEUED", queueId: msg.queueId });
+      break;
+    case "queue_drain_start":
+      dispatch({ type: "QUEUE_DRAIN_START", queueId: msg.queueId });
+      break;
+    case "queue_cancelled":
+      dispatch({ type: "QUEUE_CANCELLED", queueId: msg.queueId });
+      break;
+    case "commands":
+      dispatch({ type: "COMMANDS", commands: msg.commands ?? [] });
       break;
   }
 }

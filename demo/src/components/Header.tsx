@@ -1,4 +1,5 @@
 import { useWs } from "../context/WebSocketContext";
+import { stripCliXml } from "../strip-xml";
 
 export function Header() {
   const { state } = useWs();
@@ -8,8 +9,9 @@ export function Header() {
   const currentSession = state.sessions.find(
     (s) => s.sessionId === state.currentSessionId,
   );
+  const rawTitle = currentSession?.title;
   const sessionLabel =
-    currentSession?.title ||
+    (rawTitle ? stripCliXml(rawTitle) || rawTitle.replace(/<[^>]+>/g, "").trim() : null) ||
     (state.currentSessionId
       ? state.currentSessionId.slice(0, 8) + "..."
       : null);
@@ -28,7 +30,7 @@ export function Header() {
       </svg>
       <h1 className="text-sm font-semibold text-text">Claude Code ACP</h1>
       {sessionLabel && (
-        <span className="text-xs text-dim truncate max-w-48">
+        <span className="text-xs text-dim">
           {sessionLabel}
         </span>
       )}

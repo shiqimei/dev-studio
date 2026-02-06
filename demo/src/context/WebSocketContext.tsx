@@ -22,6 +22,42 @@ import type {
 import { classifyTool } from "../utils";
 import { jsonlToEntries, prettyToolName, extractAgentId } from "../jsonl-convert";
 
+// ── Hash-based routing helpers ──
+
+/** Parse the URL hash into session/subagent references. */
+function parseSessionHash(hash = window.location.hash): {
+  sessionId: string;
+  parentId?: string;
+  agentId?: string;
+} | null {
+  if (!hash || hash === "#") return null;
+
+  // #/session/{parentId}/agent/{agentId}
+  const subMatch = hash.match(/^#\/session\/([^/]+)\/agent\/(.+)$/);
+  if (subMatch) {
+    return {
+      sessionId: `${subMatch[1]}:subagent:${subMatch[2]}`,
+      parentId: subMatch[1],
+      agentId: subMatch[2],
+    };
+  }
+
+  // #/session/{sessionId}
+  const match = hash.match(/^#\/session\/(.+)$/);
+  if (match) return { sessionId: match[1] };
+
+  return null;
+}
+
+/** Convert a currentSessionId to a URL hash string. */
+function sessionIdToHash(sessionId: string): string {
+  const subMatch = sessionId.match(/^(.+):subagent:(.+)$/);
+  if (subMatch) {
+    return `#/session/${subMatch[1]}/agent/${subMatch[2]}`;
+  }
+  return `#/session/${sessionId}`;
+}
+
 let nextId = 0;
 function uid(): string {
   return "m" + nextId++;
@@ -564,6 +600,7 @@ interface WsContextValue {
   resumeSession: (sessionId: string) => void;
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
   deleteSession: (sessionId: string) => void;
+  renameSession: (sessionId: string, title: string) => void;
 }
 
 const WsContext = createContext<WsContextValue | null>(null);
@@ -577,6 +614,17 @@ export function useWs(): WsContextValue {
 export function WebSocketProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const wsRef = useRef<WebSocket | null>(null);
+
+  // ── Hash routing refs ──
+  /** The hash captured at mount time, before any WS events. */
+  const pendingHashRestore = useRef(parseSessionHash());
+  /** True once the initial hash restore logic has been handled. */
+  const hashInitialized = useRef(false);
+  /** When true, the next hash sync will use replaceState instead of pushState. */
+  const skipNextPush = useRef(false);
+  /** Tracks currentSessionId for the popstate handler without stale closures. */
+  const currentSessionRef = useRef<string | null>(null);
+  currentSessionRef.current = state.currentSessionId;
 
   const send = useCallback((text: string, images?: ImageAttachment[]) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -603,12 +651,22 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
   const resumeSubagentCb = useCallback((parentSessionId: string, agentId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    dispatch({ type: "SESSION_SWITCH_PENDING", sessionId: `${parentSessionId}:subagent:${agentId}` });
     wsRef.current.send(JSON.stringify({ type: "resume_subagent", parentSessionId, agentId }));
   }, []);
 
   const deleteSessionCb = useCallback((sessionId: string) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      console.warn("[deleteSession] WebSocket not connected");
+      return;
+    }
+    console.log("[deleteSession] Sending delete_session for", sessionId);
     wsRef.current.send(JSON.stringify({ type: "delete_session", sessionId }));
+  }, []);
+
+  const renameSessionCb = useCallback((sessionId: string, title: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "rename_session", sessionId, title }));
   }, []);
 
   useEffect(() => {
@@ -655,8 +713,68 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(id);
   }, [state.tasks, state.busy]);
 
+  // ── Hash-based URL routing ──
+
+  // Sync URL hash with current session, and handle initial restore from hash
+  useEffect(() => {
+    if (!state.currentSessionId) return;
+
+    // Phase 1: On first session switch after connect, check if we need to
+    // restore from the URL hash instead of the auto-created session.
+    if (!hashInitialized.current) {
+      if (!state.connected) return;
+
+      const restore = pendingHashRestore.current;
+      pendingHashRestore.current = null;
+      hashInitialized.current = true;
+
+      if (restore && restore.sessionId !== state.currentSessionId) {
+        // Switch to the session from the URL hash
+        skipNextPush.current = true;
+        if (restore.agentId && restore.parentId) {
+          resumeSubagentCb(restore.parentId, restore.agentId);
+        } else {
+          resumeSessionCb(restore.sessionId);
+        }
+        return;
+      }
+
+      // No restore needed — set hash for the auto-created session
+      history.replaceState(null, "", sessionIdToHash(state.currentSessionId));
+      return;
+    }
+
+    // Phase 2: Normal hash sync
+    const hash = sessionIdToHash(state.currentSessionId);
+    if (window.location.hash === hash) return;
+
+    if (skipNextPush.current) {
+      skipNextPush.current = false;
+      history.replaceState(null, "", hash);
+    } else {
+      history.pushState(null, "", hash);
+    }
+  }, [state.currentSessionId, state.connected, resumeSessionCb, resumeSubagentCb]);
+
+  // Handle browser back/forward navigation
+  useEffect(() => {
+    function onPopState() {
+      const parsed = parseSessionHash();
+      if (!parsed || parsed.sessionId === currentSessionRef.current) return;
+
+      skipNextPush.current = true;
+      if (parsed.agentId && parsed.parentId) {
+        resumeSubagentCb(parsed.parentId, parsed.agentId);
+      } else {
+        resumeSessionCb(parsed.sessionId);
+      }
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [resumeSessionCb, resumeSubagentCb]);
+
   return (
-    <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb, deleteSession: deleteSessionCb }}>
+    <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb, deleteSession: deleteSessionCb, renameSession: renameSessionCb }}>
       {children}
     </WsContext.Provider>
   );

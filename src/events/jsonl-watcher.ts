@@ -120,22 +120,36 @@ export class JsonlWatcher extends EventEmitter {
         await fh.read(buffer, 0, bytesToRead, currentOffset);
 
         const newContent = buffer.toString("utf-8");
-        const lines = newContent.split("\n");
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
+        // Iterate lines without split() to avoid creating an intermediate array
+        let lineStart = 0;
+        while (lineStart < newContent.length) {
+          const lineEnd = newContent.indexOf("\n", lineStart);
 
-          try {
-            const data = JSON.parse(trimmed);
-            this.emit("entry", { sessionId, data });
-          } catch {
-            // Partial line at the end — don't advance past it
-            // We'll pick it up on the next read when the line is complete
-            const partialBytes = Buffer.byteLength(line + "\n", "utf-8");
+          if (lineEnd === -1) {
+            // No newline found — this is a partial line at the end
+            // Don't advance past it; we'll pick it up on the next read
+            const partialBytes = Buffer.byteLength(newContent.substring(lineStart) + "\n", "utf-8");
             this.offsets.set(filename, stat.size - partialBytes);
             return;
           }
+
+          if (lineEnd > lineStart) {
+            const line = newContent.substring(lineStart, lineEnd).trim();
+            if (line) {
+              try {
+                const data = JSON.parse(line);
+                this.emit("entry", { sessionId, data });
+              } catch {
+                // Partial/malformed line — don't advance past it
+                const partialBytes = Buffer.byteLength(newContent.substring(lineStart) + "\n", "utf-8");
+                this.offsets.set(filename, stat.size - partialBytes);
+                return;
+              }
+            }
+          }
+
+          lineStart = lineEnd + 1;
         }
 
         this.offsets.set(filename, stat.size);

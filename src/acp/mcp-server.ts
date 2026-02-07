@@ -76,18 +76,37 @@ export function createMcpServer(
 
       // eslint-disable-next-line eqeqeq
       if (input.offset != null || input.limit != null) {
-        const lines = content.split("\n");
-
-        // Apply offset and limit if provided
+        // Extract requested line range without splitting the entire file.
+        // Walk through newlines to find the start/end byte positions directly.
         const offset = input.offset ?? 1;
-        const limit = input.limit ?? lines.length;
+        const targetStart = Math.max(0, offset - 1);
 
-        // Extract the requested lines (offset is 1-based)
-        const startIndex = Math.max(0, offset - 1);
-        const endIndex = Math.min(lines.length, startIndex + limit);
-        const selectedLines = lines.slice(startIndex, endIndex);
+        let lineIdx = 0;
+        let byteStart = 0;
+        // Skip to the target start line
+        while (lineIdx < targetStart && byteStart < content.length) {
+          const nl = content.indexOf("\n", byteStart);
+          if (nl === -1) { byteStart = content.length; break; }
+          byteStart = nl + 1;
+          lineIdx++;
+        }
 
-        return { content: selectedLines.join("\n") };
+        // Count `limit` lines from byteStart
+        const limit = input.limit ?? Infinity;
+        let linesRead = 0;
+        let byteEnd = byteStart;
+        while (linesRead < limit && byteEnd < content.length) {
+          const nl = content.indexOf("\n", byteEnd);
+          if (nl === -1) { byteEnd = content.length; linesRead++; break; }
+          byteEnd = nl + 1;
+          linesRead++;
+        }
+
+        // Trim trailing newline for consistent output
+        const slice = byteEnd > byteStart && content.charCodeAt(byteEnd - 1) === 10
+          ? content.substring(byteStart, byteEnd - 1)
+          : content.substring(byteStart, byteEnd);
+        return { content: slice };
       } else {
         return { content };
       }
@@ -886,15 +905,26 @@ export function replaceAndCalculateLocation(
     }
   }
 
-  // Find line numbers where markers appear in the content
+  // Find line numbers where markers appear in the content.
+  // Count line breaks directly instead of split() which allocates an array of all lines.
   const lineNumbers: number[] = [];
   for (const marker of markers) {
     const index = currentContent.indexOf(marker);
     if (index !== -1) {
-      const lineNumber = Math.max(
-        0,
-        currentContent.substring(0, index).split(/\r\n|\r|\n/).length - 1,
-      );
+      let lineNumber = 0;
+      for (let i = 0; i < index; i++) {
+        const ch = currentContent.charCodeAt(i);
+        if (ch === 10) { // \n
+          lineNumber++;
+        } else if (ch === 13) { // \r
+          // \r\n counts as one line break — only increment if next char is not \n
+          if (i + 1 < index && currentContent.charCodeAt(i + 1) === 10) {
+            // skip — the \n will be counted on next iteration
+          } else {
+            lineNumber++; // standalone \r (old Mac style)
+          }
+        }
+      }
       lineNumbers.push(lineNumber);
     }
   }

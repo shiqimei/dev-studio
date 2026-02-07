@@ -15,13 +15,12 @@ import { perfStart } from "../utils/perf.js";
 
 function formatUriAsLink(uri: string): string {
   try {
-    if (uri.startsWith("file://")) {
-      const path = uri.slice(7); // Remove "file://"
-      const name = path.split("/").pop() || path;
-      return `[@${name}](${uri})`;
-    } else if (uri.startsWith("zed://")) {
-      const parts = uri.split("/");
-      const name = parts[parts.length - 1] || uri;
+    if (uri.startsWith("file://") || uri.startsWith("zed://")) {
+      // Extract last path component without split() — find last '/' directly
+      const lastSlash = uri.lastIndexOf("/");
+      const name = lastSlash >= 0 && lastSlash < uri.length - 1
+        ? uri.substring(lastSlash + 1)
+        : uri.startsWith("file://") ? uri.substring(7) : uri;
       return `[@${name}](${uri})`;
     }
     return uri;
@@ -208,15 +207,11 @@ export function toAcpNotifications(
                     backgroundTaskMap[`file:${info.outputFile}`] = toolUseId;
                 }
 
+                const hookMeta: Record<string, unknown> = { toolResponse, toolName: toolUse.name };
+                if (hookIsBackground) hookMeta.isBackground = true;
+                if (parentToolUseId) hookMeta.parentToolUseId = parentToolUseId;
                 const update: SessionNotification["update"] = {
-                  _meta: {
-                    claudeCode: {
-                      toolResponse,
-                      toolName: toolUse.name,
-                      ...(hookIsBackground && { isBackground: true }),
-                      ...(parentToolUseId && { parentToolUseId }),
-                    },
-                  } satisfies ToolUpdateMeta,
+                  _meta: { claudeCode: hookMeta } as ToolUpdateMeta,
                   toolCallId: toolUseId,
                   sessionUpdate: "tool_call_update",
                 };
@@ -243,14 +238,14 @@ export function toAcpNotifications(
             | undefined;
           const isBackground =
             inputObj?.run_in_background === true;
+          // Build meta without conditional spreads to avoid intermediate object allocations
+          const toolCallMeta: Record<string, unknown> = { toolName: chunk.name };
+          if (isBackground) toolCallMeta.isBackground = true;
+          if (parentToolUseId) toolCallMeta.parentToolUseId = parentToolUseId;
           update = {
             _meta: {
-              claudeCode: {
-                toolName: chunk.name,
-                ...(isBackground && { isBackground: true }),
-                ...(parentToolUseId && { parentToolUseId }),
-              },
-            } satisfies ToolUpdateMeta,
+              claudeCode: toolCallMeta,
+            } as ToolUpdateMeta,
             toolCallId: chunk.id,
             sessionUpdate: "tool_call",
             rawInput,
@@ -301,14 +296,12 @@ export function toAcpNotifications(
           // compute the correct title.
           const derivedTitle = resultUpdate.title || toolInfoFromToolUse(toolUse).title;
 
+          // Build meta without conditional spreads to avoid intermediate object allocations
+          const resultMeta: Record<string, unknown> = { toolName: toolUse.name };
+          if (resultIsBackground) resultMeta.isBackground = true;
+          if (parentToolUseId) resultMeta.parentToolUseId = parentToolUseId;
           update = {
-            _meta: {
-              claudeCode: {
-                toolName: toolUse.name,
-                ...(resultIsBackground && { isBackground: true }),
-                ...(parentToolUseId && { parentToolUseId }),
-              },
-            } satisfies ToolUpdateMeta,
+            _meta: { claudeCode: resultMeta } as ToolUpdateMeta,
             toolCallId: chunk.tool_use_id,
             sessionUpdate: "tool_call_update",
             status: "is_error" in chunk && chunk.is_error ? "failed" : "completed",

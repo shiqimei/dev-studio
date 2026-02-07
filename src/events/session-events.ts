@@ -65,22 +65,47 @@ export class SessionEventEmitter extends EventEmitter {
     // Classify into typed events
     switch (obj.type) {
       case "user":
+      case "assistant": {
         this.emit("event", {
           type: "message-added",
           sessionId,
           entry: data,
-          role: "user",
+          role: obj.type as "user" | "assistant",
         } satisfies SessionEvent);
-        break;
 
-      case "assistant":
-        this.emit("event", {
-          type: "message-added",
-          sessionId,
-          entry: data,
-          role: "assistant",
-        } satisfies SessionEvent);
+        // Extract tool_use / tool_result events from message content blocks
+        const message = obj.message as { content?: unknown[] } | undefined;
+        if (message && Array.isArray(message.content)) {
+          for (const block of message.content) {
+            const bType = (block as Record<string, unknown>).type;
+            if (
+              bType === "tool_use" ||
+              bType === "server_tool_use" ||
+              bType === "mcp_tool_use"
+            ) {
+              const b = block as Record<string, unknown>;
+              this.emit("event", {
+                type: "tool-started",
+                sessionId,
+                entry: data,
+                toolName: (b.name as string) ?? "",
+                toolUseId: (b.id as string) ?? "",
+              } satisfies SessionEvent);
+            } else if (
+              bType === "tool_result" ||
+              bType === "mcp_tool_result"
+            ) {
+              this.emit("event", {
+                type: "tool-completed",
+                sessionId,
+                entry: data,
+                toolUseId: ((block as Record<string, unknown>).tool_use_id as string) ?? "",
+              } satisfies SessionEvent);
+            }
+          }
+        }
         break;
+      }
 
       case "system":
         switch (obj.subtype) {
@@ -140,38 +165,6 @@ export class SessionEventEmitter extends EventEmitter {
         break;
 
       default:
-        // Extract tool_use from assistant messages
-        if (obj.type === "assistant" || obj.type === "user") {
-          const message = obj.message as { content?: unknown[] } | undefined;
-          if (message && Array.isArray(message.content)) {
-            for (const block of message.content) {
-              const b = block as Record<string, unknown>;
-              if (
-                b.type === "tool_use" ||
-                b.type === "server_tool_use" ||
-                b.type === "mcp_tool_use"
-              ) {
-                this.emit("event", {
-                  type: "tool-started",
-                  sessionId,
-                  entry: data,
-                  toolName: (b.name as string) ?? "",
-                  toolUseId: (b.id as string) ?? "",
-                } satisfies SessionEvent);
-              } else if (
-                b.type === "tool_result" ||
-                b.type === "mcp_tool_result"
-              ) {
-                this.emit("event", {
-                  type: "tool-completed",
-                  sessionId,
-                  entry: data,
-                  toolUseId: (b.tool_use_id as string) ?? "",
-                } satisfies SessionEvent);
-              }
-            }
-          }
-        }
         break;
     }
   }

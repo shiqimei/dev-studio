@@ -87,11 +87,23 @@ export function nodeToWebReadable(nodeStream: Readable): ReadableStream<Uint8Arr
 }
 
 export function unreachable(value: never, logger: Logger = console) {
-  let valueAsString;
+  // Use lightweight stringification for SDK message objects to avoid
+  // JSON.stringify blocking the event loop on large payloads.
+  let valueAsString: string;
   try {
-    valueAsString = JSON.stringify(value);
+    const v = value as any;
+    if (v && typeof v === "object") {
+      // For SDK messages, type+subtype is all we need to identify the case
+      if ("type" in v) {
+        valueAsString = JSON.stringify({ type: v.type, ...(v.subtype ? { subtype: v.subtype } : {}) });
+      } else {
+        valueAsString = JSON.stringify(value);
+      }
+    } else {
+      valueAsString = JSON.stringify(value);
+    }
   } catch {
-    valueAsString = value;
+    valueAsString = String(value);
   }
   logger.error(`Unexpected case: ${valueAsString}`);
 }

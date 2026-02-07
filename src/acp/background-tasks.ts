@@ -4,6 +4,12 @@
  */
 import type { TerminalHandle, TerminalOutputResponse } from "@agentclientprotocol/sdk";
 
+/** Pre-compiled regex patterns for background task info extraction.
+ *  Avoids re-creating regex objects on every call. */
+const TASK_ID_RE = /task[_\s-]?id[:\s]+["']?([^\s"',)]+)/i;
+const AGENT_ID_RE = /agentId[:\s]+["']?([^\s"',)]+)/i;
+const OUTPUT_FILE_RE = /output[_\s-]?file[:\s]+["']?([^\s"',)]+)/i;
+
 export type BackgroundTerminal =
   | {
       handle: TerminalHandle;
@@ -53,11 +59,9 @@ export function extractBackgroundTaskInfo(response: unknown): {
     }
   }
 
-  // Match task_id, agentId, or similar identifiers
-  const taskIdMatch =
-    text.match(/task[_\s-]?id[:\s]+["']?([^\s"',)]+)/i) ||
-    text.match(/agentId[:\s]+["']?([^\s"',)]+)/i);
-  const outputFileMatch = text.match(/output[_\s-]?file[:\s]+["']?([^\s"',)]+)/i);
+  // Match task_id, agentId, or similar identifiers (using pre-compiled patterns)
+  const taskIdMatch = TASK_ID_RE.exec(text) || AGENT_ID_RE.exec(text);
+  const outputFileMatch = OUTPUT_FILE_RE.exec(text);
   return {
     taskId: taskIdMatch?.[1],
     outputFile: outputFileMatch?.[1],

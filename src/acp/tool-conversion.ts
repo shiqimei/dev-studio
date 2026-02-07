@@ -291,65 +291,24 @@ export function toolInfoFromToolUse(toolUse: any): ToolInfo {
     }
 
     case "Grep": {
-      let label = "grep";
-
-      if (input["-i"]) {
-        label += " -i";
-      }
-      if (input["-n"]) {
-        label += " -n";
-      }
-
-      if (input["-A"] !== undefined) {
-        label += ` -A ${input["-A"]}`;
-      }
-      if (input["-B"] !== undefined) {
-        label += ` -B ${input["-B"]}`;
-      }
-      if (input["-C"] !== undefined) {
-        label += ` -C ${input["-C"]}`;
-      }
-
-      if (input.output_mode) {
-        switch (input.output_mode) {
-          case "FilesWithMatches":
-            label += " -l";
-            break;
-          case "Count":
-            label += " -c";
-            break;
-          case "Content":
-          default:
-            break;
-        }
-      }
-
-      if (input.head_limit !== undefined) {
-        label += ` | head -${input.head_limit}`;
-      }
-
-      if (input.glob) {
-        label += ` --include="${input.glob}"`;
-      }
-
-      if (input.type) {
-        label += ` --type=${input.type}`;
-      }
-
-      if (input.multiline) {
-        label += " -P";
-      }
-
-      if (input.pattern) {
-        label += ` "${input.pattern}"`;
-      }
-
-      if (input.path) {
-        label += ` ${input.path}`;
-      }
+      // Build label using array + join to avoid O(n²) string concatenation
+      const parts: string[] = ["grep"];
+      if (input["-i"]) parts.push("-i");
+      if (input["-n"]) parts.push("-n");
+      if (input["-A"] !== undefined) parts.push(`-A ${input["-A"]}`);
+      if (input["-B"] !== undefined) parts.push(`-B ${input["-B"]}`);
+      if (input["-C"] !== undefined) parts.push(`-C ${input["-C"]}`);
+      if (input.output_mode === "FilesWithMatches") parts.push("-l");
+      else if (input.output_mode === "Count") parts.push("-c");
+      if (input.head_limit !== undefined) parts.push(`| head -${input.head_limit}`);
+      if (input.glob) parts.push(`--include="${input.glob}"`);
+      if (input.type) parts.push(`--type=${input.type}`);
+      if (input.multiline) parts.push("-P");
+      if (input.pattern) parts.push(`"${input.pattern}"`);
+      if (input.path) parts.push(input.path);
 
       return {
-        title: label,
+        title: parts.join(" "),
         kind: "search",
         content: [],
       };

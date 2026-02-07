@@ -378,6 +378,8 @@ export class ClaudeAcpAgent implements Agent {
     } else {
       session.input!.push(promptMessage);
     }
+    // Cache stats from system.init to avoid re-reading at result
+    let cachedStats: Awaited<ReturnType<typeof readStatsCache>> = null;
     while (true) {
       const waitSpan = perf.start("router.next");
       const { value: message, done } = await router.next();
@@ -402,6 +404,7 @@ export class ClaudeAcpAgent implements Agent {
                 listPluginNames(),
                 listSkillNames(),
               ]);
+              cachedStats = stats;
               enqueue("sessionUpdate.system.init",
                 systemInitNotification(params.sessionId, message as unknown as Record<string, unknown>, {
                   stats: stats
@@ -469,8 +472,8 @@ export class ClaudeAcpAgent implements Agent {
             return { stopReason: "cancelled" };
           }
 
-          // Read stats to include in result metadata
-          const resultStats = await readStatsCache();
+          // Use cached stats from init (avoid duplicate disk read)
+          const resultStats = cachedStats;
 
           // Build result metadata to surface cost/usage info to ACP client
           const resultMeta: Record<string, unknown> = {
@@ -913,8 +916,7 @@ export class ClaudeAcpAgent implements Agent {
         const projectDir = getProjectDir(params.cwd as string | undefined);
         const entries = await readSessionHistoryFull(projectDir, sessionId);
         const t1 = performance.now();
-        const byteSize = JSON.stringify(entries).length;
-        console.error(`[extMethod] sessions/getHistory ${sessionId.slice(0, 8)} read=${(t1 - t0).toFixed(0)}ms entries=${entries.length} bytes=${byteSize}`);
+        console.error(`[extMethod] sessions/getHistory ${sessionId.slice(0, 8)} read=${(t1 - t0).toFixed(0)}ms entries=${entries.length}`);
         return { entries };
       }
 

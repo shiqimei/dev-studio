@@ -20,19 +20,23 @@ export interface SessionEventEmitterOptions extends JsonlWatcherOptions {
 export class SessionEventEmitter extends EventEmitter {
   private watcher: JsonlWatcher;
   private reportedIds: Set<string>;
+  private onEntry: (entry: JsonlEntry) => void;
+  private onError: (err: Error) => void;
 
   constructor(dir: string, options?: SessionEventEmitterOptions) {
     super();
     this.watcher = new JsonlWatcher(dir, options);
     this.reportedIds = options?.reportedMessageIds ?? new Set();
 
-    this.watcher.on("entry", (entry: JsonlEntry) => {
+    this.onEntry = (entry: JsonlEntry) => {
       this.processEntry(entry);
-    });
-
-    this.watcher.on("error", (err) => {
+    };
+    this.onError = (err: Error) => {
       this.emit("error", err);
-    });
+    };
+
+    this.watcher.on("entry", this.onEntry);
+    this.watcher.on("error", this.onError);
   }
 
   async start(): Promise<void> {
@@ -40,6 +44,8 @@ export class SessionEventEmitter extends EventEmitter {
   }
 
   stop(): void {
+    this.watcher.off("entry", this.onEntry);
+    this.watcher.off("error", this.onError);
     this.watcher.stop();
   }
 

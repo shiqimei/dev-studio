@@ -42,7 +42,7 @@ function normalizeSubagentType(raw: string): SubagentType {
 
 /**
  * Scan any JSONL file for Task tool calls and extract the spawned agent IDs + types.
- * Two-pass: find tool_use blocks, then match tool_result blocks.
+ * Single-pass: collects tool_use and tool_result entries simultaneously.
  * Returns array of { agentId, type }.
  */
 async function scanJsonlForTaskSpawns(jsonlPath: string): Promise<{ agentId: string; type: SubagentType }[]> {
@@ -50,59 +50,65 @@ async function scanJsonlForTaskSpawns(jsonlPath: string): Promise<{ agentId: str
 
   try {
     const raw = await fs.promises.readFile(jsonlPath, "utf-8");
-    // Single split, shared across both passes
     const lines = raw.split("\n");
 
-    // Pass 1: collect Task tool_use_id → subagent_type
     const taskTypeByToolId = new Map<string, string>();
+    // Deferred tool_results whose tool_use hasn't been seen yet (rare but possible with streaming)
+    const pendingResults: { toolUseId: string; resultText: string }[] = [];
+    const agentIdRe = /agentId:\s*([a-f0-9]+)/;
+
     for (const line of lines) {
       if (!line) continue;
       try {
         const entry = JSON.parse(line);
-        if (entry.type !== "assistant") continue;
         const content = entry.message?.content;
         if (!Array.isArray(content)) continue;
-        for (const block of content) {
-          if (block.type === "tool_use" && block.name === "Task" && block.input?.subagent_type) {
-            taskTypeByToolId.set(block.id, block.input.subagent_type);
+
+        if (entry.type === "assistant") {
+          for (const block of content) {
+            if (block.type === "tool_use" && block.name === "Task" && block.input?.subagent_type) {
+              taskTypeByToolId.set(block.id, block.input.subagent_type);
+            }
+          }
+        } else if (entry.type === "user") {
+          for (const block of content) {
+            if (block.type !== "tool_result") continue;
+            const subagentType = taskTypeByToolId.get(block.tool_use_id);
+
+            // Extract agentId from result text
+            let resultText = "";
+            const rc = block.content;
+            if (typeof rc === "string") {
+              resultText = rc;
+            } else if (Array.isArray(rc)) {
+              for (const rb of rc) {
+                if (rb?.type === "text") resultText += rb.text ?? "";
+              }
+            }
+
+            if (subagentType) {
+              const match = agentIdRe.exec(resultText);
+              if (match) {
+                results.push({ agentId: match[1], type: normalizeSubagentType(subagentType) });
+                taskTypeByToolId.delete(block.tool_use_id);
+              }
+            } else if (resultText.includes("agentId:")) {
+              // tool_use not seen yet — defer
+              pendingResults.push({ toolUseId: block.tool_use_id, resultText });
+            }
           }
         }
       } catch { /* skip */ }
     }
 
-    if (taskTypeByToolId.size === 0) return results;
-
-    // Pass 2: find tool_results for those Task calls, extract agentId
-    const agentIdRe = /agentId:\s*([a-f0-9]+)/;
-    for (const line of lines) {
-      if (!line) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (entry.type !== "user") continue;
-        const content = entry.message?.content;
-        if (!Array.isArray(content)) continue;
-        for (const block of content) {
-          if (block.type !== "tool_result") continue;
-          const subagentType = taskTypeByToolId.get(block.tool_use_id);
-          if (!subagentType) continue;
-
-          // Extract agentId from result text
-          let resultText = "";
-          const rc = block.content;
-          if (typeof rc === "string") {
-            resultText = rc;
-          } else if (Array.isArray(rc)) {
-            for (const rb of rc) {
-              if (rb?.type === "text") resultText += rb.text ?? "";
-            }
-          }
-          const match = agentIdRe.exec(resultText);
-          if (match) {
-            results.push({ agentId: match[1], type: normalizeSubagentType(subagentType) });
-            taskTypeByToolId.delete(block.tool_use_id); // mark as resolved
-          }
-        }
-      } catch { /* skip */ }
+    // Resolve any deferred results
+    for (const pending of pendingResults) {
+      const subagentType = taskTypeByToolId.get(pending.toolUseId);
+      if (!subagentType) continue;
+      const match = agentIdRe.exec(pending.resultText);
+      if (match) {
+        results.push({ agentId: match[1], type: normalizeSubagentType(subagentType) });
+      }
     }
   } catch {
     // JSONL missing or unreadable
@@ -183,20 +189,26 @@ async function buildAgentHierarchy(
 
   // Step 3: iteratively scan child JSONLs to resolve orphans
   // Start with direct children, then expand to newly-discovered parents
+  // Scan all parents at each level in parallel
   let parentsToScan = [...directChildIds];
 
   while (orphanIds.size > 0 && parentsToScan.length > 0) {
     const nextParents: string[] = [];
 
-    for (const parentId of parentsToScan) {
-      const childJsonlPath = getSubagentJsonlPath(projectDir, sessionId, parentId);
-      const childSpawns = await scanJsonlForTaskSpawns(childJsonlPath);
+    const scanResults = await Promise.all(
+      parentsToScan.map(async (parentId) => {
+        const childJsonlPath = getSubagentJsonlPath(projectDir, sessionId, parentId);
+        const childSpawns = await scanJsonlForTaskSpawns(childJsonlPath);
+        return { parentId, childSpawns };
+      }),
+    );
 
+    for (const { parentId, childSpawns } of scanResults) {
       for (const spawn of childSpawns) {
         if (orphanIds.has(spawn.agentId)) {
           map.set(spawn.agentId, { type: spawn.type, parentAgentId: parentId });
           orphanIds.delete(spawn.agentId);
-          nextParents.push(spawn.agentId); // this resolved orphan may itself be a parent
+          nextParents.push(spawn.agentId);
         }
       }
     }

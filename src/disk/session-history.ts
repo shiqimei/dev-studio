@@ -82,21 +82,29 @@ async function parseJsonlFile(jsonlPath: string): Promise<JsonlEntry[]> {
     const t0 = performance.now();
     const raw = await fs.promises.readFile(jsonlPath, "utf-8");
     const t1 = performance.now();
-    const lines = raw.split("\n").filter(Boolean);
     const entries: JsonlEntry[] = [];
 
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line) as JsonlEntry;
-        if (CONTENT_ENTRY_TYPES.has(entry.type)) {
-          entries.push(entry);
+    // Iterate lines without creating intermediate filtered array
+    let lineStart = 0;
+    let lineCount = 0;
+    while (lineStart < raw.length) {
+      const lineEnd = raw.indexOf("\n", lineStart);
+      const end = lineEnd === -1 ? raw.length : lineEnd;
+      if (end > lineStart) {
+        lineCount++;
+        try {
+          const entry = JSON.parse(raw.substring(lineStart, end)) as JsonlEntry;
+          if (CONTENT_ENTRY_TYPES.has(entry.type)) {
+            entries.push(entry);
+          }
+        } catch {
+          // Skip malformed lines
         }
-      } catch {
-        // Skip malformed lines
       }
+      lineStart = end + 1;
     }
     const t2 = performance.now();
-    console.error(`[parseJsonlFile] ${jsonlPath.split("/").pop()} fileRead=${(t1 - t0).toFixed(0)}ms parse=${(t2 - t1).toFixed(0)}ms lines=${lines.length} entries=${entries.length} fileSize=${raw.length}`);
+    console.error(`[parseJsonlFile] ${jsonlPath.split("/").pop()} fileRead=${(t1 - t0).toFixed(0)}ms parse=${(t2 - t1).toFixed(0)}ms lines=${lineCount} entries=${entries.length} fileSize=${raw.length}`);
 
     return entries;
   } catch {

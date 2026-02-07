@@ -504,7 +504,6 @@ export function toolUpdateFromToolResult(
         typeof toolResult.content[0].text === "string"
       ) {
         const patches = diff.parsePatch(toolResult.content[0].text);
-        console.error(JSON.stringify(patches));
         for (const { oldFileName, newFileName, hunks } of patches) {
           for (const { lines, newStart } of hunks) {
             const oldText = [];
@@ -705,9 +704,12 @@ export function planEntries(input: { todos: ClaudePlanEntry[] }): PlanEntry[] {
 
 export function markdownEscape(text: string): string {
   let escape = "```";
-  for (const [m] of text.matchAll(/^```+/gm)) {
-    while (m.length >= escape.length) {
-      escape += "`";
+  // Only scan for backtick fences if the text actually contains triple backticks
+  if (text.includes("```")) {
+    for (const [m] of text.matchAll(/^```+/gm)) {
+      while (m.length >= escape.length) {
+        escape += "`";
+      }
     }
   }
   return escape + "\n" + text + (text.endsWith("\n") ? "" : "\n") + escape;

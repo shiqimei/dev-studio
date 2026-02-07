@@ -11,6 +11,7 @@ import type { Logger, ToolUseCache, ToolUpdateMeta } from "./types.js";
 import { toolInfoFromToolUse, planEntries, toolUpdateFromToolResult, type ClaudePlanEntry } from "./tool-conversion.js";
 import { registerHookCallback } from "../sdk/hooks.js";
 import { extractBackgroundTaskInfo } from "./background-tasks.js";
+import { perfStart } from "../utils/perf.js";
 
 function formatUriAsLink(uri: string): string {
   try {
@@ -122,7 +123,9 @@ export function toAcpNotifications(
   backgroundTaskMap?: Record<string, string>,
   parentToolUseId?: string | null,
 ): SessionNotification[] {
+  const span = perfStart("toAcpNotifications");
   if (typeof content === "string") {
+    span.end({ chunks: 1, type: "string" });
     return [
       {
         sessionId,
@@ -335,6 +338,7 @@ export function toAcpNotifications(
     }
   }
 
+  span.end({ chunks: output.length });
   return output;
 }
 
@@ -346,11 +350,12 @@ export function streamEventToAcpNotifications(
   logger: Logger,
   backgroundTaskMap?: Record<string, string>,
 ): SessionNotification[] {
+  const span = perfStart("streamEventToAcpNotifications");
   const event = message.event;
   const parentToolUseId = message.parent_tool_use_id;
   switch (event.type) {
-    case "content_block_start":
-      return toAcpNotifications(
+    case "content_block_start": {
+      const result = toAcpNotifications(
         [event.content_block],
         "assistant",
         sessionId,
@@ -360,8 +365,11 @@ export function streamEventToAcpNotifications(
         backgroundTaskMap,
         parentToolUseId,
       );
-    case "content_block_delta":
-      return toAcpNotifications(
+      span.end({ eventType: event.type });
+      return result;
+    }
+    case "content_block_delta": {
+      const result = toAcpNotifications(
         [event.delta],
         "assistant",
         sessionId,
@@ -371,15 +379,20 @@ export function streamEventToAcpNotifications(
         backgroundTaskMap,
         parentToolUseId,
       );
+      span.end({ eventType: event.type });
+      return result;
+    }
     // No content
     case "message_start":
     case "message_delta":
     case "message_stop":
     case "content_block_stop":
+      span.end({ eventType: event.type });
       return [];
 
     default:
       unreachable(event, logger);
+      span.end({ eventType: "unknown" });
       return [];
   }
 }

@@ -79,7 +79,9 @@ export function readSubagentHistoryFull(projectDir: string, sessionId: string, a
 /** Parse a JSONL file and return content entries. */
 function parseJsonlFile(jsonlPath: string): JsonlEntry[] {
   try {
+    const t0 = performance.now();
     const raw = fs.readFileSync(jsonlPath, "utf-8");
+    const t1 = performance.now();
     const lines = raw.split("\n").filter(Boolean);
     const entries: JsonlEntry[] = [];
 
@@ -93,6 +95,8 @@ function parseJsonlFile(jsonlPath: string): JsonlEntry[] {
         // Skip malformed lines
       }
     }
+    const t2 = performance.now();
+    console.error(`[parseJsonlFile] ${jsonlPath.split("/").pop()} fileRead=${(t1 - t0).toFixed(0)}ms parse=${(t2 - t1).toFixed(0)}ms lines=${lines.length} entries=${entries.length} fileSize=${raw.length}`);
 
     return entries;
   } catch {

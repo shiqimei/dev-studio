@@ -69,6 +69,11 @@ export class SessionMessageRouter {
     }
   }
 
+  /** Current number of buffered messages waiting for consumption. */
+  get bufferDepth(): number {
+    return this.buffer.length;
+  }
+
   /** Drop-in replacement for query.next() used by prompt(). */
   async next(): Promise<IteratorResult<SDKMessage, void>> {
     if (this.buffer.length > 0) {

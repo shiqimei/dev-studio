@@ -80,6 +80,7 @@ import type { SessionIndexEntry } from "../disk/types.js";
 import type { Logger, NewSessionMeta, ToolUpdateMeta, ToolUseCache } from "./types.js";
 import type { BackgroundTerminal } from "./background-tasks.js";
 import { extractBackgroundTaskInfo } from "./background-tasks.js";
+import { perfScope, type PerfScope } from "../utils/perf.js";
 import packageJson from "../../package.json" with { type: "json" };
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -185,6 +186,7 @@ export class ClaudeAcpAgent implements Agent {
   }
 
   async initialize(request: InitializeRequest): Promise<InitializeResponse> {
+    const t0 = performance.now();
     this.clientCapabilities = request.clientCapabilities;
 
     // Default authMethod
@@ -207,7 +209,7 @@ export class ClaudeAcpAgent implements Agent {
       };
     }
 
-    return {
+    const result = {
       protocolVersion: 1,
       agentCapabilities: {
         promptCapabilities: {
@@ -231,9 +233,12 @@ export class ClaudeAcpAgent implements Agent {
       },
       authMethods: [authMethod],
     };
+    console.error(`[perf] initialize ${(performance.now() - t0).toFixed(0)}ms`);
+    return result;
   }
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
+    const t0 = performance.now();
     if (
       fs.existsSync(path.resolve(os.homedir(), ".claude.json.backup")) &&
       !fs.existsSync(path.resolve(os.homedir(), ".claude.json"))
@@ -241,9 +246,11 @@ export class ClaudeAcpAgent implements Agent {
       throw RequestError.authRequired();
     }
 
-    return await this.createSession(params, {
+    const result = await this.createSession(params, {
       resume: (params._meta as NewSessionMeta | undefined)?.claudeCode?.options?.resume,
     });
+    console.error(`[perf] newSession ${result.sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms`);
+    return result;
   }
 
   async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
@@ -261,6 +268,7 @@ export class ClaudeAcpAgent implements Agent {
   }
 
   async unstable_resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
+    const t0 = performance.now();
     const response = await this.createSession(
       {
         cwd: params.cwd,
@@ -271,7 +279,7 @@ export class ClaudeAcpAgent implements Agent {
         resume: params.sessionId,
       },
     );
-
+    console.error(`[perf] unstable_resumeSession ${params.sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms`);
     return response;
   }
 
@@ -283,6 +291,15 @@ export class ClaudeAcpAgent implements Agent {
     if (!this.sessions[params.sessionId]) {
       throw new Error("Session not found");
     }
+
+    const perf = perfScope("prompt");
+
+    // Helper: timed sessionUpdate — wraps each client.sessionUpdate with a perf span
+    const timedUpdate = async (label: string, notification: Parameters<typeof this.client.sessionUpdate>[0]) => {
+      const s = perf.start(label);
+      await this.client.sessionUpdate(notification);
+      s.end();
+    };
 
     const session = this.sessions[params.sessionId];
     session.cancelled = false;
@@ -316,9 +333,12 @@ export class ClaudeAcpAgent implements Agent {
       session.input!.push(promptMessage);
     }
     while (true) {
+      const waitSpan = perf.start("router.next");
       const { value: message, done } = await router.next();
+      waitSpan.end({ bufferDepth: router.bufferDepth });
       if (done || !message) {
         if (session.cancelled) {
+          perf.summary();
           return { stopReason: "cancelled" };
         }
         break;
@@ -332,7 +352,7 @@ export class ClaudeAcpAgent implements Agent {
               const commands = listCommandNames();
               const plugins = listPluginNames();
               const skills = listSkillNames();
-              await this.client.sessionUpdate(
+              await timedUpdate("sessionUpdate.system.init",
                 systemInitNotification(params.sessionId, message as unknown as Record<string, unknown>, {
                   stats: stats
                     ? { lastComputedDate: stats.lastComputedDate, recentActivity: stats.dailyActivity.slice(-7) }
@@ -348,29 +368,29 @@ export class ClaudeAcpAgent implements Agent {
               // Intercepted by SessionMessageRouter (handles between turns too)
               break;
             case "compact_boundary":
-              await this.client.sessionUpdate(
+              await timedUpdate("sessionUpdate.compact_boundary",
                 compactBoundaryNotification(params.sessionId, message as unknown as Record<string, unknown>),
               );
               break;
             case "hook_started":
-              await this.client.sessionUpdate(
+              await timedUpdate("sessionUpdate.hook_started",
                 hookStartedNotification(params.sessionId, message as unknown as Record<string, unknown>),
               );
               break;
             case "hook_progress":
-              await this.client.sessionUpdate(
+              await timedUpdate("sessionUpdate.hook_progress",
                 hookProgressNotification(params.sessionId, message as unknown as Record<string, unknown>),
               );
               break;
             case "hook_response":
-              await this.client.sessionUpdate(
+              await timedUpdate("sessionUpdate.hook_response",
                 hookResponseNotification(params.sessionId, message as unknown as Record<string, unknown>),
               );
               break;
             case "status":
               // Forward compaction status as an agent message
               if (message.status === "compacting") {
-                await this.client.sessionUpdate({
+                await timedUpdate("sessionUpdate.compacting", {
                   sessionId: params.sessionId,
                   update: {
                     sessionUpdate: "agent_message_chunk",
@@ -383,7 +403,7 @@ export class ClaudeAcpAgent implements Agent {
               }
               break;
             case "files_persisted":
-              await this.client.sessionUpdate(
+              await timedUpdate("sessionUpdate.files_persisted",
                 filesPersistedNotification(params.sessionId, message as unknown as Record<string, unknown>),
               );
               break;
@@ -394,6 +414,7 @@ export class ClaudeAcpAgent implements Agent {
           break;
         case "result": {
           if (session.cancelled) {
+            perf.summary();
             return { stopReason: "cancelled" };
           }
 
@@ -436,6 +457,7 @@ export class ClaudeAcpAgent implements Agent {
               if (message.is_error) {
                 throw RequestError.internalError(undefined, message.result);
               }
+              perf.summary();
               return { stopReason: "end_turn", _meta: resultMeta };
             }
             case "error_during_execution":
@@ -445,6 +467,7 @@ export class ClaudeAcpAgent implements Agent {
                   message.errors.join(", ") || message.subtype,
                 );
               }
+              perf.summary();
               return { stopReason: "end_turn", _meta: resultMeta };
             case "error_max_budget_usd":
             case "error_max_turns":
@@ -455,6 +478,7 @@ export class ClaudeAcpAgent implements Agent {
                   message.errors.join(", ") || message.subtype,
                 );
               }
+              perf.summary();
               return { stopReason: "max_turn_requests", _meta: resultMeta };
             default:
               unreachable(message, this.logger);
@@ -463,15 +487,18 @@ export class ClaudeAcpAgent implements Agent {
           break;
         }
         case "stream_event": {
-          for (const notification of streamEventToAcpNotifications(
+          const convSpan = perf.start("convert.stream_event");
+          const notifications = streamEventToAcpNotifications(
             message,
             params.sessionId,
             this.toolUseCache,
             this.client,
             this.logger,
             this.backgroundTaskMap,
-          )) {
-            await this.client.sessionUpdate(notification);
+          );
+          convSpan.end({ count: notifications.length });
+          for (const notification of notifications) {
+            await timedUpdate("sessionUpdate.stream_event", notification);
           }
           break;
         }
@@ -559,7 +586,7 @@ export class ClaudeAcpAgent implements Agent {
                   const inputObj = toolUse.input as Record<string, unknown> | undefined;
                   const isBackground = inputObj?.run_in_background === true;
                   const info = toolInfoFromToolUse(toolUse);
-                  await this.client.sessionUpdate({
+                  await timedUpdate("sessionUpdate.tool_cache_update", {
                     sessionId: params.sessionId,
                     update: {
                       sessionUpdate: "tool_call_update",
@@ -607,7 +634,8 @@ export class ClaudeAcpAgent implements Agent {
                   )
                 : message.message.content;
 
-          for (const notification of toAcpNotifications(
+          const msgConvSpan = perf.start("convert.message");
+          const msgNotifications = toAcpNotifications(
             content,
             message.message.role,
             params.sessionId,
@@ -616,8 +644,10 @@ export class ClaudeAcpAgent implements Agent {
             this.logger,
             this.backgroundTaskMap,
             (message as any).parent_tool_use_id,
-          )) {
-            await this.client.sessionUpdate(notification);
+          );
+          msgConvSpan.end({ count: msgNotifications.length, role: message.message.role });
+          for (const notification of msgNotifications) {
+            await timedUpdate("sessionUpdate.message", notification);
           }
           break;
         }
@@ -625,7 +655,7 @@ export class ClaudeAcpAgent implements Agent {
           // Forward tool progress as in_progress tool_call_update
           const toolUse = this.toolUseCache[message.tool_use_id];
           if (toolUse) {
-            await this.client.sessionUpdate({
+            await timedUpdate("sessionUpdate.tool_progress", {
               sessionId: params.sessionId,
               update: {
                 sessionUpdate: "tool_call_update",
@@ -648,7 +678,7 @@ export class ClaudeAcpAgent implements Agent {
         case "tool_use_summary": {
           // Forward collapsed tool descriptions as agent message
           if (message.summary) {
-            await this.client.sessionUpdate({
+            await timedUpdate("sessionUpdate.tool_summary", {
               sessionId: params.sessionId,
               update: {
                 sessionUpdate: "agent_message_chunk",
@@ -663,7 +693,7 @@ export class ClaudeAcpAgent implements Agent {
           // Check for task state after tool summaries (e.g., TodoWrite results)
           const tasks = readSessionTasks(params.sessionId);
           if (tasks.length > 0) {
-            await this.client.sessionUpdate({
+            await timedUpdate("sessionUpdate.task_state", {
               sessionId: params.sessionId,
               update: {
                 sessionUpdate: "session_info_update" as any,
@@ -679,7 +709,7 @@ export class ClaudeAcpAgent implements Agent {
           break;
         }
         case "auth_status":
-          await this.client.sessionUpdate(
+          await timedUpdate("sessionUpdate.auth_status",
             authStatusNotification(params.sessionId, message as unknown as Record<string, unknown>),
           );
           break;
@@ -814,6 +844,8 @@ export class ClaudeAcpAgent implements Agent {
   }
 
   async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const extT0 = performance.now();
+    try {
     switch (method) {
       case "sessions/list": {
         const result = await this.unstable_listSessions({ cwd: params.cwd as string | undefined });
@@ -823,8 +855,12 @@ export class ClaudeAcpAgent implements Agent {
       case "sessions/getHistory": {
         const sessionId = params.sessionId as string;
         if (!sessionId) throw new Error("sessionId is required");
+        const t0 = performance.now();
         const projectDir = getProjectDir(params.cwd as string | undefined);
         const entries = readSessionHistoryFull(projectDir, sessionId);
+        const t1 = performance.now();
+        const byteSize = JSON.stringify(entries).length;
+        console.error(`[extMethod] sessions/getHistory ${sessionId.slice(0, 8)} read=${(t1 - t0).toFixed(0)}ms entries=${entries.length} bytes=${byteSize}`);
         return { entries };
       }
 
@@ -832,12 +868,16 @@ export class ClaudeAcpAgent implements Agent {
         const sessionId = params.sessionId as string;
         const agentId = params.agentId as string;
         if (!sessionId || !agentId) throw new Error("sessionId and agentId are required");
+        const t0 = performance.now();
         const projectDir = getProjectDir(params.cwd as string | undefined);
         const entries = readSubagentHistoryFull(projectDir, sessionId, agentId);
+        const t1 = performance.now();
+        console.error(`[extMethod] sessions/getSubagentHistory ${sessionId.slice(0, 8)}:${agentId.slice(0, 8)} read=${(t1 - t0).toFixed(0)}ms entries=${entries.length}`);
         return { entries };
       }
 
       case "sessions/rename": {
+        const t0 = performance.now();
         const sessionId = params.sessionId as string;
         const title = params.title as string;
         if (!sessionId || !title) throw new Error("sessionId and title are required");
@@ -848,10 +888,12 @@ export class ClaudeAcpAgent implements Agent {
         if (liveSession) {
           liveSession.title = title;
         }
+        console.error(`[extMethod] sessions/rename ${sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms`);
         return { success: diskSuccess || !!liveSession };
       }
 
       case "sessions/delete": {
+        const t0 = performance.now();
         const sessionId = params.sessionId as string;
         if (!sessionId) throw new Error("sessionId is required");
         const projectDir = getProjectDir(params.cwd as string | undefined);
@@ -877,11 +919,15 @@ export class ClaudeAcpAgent implements Agent {
 
         const success = deleteSessionFromDisk(projectDir, sessionId);
         if (success) deletedIds.push(sessionId);
+        console.error(`[extMethod] sessions/delete ${sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms deletedIds=${deletedIds.length}`);
         return { success, deletedIds };
       }
 
       default:
         throw RequestError.methodNotFound(method);
+    }
+    } finally {
+      console.error(`[perf] extMethod(${method}) total=${(performance.now() - extT0).toFixed(0)}ms`);
     }
   }
 
@@ -900,6 +946,8 @@ export class ClaudeAcpAgent implements Agent {
     params: NewSessionRequest,
     creationOpts: { resume?: string; forkSession?: boolean } = {},
   ): Promise<NewSessionResponse> {
+    const perf = perfScope("createSession");
+
     let sessionId;
     if (creationOpts.forkSession) {
       sessionId = randomUUID();
@@ -911,10 +959,12 @@ export class ClaudeAcpAgent implements Agent {
 
     const input = new Pushable<SDKUserMessage>();
 
+    const settingsSpan = perf.start("settingsManager.initialize");
     const settingsManager = new SettingsManager(params.cwd, {
       logger: this.logger,
     });
     await settingsManager.initialize();
+    settingsSpan.end();
 
     const mcpServers: Record<string, McpServerConfig> = {};
     if (Array.isArray(params.mcpServers)) {
@@ -1087,10 +1137,12 @@ export class ClaudeAcpAgent implements Agent {
       throw new Error("Cancelled");
     }
 
+    const querySpan = perf.start("sdk.query");
     const q = query({
       prompt: input,
       options,
     });
+    querySpan.end();
 
     const router = new SessionMessageRouter(
       q,
@@ -1110,8 +1162,12 @@ export class ClaudeAcpAgent implements Agent {
       updatedAt: new Date().toISOString(),
     };
 
+    const cmdsSpan = perf.start("getAvailableCommands");
     const availableCommands = await getAvailableSlashCommands(q);
     const models = await getAvailableModels(q);
+    cmdsSpan.end();
+
+    perf.summary();
 
     // Needs to happen after we return the session
     setTimeout(() => {
@@ -1301,9 +1357,13 @@ export class ClaudeAcpAgent implements Agent {
   }
 
   async unstable_listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+    const perf = perfScope("listSessions");
+
     const cwd = params.cwd ?? undefined;
     const projectDir = getProjectDir(cwd);
+    const indexSpan = perf.start("readSessionsIndex");
     const entries = readSessionsIndex(projectDir);
+    indexSpan.end({ count: entries.length });
 
     // Merge live sessions that aren't on disk yet
     const diskSessionIds = new Set(entries.map((e) => e.sessionId));
@@ -1327,11 +1387,13 @@ export class ClaudeAcpAgent implements Agent {
     }
 
     // Read team metadata for each session
+    const teamSpan = perf.start("readTeamMetadata");
     const teamInfoMap = new Map<string, { teamName: string; agentName?: string }>();
     for (const e of entries) {
       const info = readSessionTeamInfo(projectDir, e.sessionId);
       if (info) teamInfoMap.set(e.sessionId, info);
     }
+    teamSpan.end({ sessions: entries.length, teamsFound: teamInfoMap.size });
 
     // Group teammates by teamName → { leader sessionId, teammate sessionIds[] }
     const teamGroups = new Map<string, { leaderSessionId: string | null; teammates: string[] }>();
@@ -1430,6 +1492,7 @@ export class ClaudeAcpAgent implements Agent {
         const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
         return tb - ta;
       });
+    perf.summary();
     return { sessions };
   }
 }

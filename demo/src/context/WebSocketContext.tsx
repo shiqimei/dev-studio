@@ -513,6 +513,18 @@ function reducer(state: AppState, action: Action): AppState {
           startedAt: action.startedAt,
           approxTokens: 0,
           thinkingDurationMs: 0,
+          activity: "brewing",
+        },
+      };
+
+    case "TURN_ACTIVITY":
+      if (!state.turnStatus || state.turnStatus.status !== "in_progress") return state;
+      return {
+        ...state,
+        turnStatus: {
+          ...state.turnStatus,
+          activity: action.activity,
+          activityDetail: action.detail,
         },
       };
 
@@ -619,8 +631,10 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, diskSessions: action.sessions, diskSessionsLoaded: true };
 
     case "SESSION_HISTORY": {
+      const t0 = performance.now();
       const historyMessages = jsonlToEntries(action.entries);
-      console.log("[reducer] SESSION_HISTORY", action.sessionId, "rawEntries:", action.entries.length, "parsed:", historyMessages.length);
+      const t1 = performance.now();
+      console.log(`[reducer] SESSION_HISTORY ${action.sessionId.slice(0, 8)} jsonlToEntries=${(t1 - t0).toFixed(0)}ms rawEntries=${action.entries.length} parsed=${historyMessages.length}`);
       return {
         ...state,
         sessionHistory: {
@@ -795,12 +809,16 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
   const resumeSessionCb = useCallback((sessionId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    console.log(`[switch] requesting switch to ${sessionId.slice(0, 8)} at ${performance.now().toFixed(0)}ms`);
+    (window as any).__switchStart = performance.now();
     dispatch({ type: "SESSION_SWITCH_PENDING", sessionId });
     wsRef.current.send(JSON.stringify({ type: "switch_session", sessionId }));
   }, []);
 
   const resumeSubagentCb = useCallback((parentSessionId: string, agentId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    console.log(`[switch] requesting subagent switch at ${performance.now().toFixed(0)}ms`);
+    (window as any).__switchStart = performance.now();
     dispatch({ type: "SESSION_SWITCH_PENDING", sessionId: `${parentSessionId}:subagent:${agentId}` });
     wsRef.current.send(JSON.stringify({ type: "resume_subagent", parentSessionId, agentId }));
   }, []);
@@ -1051,6 +1069,9 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
     case "turn_start":
       dispatch({ type: "TURN_START", startedAt: msg.startedAt ?? Date.now() });
       break;
+    case "turn_activity":
+      dispatch({ type: "TURN_ACTIVITY", activity: msg.activity, detail: msg.detail });
+      break;
     case "turn_end":
       dispatch({
         type: "TURN_END",
@@ -1067,10 +1088,18 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
     case "sessions":
       dispatch({ type: "SESSIONS", sessions: msg.sessions });
       break;
-    case "session_history":
+    case "session_history": {
+      const entryCount = msg.entries?.length ?? 0;
+      const payloadSize = JSON.stringify(msg).length;
+      console.log(`[handleMsg] session_history received entries=${entryCount} payloadSize=${payloadSize}`);
       dispatch({ type: "SESSION_HISTORY", sessionId: msg.sessionId, entries: msg.entries ?? [] });
       break;
+    }
     case "session_switched":
+      {
+        const elapsed = (window as any).__switchStart ? (performance.now() - (window as any).__switchStart).toFixed(0) : "?";
+        console.log(`[handleMsg] session_switched ${msg.sessionId.slice(0, 8)} totalE2E=${elapsed}ms`);
+      }
       dispatch({ type: "SESSION_SWITCHED", sessionId: msg.sessionId });
       break;
     case "session_title_update":

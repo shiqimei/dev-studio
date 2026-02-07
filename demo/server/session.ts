@@ -90,6 +90,7 @@ export async function createAcpConnection(
     stdio: ["pipe", "pipe", "inherit"],
     env: {
       ...process.env,
+      ACP_PERF: "1",
       CLAUDE_MODEL: process.env.CLAUDE_MODEL || "opus",
       MAX_THINKING_TOKENS: process.env.MAX_THINKING_TOKENS || "31999",
       // Use system-installed claude binary if available (for latest model/version)
@@ -116,12 +117,14 @@ export async function createAcpConnection(
     return new WebClient(agent, broadcast);
   }, stream);
 
+  const t0 = performance.now();
   const initResp = await connection.initialize({
     protocolVersion: 1,
     clientCapabilities: {
       fs: { readTextFile: true, writeTextFile: true },
     },
   });
+  console.log(`[perf] initialize=${(performance.now() - t0).toFixed(0)}ms`);
 
   broadcast({
     type: "system",
@@ -138,11 +141,13 @@ export async function createNewSession(
   connection: ClientSideConnection,
   broadcast: BroadcastFn,
 ): Promise<{ sessionId: string }> {
+  const t0 = performance.now();
   const cwd = process.env.ACP_CWD || process.cwd();
   const session = await connection.newSession({
     cwd,
     mcpServers: [],
   });
+  console.log(`[perf] newSession=${(performance.now() - t0).toFixed(0)}ms`);
 
   broadcast({
     type: "session_info",
@@ -161,12 +166,14 @@ export async function resumeSession(
   connection: ClientSideConnection,
   sessionId: string,
 ): Promise<{ sessionId: string }> {
+  const t0 = performance.now();
   const cwd = process.env.ACP_CWD || process.cwd();
   const response = await connection.unstable_resumeSession({
     sessionId,
     cwd,
     mcpServers: [],
   });
+  console.log(`[perf] resumeSession=${(performance.now() - t0).toFixed(0)}ms sid=${sessionId.slice(0, 8)}`);
   return { sessionId: response.sessionId };
 }
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useWs } from "../context/WebSocketContext";
-import type { TurnStatus } from "../types";
+import type { TurnStatus, TurnActivity } from "../types";
 
 
 function formatDuration(ms: number): string {
@@ -17,6 +17,19 @@ function formatTokens(n: number): string {
 }
 
 const SPARKLE_CHARS = ["·", "✻", "✽", "✶", "✳", "✢"];
+
+const ACTIVITY_LABELS: Record<TurnActivity, string> = {
+  brewing: "Brewing",
+  thinking: "Thinking",
+  responding: "Responding",
+  reading: "Reading",
+  editing: "Editing",
+  running: "Running",
+  searching: "Searching",
+  delegating: "Delegating",
+  planning: "Planning",
+  compacting: "Compacting context",
+};
 
 function SparkleStep() {
   const [idx, setIdx] = useState(0);
@@ -41,6 +54,9 @@ function InProgressBar({ status }: { status: TurnStatus }) {
   const tokens = status.approxTokens ?? 0;
   const thinkingMs = status.thinkingDurationMs ?? 0;
 
+  const activity = status.activity ?? "brewing";
+  const label = ACTIVITY_LABELS[activity];
+
   const parts: string[] = [formatDuration(elapsed)];
   if (tokens > 0) parts.push(`↓ ${formatTokens(tokens)} tokens`);
   if (thinkingMs >= 1000) parts.push(`thought for ${formatDuration(thinkingMs)}`);
@@ -48,7 +64,7 @@ function InProgressBar({ status }: { status: TurnStatus }) {
   return (
     <div className="turn-status turn-status-active">
       <SparkleStep />
-      Brewing... ({parts.join(" · ")})
+      {label}... ({parts.join(" · ")})
     </div>
   );
 }

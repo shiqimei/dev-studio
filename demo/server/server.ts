@@ -9,6 +9,7 @@ export function startServer(port: number) {
   const liveSessionIds = new Set<string>();
 
   // ── Turn state (server-side, survives client disconnect/reconnect) ──
+  type TurnActivity = "brewing" | "thinking" | "responding" | "reading" | "editing" | "running" | "searching" | "delegating" | "planning" | "compacting";
   interface TurnState {
     status: "in_progress" | "completed" | "error";
     startedAt: number;
@@ -19,13 +20,15 @@ export function startServer(port: number) {
     thinkingLastChunkAt?: number;
     costUsd?: number;
     outputTokens?: number;
+    activity: TurnActivity;
+    activityDetail?: string;
   }
   const turnStates: Record<string, TurnState> = {};
 
   // ── Message queue (per-session) ──
   type QueuedMessage = { id: string; text: string; images?: Array<{ data: string; mimeType: string }>; files?: Array<{ path: string; name: string }>; addedAt: number };
   const messageQueues = new Map<string, QueuedMessage[]>();
-  let processingPrompt = false;
+  const processingSessions = new Set<string>();
   let queueIdCounter = 0;
 
   function getQueue(sessionId: string | null): QueuedMessage[] {
@@ -54,6 +57,7 @@ export function startServer(port: number) {
     session_switched:     "sessions/switched",
     session_title_update: "sessions/titleUpdate",
     turn_start:           "session/turnStart",
+    turn_activity:        "session/turnActivity",
     turn_end:             "session/turnEnd",
     error:                "app/error",
     system:               "app/system",
@@ -62,16 +66,44 @@ export function startServer(port: number) {
     queue_cancelled:      "queue/cancelled",
   };
 
+  // Map tool kind/name to a turn activity
+  function toolActivity(kind: string | undefined, toolName: string | undefined): { activity: TurnActivity; detail?: string } {
+    const k = kind?.toLowerCase() ?? "";
+    const n = toolName ?? "";
+    if (k === "thinking" || k === "thought") return { activity: "thinking" };
+    if (n === "Task" || n === "task" || k === "task") return { activity: "delegating", detail: n };
+    if (n === "TodoWrite" || k === "plan") return { activity: "planning" };
+    if (n === "Bash" || k === "bash") return { activity: "running", detail: "Running command" };
+    if (n === "Read" || n === "mcp__acp__Read") return { activity: "reading", detail: n };
+    if (n === "Glob" || n === "Grep" || n === "WebSearch" || n === "WebFetch") return { activity: "searching", detail: n };
+    if (n === "Write" || n === "Edit" || n === "mcp__acp__Write" || n === "mcp__acp__Edit" || n === "NotebookEdit") return { activity: "editing", detail: n };
+    // Default for unknown tools
+    if (n) return { activity: "brewing", detail: n };
+    return { activity: "brewing" };
+  }
+
+  function setActivity(ts: TurnState, activity: TurnActivity, detail?: string) {
+    if (ts.activity === activity && ts.activityDetail === detail) return false;
+    ts.activity = activity;
+    ts.activityDetail = detail;
+    return true;
+  }
+
   function broadcast(msg: object) {
     const m = msg as any;
-    // Filter out session-specific updates that don't match the current session
-    if (m.sessionId && m.sessionId !== currentSessionId) return;
+    // Determine which session this message belongs to
+    const msgSessionId = m.sessionId || currentSessionId;
 
-    // ── Accumulate turn stats from streaming messages ──
-    if (currentSessionId && turnStates[currentSessionId]?.status === "in_progress") {
-      const ts = turnStates[currentSessionId];
+    // ── Accumulate turn stats + track activity from streaming messages ──
+    // (do this before filtering so stats accumulate even for background sessions)
+    if (msgSessionId && turnStates[msgSessionId]?.status === "in_progress") {
+      const ts = turnStates[msgSessionId];
+      const isCurrentSession = msgSessionId === currentSessionId;
       if (m.type === "text" && m.text) {
         ts.approxTokens += Math.ceil(m.text.length / 4);
+        if (isCurrentSession && setActivity(ts, "responding")) {
+          sendToAll(JSON.stringify({ type: "turn_activity", activity: ts.activity }));
+        }
       } else if (m.type === "thought" && m.text) {
         ts.approxTokens += Math.ceil(m.text.length / 4);
         const now = Date.now();
@@ -79,12 +111,35 @@ export function startServer(port: number) {
           ts.thinkingDurationMs += now - ts.thinkingLastChunkAt;
         }
         ts.thinkingLastChunkAt = now;
+        if (isCurrentSession && setActivity(ts, "thinking")) {
+          sendToAll(JSON.stringify({ type: "turn_activity", activity: ts.activity }));
+        }
+      } else if (m.type === "tool_call") {
+        // New tool call started — derive activity from tool kind/name
+        const toolName = m._meta?.claudeCode?.toolName ?? m.kind;
+        const { activity, detail } = toolActivity(m.kind, toolName);
+        if (isCurrentSession && setActivity(ts, activity, detail)) {
+          sendToAll(JSON.stringify({ type: "turn_activity", activity: ts.activity, detail: ts.activityDetail }));
+        }
+        // Finalize thinking if it was active
+        if (ts.thinkingLastChunkAt) {
+          ts.thinkingDurationMs += Date.now() - ts.thinkingLastChunkAt;
+          ts.thinkingLastChunkAt = undefined;
+        }
+      } else if (m.type === "tool_call_update" && m.status === "completed") {
+        // Tool completed — revert to responding/brewing
+        if (isCurrentSession && setActivity(ts, "responding")) {
+          sendToAll(JSON.stringify({ type: "turn_activity", activity: ts.activity }));
+        }
       } else if (m.type !== "thought" && ts.thinkingLastChunkAt) {
         // Thinking ended — finalize the last thinking interval
         ts.thinkingDurationMs += Date.now() - ts.thinkingLastChunkAt;
         ts.thinkingLastChunkAt = undefined;
       }
     }
+
+    // Filter out session-specific updates that don't match the current session
+    if (m.sessionId && m.sessionId !== currentSessionId) return;
 
     // Emit proto entry for server-originated events (not ACP relays)
     const method = m.type && SERVER_EVENT_MAP[m.type];
@@ -97,14 +152,17 @@ export function startServer(port: number) {
 
   let acpConnection: AcpConnection | null = null;
 
-  async function processPrompt(text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>) {
-    if (!acpConnection || !currentSessionId) return;
-    processingPrompt = true;
+  async function processPrompt(sessionId: string, text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>) {
+    if (!acpConnection) return;
+    processingSessions.add(sessionId);
+    const promptT0 = performance.now();
     try {
       // Lazily resume the ACP session if not already live
-      if (!liveSessionIds.has(currentSessionId)) {
-        await resumeSession(acpConnection.connection, currentSessionId);
-        liveSessionIds.add(currentSessionId);
+      if (!liveSessionIds.has(sessionId)) {
+        const resumeT0 = performance.now();
+        await resumeSession(acpConnection.connection, sessionId);
+        console.log(`[perf] processPrompt.resume ${sessionId.slice(0, 8)} ${(performance.now() - resumeT0).toFixed(0)}ms`);
+        liveSessionIds.add(sessionId);
         await broadcastSessions();
       }
       const prompt: Array<{ type: string; text?: string; data?: string; mimeType?: string; resource?: { uri: string; text: string; mimeType: string } }> = [];
@@ -120,26 +178,29 @@ export function startServer(port: number) {
           prompt.push({ type: "resource", resource: { uri: `file://${file.path}`, text: content, mimeType: mimeMap[ext] ?? "text/plain" } });
         } catch { /* skip unreadable files */ }
       }
-      if (prompt.length === 0) { processingPrompt = false; drainQueue(); return; }
+      if (prompt.length === 0) { processingSessions.delete(sessionId); drainQueue(sessionId); return; }
 
       // Initialize turn state and broadcast turn_start
       const turnStartedAt = Date.now();
-      turnStates[currentSessionId] = {
+      turnStates[sessionId] = {
         status: "in_progress",
         startedAt: turnStartedAt,
         approxTokens: 0,
         thinkingDurationMs: 0,
+        activity: "brewing",
       };
-      broadcast({ type: "turn_start", startedAt: turnStartedAt });
+      broadcast({ type: "turn_start", startedAt: turnStartedAt, sessionId });
 
+      const acpPromptT0 = performance.now();
       const result = await acpConnection.connection.prompt({
-        sessionId: currentSessionId,
+        sessionId,
         prompt,
       });
+      console.log(`[perf] processPrompt.acpPrompt ${sessionId.slice(0, 8)} ${(performance.now() - acpPromptT0).toFixed(0)}ms`);
 
       // Extract stats from result metadata
       const meta = (result as any)._meta?.claudeCode;
-      const turnState = turnStates[currentSessionId];
+      const turnState = turnStates[sessionId];
       if (turnState) {
         // Finalize any ongoing thinking
         if (turnState.thinkingLastChunkAt) {
@@ -155,6 +216,7 @@ export function startServer(port: number) {
 
       broadcast({
         type: "turn_end",
+        sessionId,
         stopReason: result.stopReason,
         durationMs: turnState?.durationMs,
         outputTokens: turnState?.outputTokens,
@@ -162,30 +224,31 @@ export function startServer(port: number) {
         costUsd: turnState?.costUsd,
       });
       // Refresh session list to pick up title changes
+      const sessionsT0 = performance.now();
       await broadcastSessions();
+      console.log(`[perf] processPrompt.total ${sessionId.slice(0, 8)} broadcastSessions=${(performance.now() - sessionsT0).toFixed(0)}ms total=${(performance.now() - promptT0).toFixed(0)}ms`);
     } catch (err: any) {
       // Update turn state to error
-      if (currentSessionId && turnStates[currentSessionId]) {
-        const ts = turnStates[currentSessionId];
+      if (turnStates[sessionId]) {
+        const ts = turnStates[sessionId];
         ts.status = "error";
         ts.endedAt = Date.now();
         ts.durationMs = Date.now() - ts.startedAt;
       }
-      broadcast({ type: "error", text: err.message });
-      broadcast({ type: "turn_end", stopReason: "error" });
+      broadcast({ type: "error", text: err.message, sessionId });
+      broadcast({ type: "turn_end", stopReason: "error", sessionId });
     } finally {
-      processingPrompt = false;
-      drainQueue();
+      processingSessions.delete(sessionId);
+      drainQueue(sessionId);
     }
   }
 
-  function drainQueue() {
-    if (!currentSessionId) return;
-    const q = getQueue(currentSessionId);
+  function drainQueue(sessionId: string) {
+    const q = getQueue(sessionId);
     if (q.length === 0) return;
     const next = q.shift()!;
-    broadcast({ type: "queue_drain_start", queueId: next.id });
-    processPrompt(next.text, next.images, next.files);
+    broadcast({ type: "queue_drain_start", queueId: next.id, sessionId });
+    processPrompt(sessionId, next.text, next.images, next.files);
   }
 
   function clearSessionQueue(sessionId: string | null) {
@@ -195,8 +258,10 @@ export function startServer(port: number) {
 
   async function broadcastSessions() {
     if (!acpConnection) return;
+    const t0 = performance.now();
     try {
       const result = await acpConnection.connection.extMethod("sessions/list", {});
+      const t1 = performance.now();
       const sessions = ((result as any).sessions ?? []).map((s: any) => ({
         sessionId: s.sessionId,
         title: s.title ?? null,
@@ -210,6 +275,7 @@ export function startServer(port: number) {
         isLive: liveSessionIds.has(s.sessionId),
       }));
       broadcast({ type: "sessions", sessions });
+      console.log(`[perf] broadcastSessions extMethod=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms count=${sessions.length}`);
     } catch (err: any) {
       console.error("Failed to list sessions:", err.message);
     }
@@ -240,21 +306,27 @@ export function startServer(port: number) {
     websocket: {
       async open(ws) {
         clients.add(ws);
+        const t0 = performance.now();
 
         if (!acpConnection) {
           try {
             acpConnection = await createAcpConnection(broadcast);
+            const t1 = performance.now();
             const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
+            const t2 = performance.now();
             currentSessionId = sessionId;
             liveSessionIds.add(sessionId);
             await broadcastSessions();
+            const t3 = performance.now();
             broadcast({ type: "session_switched", sessionId: currentSessionId });
+            console.log(`[perf] open(first) createConn=${(t1 - t0).toFixed(0)}ms newSession=${(t2 - t1).toFixed(0)}ms broadcastSessions=${(t3 - t2).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms`);
           } catch (err: any) {
             ws.send(JSON.stringify({ type: "error", text: err.message }));
           }
         } else {
           // Re-joining client: send current state
           await broadcastSessions();
+          const t1 = performance.now();
           if (currentSessionId) {
             // Send session history so the reconnecting client can display content
             try {
@@ -262,7 +334,9 @@ export function startServer(port: number) {
               const result = subMatch
                 ? await acpConnection.connection.extMethod("sessions/getSubagentHistory", { sessionId: subMatch[1], agentId: subMatch[2] })
                 : await acpConnection.connection.extMethod("sessions/getHistory", { sessionId: currentSessionId });
+              const t2 = performance.now();
               ws.send(JSON.stringify({ type: "session_history", sessionId: currentSessionId, entries: result.entries }));
+              console.log(`[perf] open(rejoin) broadcastSessions=${(t1 - t0).toFixed(0)}ms getHistory=${(t2 - t1).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms`);
             } catch (err: any) {
               console.error("Failed to load session history for reconnecting client:", err.message);
             }
@@ -289,6 +363,7 @@ export function startServer(port: number) {
       },
 
       async message(ws, raw) {
+        const msgT0 = performance.now();
         const msg = JSON.parse(
           typeof raw === "string" ? raw : new TextDecoder().decode(raw),
         );
@@ -298,13 +373,14 @@ export function startServer(port: number) {
         switch (msg.type) {
           case "prompt": {
             if (!currentSessionId) return;
-            if (processingPrompt) {
-              // Enqueue the message for the current session
+            const targetSession = currentSessionId;
+            if (processingSessions.has(targetSession)) {
+              // Enqueue the message for this specific session
               const queueId = msg.queueId || `sq-${++queueIdCounter}`;
-              getQueue(currentSessionId).push({ id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
-              broadcast({ type: "message_queued", queueId });
+              getQueue(targetSession).push({ id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
+              broadcast({ type: "message_queued", queueId, sessionId: targetSession });
             } else {
-              processPrompt(msg.text, msg.images, msg.files);
+              processPrompt(targetSession, msg.text, msg.images, msg.files);
             }
             break;
           }
@@ -315,18 +391,21 @@ export function startServer(port: number) {
             const idx = q.findIndex((m) => m.id === msg.queueId);
             if (idx !== -1) {
               q.splice(idx, 1);
-              broadcast({ type: "queue_cancelled", queueId: msg.queueId });
+              broadcast({ type: "queue_cancelled", queueId: msg.queueId, sessionId: currentSessionId });
             }
             break;
           }
 
           case "new_session": {
             try {
+              const t0 = performance.now();
               const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
+              const t1 = performance.now();
               currentSessionId = sessionId;
               liveSessionIds.add(sessionId);
               // Send switch immediately — client adds a placeholder sidebar entry
               broadcast({ type: "session_switched", sessionId: currentSessionId });
+              console.log(`[perf] new_session createNewSession=${(t1 - t0).toFixed(0)}ms`);
               // Refresh session lists in parallel (non-blocking)
               broadcastSessions().catch(() => {});
             } catch (err: any) {
@@ -337,11 +416,17 @@ export function startServer(port: number) {
 
           case "switch_session":
           case "resume_session": {
+            const t0 = performance.now();
+            emitProto("send", { method: "sessions/switch", params: { sessionId: msg.sessionId } });
             try {
               const result = await acpConnection.connection.extMethod("sessions/getHistory", { sessionId: msg.sessionId });
+              const t1 = performance.now();
+              const entryCount = (result.entries as unknown[])?.length ?? 0;
               currentSessionId = msg.sessionId;
               broadcast({ type: "session_history", sessionId: msg.sessionId, entries: result.entries });
+              const t2 = performance.now();
               broadcast({ type: "session_switched", sessionId: currentSessionId });
+              console.log(`[switch_session] ${msg.sessionId.slice(0, 8)} getHistory=${(t1 - t0).toFixed(0)}ms broadcast=${(t2 - t1).toFixed(0)}ms entries=${entryCount}`);
             } catch (err: any) {
               broadcast({ type: "error", text: `Failed to load session: ${err.message}` });
             }
@@ -350,14 +435,20 @@ export function startServer(port: number) {
 
           case "resume_subagent": {
             const compositeId = `${msg.parentSessionId}:subagent:${msg.agentId}`;
+            const t0 = performance.now();
+            emitProto("send", { method: "sessions/switch", params: { sessionId: compositeId, subagent: true } });
             try {
               const result = await acpConnection.connection.extMethod("sessions/getSubagentHistory", {
                 sessionId: msg.parentSessionId,
                 agentId: msg.agentId,
               });
+              const t1 = performance.now();
+              const entryCount = (result.entries as unknown[])?.length ?? 0;
               currentSessionId = compositeId;
               broadcast({ type: "session_history", sessionId: compositeId, entries: result.entries });
+              const t2 = performance.now();
               broadcast({ type: "session_switched", sessionId: compositeId });
+              console.log(`[resume_subagent] ${compositeId.slice(0, 8)} getHistory=${(t1 - t0).toFixed(0)}ms broadcast=${(t2 - t1).toFixed(0)}ms entries=${entryCount}`);
             } catch (err: any) {
               broadcast({ type: "error", text: `Failed to load subagent: ${err.message}` });
             }
@@ -366,18 +457,20 @@ export function startServer(port: number) {
 
           case "rename_session": {
             const { sessionId, title } = msg;
-            console.log(`[rename_session] Renaming session ${sessionId} to "${title}"`);
+            const t0 = performance.now();
             const renameResult = await acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
+            const t1 = performance.now();
             if (renameResult.success) {
               await broadcastSessions();
             }
+            console.log(`[perf] rename_session extMethod=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms`);
             break;
           }
 
           case "delete_session": {
-            console.log(`[delete_session] Deleting session ${msg.sessionId}`);
+            const t0 = performance.now();
             const deleteResult = await acpConnection.connection.extMethod("sessions/delete", { sessionId: msg.sessionId });
-            console.log(`[delete_session] Result: ${deleteResult.success}, deletedIds: ${(deleteResult.deletedIds as string[])?.join(", ")}`);
+            const t1 = performance.now();
             if (deleteResult.success) {
               // Clean up all deleted sessions (parent + any teammate children)
               const deletedIds = (deleteResult.deletedIds as string[]) ?? [msg.sessionId];
@@ -393,12 +486,15 @@ export function startServer(port: number) {
               // Session not found in index — still refresh the list in case it was already gone
               await broadcastSessions();
             }
+            console.log(`[perf] delete_session extMethod=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms deletedIds=${(deleteResult.deletedIds as string[])?.length ?? 0}`);
             break;
           }
 
           case "list_files": {
             try {
+              const t0 = performance.now();
               const raw = execSync("git ls-files", { encoding: "utf-8", cwd: process.cwd(), maxBuffer: 1024 * 1024 });
+              const t1 = performance.now();
               const query = (msg.query ?? "").toLowerCase();
               let files = raw.split("\n").filter(Boolean);
               if (query) {
@@ -406,6 +502,7 @@ export function startServer(port: number) {
               }
               files = files.slice(0, 50);
               ws.send(JSON.stringify({ type: "file_list", files, query: msg.query ?? "" }));
+              console.log(`[perf] list_files git=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms results=${files.length}`);
             } catch {
               ws.send(JSON.stringify({ type: "file_list", files: [], query: msg.query ?? "" }));
             }
@@ -416,6 +513,10 @@ export function startServer(port: number) {
             await broadcastSessions();
             break;
           }
+        }
+        const msgElapsed = performance.now() - msgT0;
+        if (msgElapsed > 50) {
+          console.log(`[perf] ws.message(${msg.type}) ${msgElapsed.toFixed(0)}ms`);
         }
       },
 

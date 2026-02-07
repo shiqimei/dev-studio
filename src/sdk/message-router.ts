@@ -61,6 +61,7 @@ export class SessionMessageRouter {
       this.logger.error("[SessionMessageRouter] stream error:", err);
       this.finished = true;
       this.streamError = err;
+      this.buffer.length = 0; // Release buffered messages on error
       if (this.rejecter) {
         this.rejecter(err);
         this.resolver = null;

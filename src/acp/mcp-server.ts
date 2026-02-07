@@ -464,7 +464,7 @@ Output: Create directory 'foo'`),
             } else {
               extra.signal.addEventListener("abort", () => {
                 resolve(null);
-              });
+              }, { once: true });
             }
           });
 

@@ -98,15 +98,16 @@ function createReplayQuery(
   firstResult: IteratorResult<SDKMessage, void>,
   stream: AsyncGenerator<SDKMessage, void>,
 ): Query {
-  let replayed = false;
+  let saved: IteratorResult<SDKMessage, void> | null = firstResult;
   const iterator = {
     async next(): Promise<IteratorResult<SDKMessage, void>> {
-      if (!replayed) {
-        replayed = true;
-        if (firstResult.done) {
+      if (saved) {
+        const result = saved;
+        saved = null; // Release reference after replay
+        if (result.done) {
           return { value: undefined as any, done: true };
         }
-        return firstResult;
+        return result;
       }
       return stream.next();
     },
@@ -1002,9 +1003,19 @@ export class ClaudeAcpAgent implements Agent {
     } else if (session.query) {
       session.query.close();
     }
+    // Clear any pending timers
+    if (session.pendingTimers) {
+      for (const timer of session.pendingTimers) clearTimeout(timer);
+    }
     // Release shared settings manager reference
     if (session.cwd) {
       this.releaseSettingsManager(session.cwd);
+    }
+    // Clean up background resources for this session
+    for (const [key, toolCallId] of Object.entries(this.backgroundTaskMap)) {
+      if (this.toolUseCache[toolCallId]) {
+        delete this.backgroundTaskMap[key];
+      }
     }
     delete this.sessions[sessionId];
   }
@@ -1235,16 +1246,20 @@ export class ClaudeAcpAgent implements Agent {
 
     perf.summary();
 
-    // Needs to happen after we return the session
-    setTimeout(() => {
-      this.client.sessionUpdate({
-        sessionId,
-        update: {
-          sessionUpdate: "available_commands_update",
-          availableCommands,
-        },
-      });
-    }, 0);
+    // Needs to happen after we return the session — track timer for cleanup on close
+    const session = this.sessions[sessionId];
+    if (!session.pendingTimers) session.pendingTimers = [];
+    session.pendingTimers.push(
+      setTimeout(() => {
+        this.client.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: "available_commands_update",
+            availableCommands,
+          },
+        });
+      }, 0),
+    );
 
     const availableModes = [
       {

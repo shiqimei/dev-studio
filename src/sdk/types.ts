@@ -24,4 +24,6 @@ export type ManagedSession = {
   title: string | null;
   cwd: string;
   updatedAt: string;
+  // Pending timers to clear on close
+  pendingTimers?: ReturnType<typeof setTimeout>[];
 };

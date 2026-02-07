@@ -45,15 +45,17 @@ function normalizeSubagentType(raw: string): SubagentType {
  * Two-pass: find tool_use blocks, then match tool_result blocks.
  * Returns array of { agentId, type }.
  */
-function scanJsonlForTaskSpawns(jsonlPath: string): { agentId: string; type: SubagentType }[] {
+async function scanJsonlForTaskSpawns(jsonlPath: string): Promise<{ agentId: string; type: SubagentType }[]> {
   const results: { agentId: string; type: SubagentType }[] = [];
 
   try {
-    const raw = fs.readFileSync(jsonlPath, "utf-8");
+    const raw = await fs.promises.readFile(jsonlPath, "utf-8");
+    // Single split, shared across both passes
+    const lines = raw.split("\n");
 
     // Pass 1: collect Task tool_use_id → subagent_type
     const taskTypeByToolId = new Map<string, string>();
-    for (const line of raw.split("\n")) {
+    for (const line of lines) {
       if (!line) continue;
       try {
         const entry = JSON.parse(line);
@@ -72,7 +74,7 @@ function scanJsonlForTaskSpawns(jsonlPath: string): { agentId: string; type: Sub
 
     // Pass 2: find tool_results for those Task calls, extract agentId
     const agentIdRe = /agentId:\s*([a-f0-9]+)/;
-    for (const line of raw.split("\n")) {
+    for (const line of lines) {
       if (!line) continue;
       try {
         const entry = JSON.parse(line);
@@ -117,13 +119,13 @@ function scanJsonlForTaskSpawns(jsonlPath: string): { agentId: string; type: Sub
  * - Haiku models → "explore" (Explore agents always use haiku)
  * - Otherwise → "agent" (cannot reliably distinguish plan/code without parent context)
  */
-function detectTypeFromSubagentJsonl(jsonlPath: string): SubagentType {
+async function detectTypeFromSubagentJsonl(jsonlPath: string): Promise<SubagentType> {
   try {
-    const fd = fs.openSync(jsonlPath, "r");
+    const fh = await fs.promises.open(jsonlPath, "r");
+    try {
     // Read enough to cover the first few JSONL entries
     const buf = Buffer.alloc(16384);
-    const bytesRead = fs.readSync(fd, buf, 0, 16384, 0);
-    fs.closeSync(fd);
+    const { bytesRead } = await fh.read(buf, 0, 16384, 0);
 
     const chunk = buf.toString("utf-8", 0, bytesRead);
     for (const line of chunk.split("\n")) {
@@ -137,6 +139,7 @@ function detectTypeFromSubagentJsonl(jsonlPath: string): SubagentType {
         break;
       } catch { /* skip malformed line */ }
     }
+    } finally { await fh.close(); }
   } catch { /* file unreadable */ }
   return "agent";
 }
@@ -150,16 +153,16 @@ function detectTypeFromSubagentJsonl(jsonlPath: string): SubagentType {
  * 4. Iterate for deeper nesting until all orphans resolved or no progress
  * 5. For remaining orphans, detect type from their own JSONL content (model heuristic)
  */
-function buildAgentHierarchy(
+async function buildAgentHierarchy(
   projectDir: string,
   sessionId: string,
   allAgentIds: string[],
-): Map<string, { type: SubagentType; parentAgentId?: string }> {
+): Promise<Map<string, { type: SubagentType; parentAgentId?: string }>> {
   const map = new Map<string, { type: SubagentType; parentAgentId?: string }>();
 
   // Step 1: scan parent session JSONL for direct children
   const parentPath = getSessionJsonlPath(projectDir, sessionId);
-  const directSpawns = scanJsonlForTaskSpawns(parentPath);
+  const directSpawns = await scanJsonlForTaskSpawns(parentPath);
   const directChildIds = new Set<string>();
 
   for (const spawn of directSpawns) {
@@ -187,7 +190,7 @@ function buildAgentHierarchy(
 
     for (const parentId of parentsToScan) {
       const childJsonlPath = getSubagentJsonlPath(projectDir, sessionId, parentId);
-      const childSpawns = scanJsonlForTaskSpawns(childJsonlPath);
+      const childSpawns = await scanJsonlForTaskSpawns(childJsonlPath);
 
       for (const spawn of childSpawns) {
         if (orphanIds.has(spawn.agentId)) {
@@ -201,13 +204,16 @@ function buildAgentHierarchy(
     parentsToScan = nextParents;
   }
 
-  // Any remaining orphans: detect type from their own JSONL content
-  for (const id of orphanIds) {
-    if (!map.has(id)) {
+  // Any remaining orphans: detect type from their own JSONL content in parallel
+  const orphanDetections = await Promise.all(
+    [...orphanIds].filter((id) => !map.has(id)).map(async (id) => {
       const orphanJsonlPath = getSubagentJsonlPath(projectDir, sessionId, id);
-      const detectedType = detectTypeFromSubagentJsonl(orphanJsonlPath);
-      map.set(id, { type: detectedType });
-    }
+      const detectedType = await detectTypeFromSubagentJsonl(orphanJsonlPath);
+      return { id, detectedType };
+    }),
+  );
+  for (const { id, detectedType } of orphanDetections) {
+    map.set(id, { type: detectedType });
   }
 
   return map;
@@ -250,32 +256,35 @@ export function buildSubagentTree(agents: SubagentMeta[]): SubagentMeta[] {
 }
 
 /**
- * Read team metadata from the first line of a session's JSONL.
+ * Read team metadata from the first line of a session's JSONL (async).
  * Teammate sessions have `teamName` and `agentName`; team leaders have `teamName` only.
  * Returns null if the session is not part of a team.
  */
-export function readSessionTeamInfo(
+export async function readSessionTeamInfo(
   projectDir: string,
   sessionId: string,
-): { teamName: string; agentName?: string } | null {
+): Promise<{ teamName: string; agentName?: string } | null> {
   const jsonlPath = getSessionJsonlPath(projectDir, sessionId);
   try {
-    const fd = fs.openSync(jsonlPath, "r");
-    const buf = Buffer.alloc(8192);
-    const bytesRead = fs.readSync(fd, buf, 0, 8192, 0);
-    fs.closeSync(fd);
+    const fh = await fs.promises.open(jsonlPath, "r");
+    try {
+      const buf = Buffer.alloc(8192);
+      const { bytesRead } = await fh.read(buf, 0, 8192, 0);
 
-    const chunk = buf.toString("utf-8", 0, bytesRead);
-    const firstLine = chunk.split("\n")[0];
-    if (!firstLine) return null;
+      const chunk = buf.toString("utf-8", 0, bytesRead);
+      const firstLine = chunk.split("\n")[0];
+      if (!firstLine) return null;
 
-    const entry = JSON.parse(firstLine);
-    if (!entry.teamName) return null;
+      const entry = JSON.parse(firstLine);
+      if (!entry.teamName) return null;
 
-    return {
-      teamName: entry.teamName,
-      ...(entry.agentName ? { agentName: entry.agentName } : {}),
-    };
+      return {
+        teamName: entry.teamName,
+        ...(entry.agentName ? { agentName: entry.agentName } : {}),
+      };
+    } finally {
+      await fh.close();
+    }
   } catch {
     return null;
   }
@@ -286,10 +295,10 @@ export function readSessionTeamInfo(
  * Returns the team_name if found, null otherwise.
  * Only called as a fallback when teammates exist but no leader was detected via first-line metadata.
  */
-export function findTeamCreateInSession(projectDir: string, sessionId: string): string | null {
+export async function findTeamCreateInSession(projectDir: string, sessionId: string): Promise<string | null> {
   const jsonlPath = getSessionJsonlPath(projectDir, sessionId);
   try {
-    const raw = fs.readFileSync(jsonlPath, "utf-8");
+    const raw = await fs.promises.readFile(jsonlPath, "utf-8");
     if (!raw.includes('"TeamCreate"')) return null;
 
     for (const line of raw.split("\n")) {
@@ -321,48 +330,50 @@ export function findTeamCreateInSession(projectDir: string, sessionId: string): 
  * Filters out internal agents (compact, prompt_suggestion).
  * Returns results sorted by timestamp ascending.
  */
-export function readSubagents(projectDir: string, sessionId: string): SubagentMeta[] {
+export async function readSubagents(projectDir: string, sessionId: string): Promise<SubagentMeta[]> {
   const dir = getSubagentsDir(projectDir, sessionId);
   try {
-    if (!fs.existsSync(dir)) return [];
-
-    const files = fs.readdirSync(dir).filter(
-      (f) => f.startsWith("agent-") && f.endsWith(".jsonl"),
-    );
-
-    // Collect all agent IDs and basic metadata first
-    const agentEntries: { agentId: string; filename: string; timestamp: string; taskPrompt: string }[] = [];
-
-    for (const filename of files) {
-      // Filter out internal agents
-      if (INTERNAL_PATTERNS.some((p) => filename.includes(p))) continue;
-
-      const filePath = `${dir}/${filename}`;
-
-      try {
-        const fd = fs.openSync(filePath, "r");
-        const buf = Buffer.alloc(8192);
-        const bytesRead = fs.readSync(fd, buf, 0, 8192, 0);
-        fs.closeSync(fd);
-
-        const chunk = buf.toString("utf-8", 0, bytesRead);
-        const firstLine = chunk.split("\n")[0];
-        if (!firstLine) continue;
-
-        const entry = JSON.parse(firstLine);
-        const agentId = entry.agentId ?? filename.replace(/^agent-/, "").replace(/\.jsonl$/, "");
-        const timestamp = entry.timestamp ?? "";
-        const taskPrompt = extractTaskPrompt(entry);
-
-        agentEntries.push({ agentId, filename, timestamp, taskPrompt });
-      } catch {
-        // Skip malformed files
-      }
+    let files: string[];
+    try {
+      files = (await fs.promises.readdir(dir)).filter(
+        (f) => f.startsWith("agent-") && f.endsWith(".jsonl"),
+      );
+    } catch {
+      return []; // directory doesn't exist
     }
+
+    // Collect all agent IDs and basic metadata in parallel
+    const agentEntries = (await Promise.all(
+      files
+        .filter((filename) => !INTERNAL_PATTERNS.some((p) => filename.includes(p)))
+        .map(async (filename) => {
+          const filePath = `${dir}/${filename}`;
+          try {
+            const fh = await fs.promises.open(filePath, "r");
+            try {
+              const buf = Buffer.alloc(8192);
+              const { bytesRead } = await fh.read(buf, 0, 8192, 0);
+              const chunk = buf.toString("utf-8", 0, bytesRead);
+              const firstLine = chunk.split("\n")[0];
+              if (!firstLine) return null;
+
+              const entry = JSON.parse(firstLine);
+              const agentId = entry.agentId ?? filename.replace(/^agent-/, "").replace(/\.jsonl$/, "");
+              const timestamp = entry.timestamp ?? "";
+              const taskPrompt = extractTaskPrompt(entry);
+              return { agentId, filename, timestamp, taskPrompt };
+            } finally {
+              await fh.close();
+            }
+          } catch {
+            return null; // Skip malformed files
+          }
+        }),
+    )).filter((e): e is NonNullable<typeof e> => e !== null);
 
     // Build hierarchy map (agentId → { type, parentAgentId? })
     const allAgentIds = agentEntries.map((e) => e.agentId);
-    const hierarchy = buildAgentHierarchy(projectDir, sessionId, allAgentIds);
+    const hierarchy = await buildAgentHierarchy(projectDir, sessionId, allAgentIds);
 
     const results: SubagentMeta[] = agentEntries.map((e) => {
       const info = hierarchy.get(e.agentId);

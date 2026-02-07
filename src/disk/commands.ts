@@ -10,24 +10,26 @@ export interface CommandDefinition {
   content: string;
 }
 
-export function readCommands(): CommandDefinition[] {
+export async function readCommands(): Promise<CommandDefinition[]> {
   const dir = getCommandsDir();
   try {
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".md"));
-    return files.map((file) => ({
-      name: file.replace(/\.md$/, ""),
-      content: fs.readFileSync(path.join(dir, file), "utf-8"),
-    }));
+    const files = (await fs.promises.readdir(dir)).filter((f) => f.endsWith(".md"));
+    const results = await Promise.all(
+      files.map(async (file) => ({
+        name: file.replace(/\.md$/, ""),
+        content: await fs.promises.readFile(path.join(dir, file), "utf-8"),
+      })),
+    );
+    return results;
   } catch {
     return [];
   }
 }
 
-export function listCommandNames(): string[] {
+export async function listCommandNames(): Promise<string[]> {
   const dir = getCommandsDir();
   try {
-    return fs
-      .readdirSync(dir)
+    return (await fs.promises.readdir(dir))
       .filter((f) => f.endsWith(".md"))
       .map((f) => f.replace(/\.md$/, ""));
   } catch {

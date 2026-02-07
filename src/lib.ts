@@ -45,6 +45,7 @@ export type { ClaudePlanEntry } from "./acp/tool-conversion.js";
 export { createPreToolUseHook, createPostToolUseHook } from "./sdk/hooks.js";
 export { createCanUseTool } from "./sdk/permissions.js";
 export { SessionMessageRouter } from "./sdk/message-router.js";
+export { NotificationQueue } from "./acp/notification-queue.js";
 
 // --- Disk Layer ---
 export {
@@ -70,7 +71,7 @@ export {
   getPluginsPath,
   getSkillsDir,
 } from "./disk/paths.js";
-export { readSessionsIndex } from "./disk/sessions-index.js";
+export { readSessionsIndex, readSessionsIndexSync } from "./disk/sessions-index.js";
 export { readSessionHistory, readSessionHistoryFull } from "./disk/session-history.js";
 export type { JsonlEntry } from "./disk/types.js";
 export { readStatsCache } from "./disk/stats.js";

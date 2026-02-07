@@ -35,8 +35,8 @@ export class SessionEventEmitter extends EventEmitter {
     });
   }
 
-  start(): void {
-    this.watcher.start();
+  async start(): Promise<void> {
+    await this.watcher.start();
   }
 
   stop(): void {

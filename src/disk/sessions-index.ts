@@ -8,11 +8,25 @@ import { getSessionsIndexPath, getSessionJsonlPath, getSubagentsDir } from "./pa
 import type { SessionIndexEntry, SessionsIndex } from "./types.js";
 
 /**
- * Reads the sessions-index.json for a given project directory.
+ * Reads the sessions-index.json for a given project directory (async).
  * Returns the parsed entries, filtering out sidechains.
  * Returns an empty array if the file is missing or malformed.
  */
-export function readSessionsIndex(projectDir: string): SessionIndexEntry[] {
+export async function readSessionsIndex(projectDir: string): Promise<SessionIndexEntry[]> {
+  const indexPath = getSessionsIndexPath(projectDir);
+  try {
+    const raw = await fs.promises.readFile(indexPath, "utf-8");
+    const index = JSON.parse(raw) as SessionsIndex;
+    return index.entries.filter((e) => !e.isSidechain);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Synchronous version for callers that can't be async yet.
+ */
+export function readSessionsIndexSync(projectDir: string): SessionIndexEntry[] {
   const indexPath = getSessionsIndexPath(projectDir);
   try {
     const raw = fs.readFileSync(indexPath, "utf-8");
@@ -31,15 +45,15 @@ export function readSessionsIndex(projectDir: string): SessionIndexEntry[] {
  * Renames a session by updating its firstPrompt in sessions-index.json.
  * Returns true if the session was found and renamed, false otherwise.
  */
-export function renameSessionOnDisk(projectDir: string, sessionId: string, newTitle: string): boolean {
+export async function renameSessionOnDisk(projectDir: string, sessionId: string, newTitle: string): Promise<boolean> {
   const indexPath = getSessionsIndexPath(projectDir);
   try {
-    const raw = fs.readFileSync(indexPath, "utf-8");
+    const raw = await fs.promises.readFile(indexPath, "utf-8");
     const index = JSON.parse(raw) as SessionsIndex;
     const entry = index.entries.find((e) => e.sessionId === sessionId);
     if (!entry) return false;
     entry.firstPrompt = newTitle;
-    fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
+    await fs.promises.writeFile(indexPath, JSON.stringify(index, null, 2));
     return true;
   } catch (err) {
     console.error(`[renameSessionOnDisk] Error:`, err);
@@ -47,13 +61,13 @@ export function renameSessionOnDisk(projectDir: string, sessionId: string, newTi
   }
 }
 
-export function deleteSessionFromDisk(projectDir: string, sessionId: string): boolean {
+export async function deleteSessionFromDisk(projectDir: string, sessionId: string): Promise<boolean> {
   const indexPath = getSessionsIndexPath(projectDir);
   console.log(`[deleteSessionFromDisk] indexPath=${indexPath}, sessionId=${sessionId}`);
 
   // Remove entry from index
   try {
-    const raw = fs.readFileSync(indexPath, "utf-8");
+    const raw = await fs.promises.readFile(indexPath, "utf-8");
     const index = JSON.parse(raw) as SessionsIndex;
     const before = index.entries.length;
     const ids = index.entries.map((e) => e.sessionId);
@@ -61,25 +75,26 @@ export function deleteSessionFromDisk(projectDir: string, sessionId: string): bo
     console.log(`[deleteSessionFromDisk] Looking for: "${sessionId}", match: ${ids.includes(sessionId)}`);
     index.entries = index.entries.filter((e) => e.sessionId !== sessionId);
     if (index.entries.length === before) return false; // not found
-    fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
+    await fs.promises.writeFile(indexPath, JSON.stringify(index, null, 2));
     console.log(`[deleteSessionFromDisk] Wrote updated index with ${index.entries.length} entries`);
   } catch (err) {
     console.error(`[deleteSessionFromDisk] Error:`, err);
     return false;
   }
 
-  // Remove JSONL file
-  try { fs.unlinkSync(getSessionJsonlPath(projectDir, sessionId)); } catch {}
-
-  // Remove subagents directory
+  // Remove JSONL file and subagents directory in parallel
+  const jsonlPath = getSessionJsonlPath(projectDir, sessionId);
   const subDir = getSubagentsDir(projectDir, sessionId);
-  try { fs.rmSync(subDir, { recursive: true, force: true }); } catch {}
+  await Promise.all([
+    fs.promises.unlink(jsonlPath).catch(() => {}),
+    fs.promises.rm(subDir, { recursive: true, force: true }).catch(() => {}),
+  ]);
 
   // Remove session directory if empty
   const sessionDir = path.join(projectDir, sessionId);
   try {
-    const remaining = fs.readdirSync(sessionDir);
-    if (remaining.length === 0) fs.rmdirSync(sessionDir);
+    const remaining = await fs.promises.readdir(sessionDir);
+    if (remaining.length === 0) await fs.promises.rmdir(sessionDir);
   } catch {}
 
   return true;

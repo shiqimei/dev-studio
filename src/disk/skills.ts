@@ -11,29 +11,34 @@ export interface SkillInfo {
   hasSkillMd: boolean;
 }
 
-export function readSkills(): SkillInfo[] {
+export async function readSkills(): Promise<SkillInfo[]> {
   const dir = getSkillsDir();
   try {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    return entries
-      .filter((e) => e.isDirectory())
-      .map((e) => {
-        const skillPath = path.join(dir, e.name);
-        const hasSkillMd = fs.existsSync(path.join(skillPath, "skill.md"));
-        return { name: e.name, path: skillPath, hasSkillMd };
-      });
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    const results = await Promise.all(
+      entries
+        .filter((e) => e.isDirectory())
+        .map(async (e) => {
+          const skillPath = path.join(dir, e.name);
+          let hasSkillMd = false;
+          try {
+            await fs.promises.access(path.join(skillPath, "skill.md"));
+            hasSkillMd = true;
+          } catch { /* doesn't exist */ }
+          return { name: e.name, path: skillPath, hasSkillMd };
+        }),
+    );
+    return results;
   } catch {
     return [];
   }
 }
 
-export function listSkillNames(): string[] {
+export async function listSkillNames(): Promise<string[]> {
   const dir = getSkillsDir();
   try {
-    return fs
-      .readdirSync(dir, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name);
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    return entries.filter((e) => e.isDirectory()).map((e) => e.name);
   } catch {
     return [];
   }

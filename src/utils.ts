@@ -12,6 +12,11 @@ export class Pushable<T> implements AsyncIterable<T> {
   private queue: T[] = [];
   private resolvers: ((value: IteratorResult<T>) => void)[] = [];
   private done = false;
+  private maxQueueSize: number;
+
+  constructor(options?: { maxQueueSize?: number }) {
+    this.maxQueueSize = options?.maxQueueSize ?? 10_000;
+  }
 
   push(item: T) {
     if (this.resolvers.length > 0) {
@@ -19,6 +24,10 @@ export class Pushable<T> implements AsyncIterable<T> {
       resolve({ value: item, done: false });
     } else {
       this.queue.push(item);
+      // Evict oldest items if queue exceeds max size
+      if (this.queue.length > this.maxQueueSize) {
+        this.queue.splice(0, this.queue.length - this.maxQueueSize);
+      }
     }
   }
 

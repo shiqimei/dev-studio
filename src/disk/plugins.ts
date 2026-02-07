@@ -18,17 +18,17 @@ export interface InstalledPlugins {
   plugins: Record<string, PluginInstallation[]>;
 }
 
-export function readInstalledPlugins(): InstalledPlugins | null {
+export async function readInstalledPlugins(): Promise<InstalledPlugins | null> {
   try {
-    const raw = fs.readFileSync(getPluginsPath(), "utf-8");
+    const raw = await fs.promises.readFile(getPluginsPath(), "utf-8");
     return JSON.parse(raw) as InstalledPlugins;
   } catch {
     return null;
   }
 }
 
-export function listPluginNames(): string[] {
-  const data = readInstalledPlugins();
+export async function listPluginNames(): Promise<string[]> {
+  const data = await readInstalledPlugins();
   if (!data) return [];
   return Object.keys(data.plugins);
 }

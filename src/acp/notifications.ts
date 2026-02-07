@@ -234,7 +234,7 @@ export function toAcpNotifications(
 
           let rawInput;
           try {
-            rawInput = JSON.parse(JSON.stringify(chunk.input));
+            rawInput = structuredClone(chunk.input);
           } catch {
             // ignore if we can't turn it to JSON
           }
@@ -316,6 +316,13 @@ export function toAcpNotifications(
             ...resultUpdate,
             title: derivedTitle,
           };
+        }
+
+        // Evict completed tool entries from cache to prevent unbounded growth.
+        // Background tasks need to stay until task_notification arrives.
+        const evictInputObj = toolUse.input as Record<string, unknown> | undefined;
+        if (!evictInputObj?.run_in_background) {
+          delete toolUseCache[chunk.tool_use_id];
         }
         break;
       }

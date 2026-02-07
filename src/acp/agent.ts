@@ -80,6 +80,7 @@ import type { SessionIndexEntry } from "../disk/types.js";
 import type { Logger, NewSessionMeta, ToolUpdateMeta, ToolUseCache } from "./types.js";
 import type { BackgroundTerminal } from "./background-tasks.js";
 import { extractBackgroundTaskInfo } from "./background-tasks.js";
+import { NotificationQueue } from "./notification-queue.js";
 import { perfScope, type PerfScope } from "../utils/perf.js";
 import packageJson from "../../package.json" with { type: "json" };
 import { randomUUID } from "node:crypto";
@@ -127,12 +128,38 @@ export class ClaudeAcpAgent implements Agent {
   backgroundTaskMap: Record<string, string> = {};
   clientCapabilities?: ClientCapabilities;
   logger: Logger;
+  /** Shared SettingsManagers keyed by cwd — avoids duplicate file watchers */
+  private settingsManagerCache = new Map<string, { manager: SettingsManager; refCount: number }>();
 
   constructor(client: AgentSideConnection, logger?: Logger) {
     this.sessions = {};
     this.client = client;
     this.toolUseCache = {};
     this.logger = logger ?? console;
+  }
+
+  /** Get or create a shared SettingsManager for the given cwd. */
+  private async acquireSettingsManager(cwd: string): Promise<SettingsManager> {
+    const existing = this.settingsManagerCache.get(cwd);
+    if (existing) {
+      existing.refCount++;
+      return existing.manager;
+    }
+    const manager = new SettingsManager(cwd, { logger: this.logger });
+    await manager.initialize();
+    this.settingsManagerCache.set(cwd, { manager, refCount: 1 });
+    return manager;
+  }
+
+  /** Release a shared SettingsManager reference. Disposes when refCount reaches 0. */
+  private releaseSettingsManager(cwd: string): void {
+    const entry = this.settingsManagerCache.get(cwd);
+    if (!entry) return;
+    entry.refCount--;
+    if (entry.refCount <= 0) {
+      entry.manager.dispose();
+      this.settingsManagerCache.delete(cwd);
+    }
   }
 
   /**
@@ -176,6 +203,8 @@ export class ClaudeAcpAgent implements Agent {
           } satisfies ToolUpdateMeta,
         },
       });
+      // Clean up maps — evict the tool use cache entry for this background task
+      delete this.toolUseCache[toolCallId];
       delete this.backgroundTaskMap[taskNotif.task_id];
       delete this.backgroundTaskMap[`file:${taskNotif.output_file}`];
     } else {
@@ -239,11 +268,18 @@ export class ClaudeAcpAgent implements Agent {
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
     const t0 = performance.now();
-    if (
-      fs.existsSync(path.resolve(os.homedir(), ".claude.json.backup")) &&
-      !fs.existsSync(path.resolve(os.homedir(), ".claude.json"))
-    ) {
-      throw RequestError.authRequired();
+    // Check auth status without blocking the event loop
+    try {
+      await fs.promises.access(path.resolve(os.homedir(), ".claude.json.backup"));
+      try {
+        await fs.promises.access(path.resolve(os.homedir(), ".claude.json"));
+      } catch {
+        // .claude.json.backup exists but .claude.json doesn't — auth required
+        throw RequestError.authRequired();
+      }
+    } catch (e) {
+      if (e instanceof RequestError) throw e;
+      // .claude.json.backup doesn't exist — OK, continue
     }
 
     const result = await this.createSession(params, {
@@ -294,10 +330,20 @@ export class ClaudeAcpAgent implements Agent {
 
     const perf = perfScope("prompt");
 
-    // Helper: timed sessionUpdate — wraps each client.sessionUpdate with a perf span
+    // Non-blocking notification queue — enqueue() returns immediately,
+    // flush() drains before we return the result.
+    const queue = new NotificationQueue(this.client, this.logger);
+
+    // Helper: fire-and-forget for non-critical notifications (streaming, progress, chunks)
+    const enqueue = (label: string, notification: Parameters<typeof this.client.sessionUpdate>[0]) => {
+      perf.start(label).end();
+      queue.enqueue(notification);
+    };
+
+    // Helper: awaited send for critical notifications (results, errors, tool cache updates)
     const timedUpdate = async (label: string, notification: Parameters<typeof this.client.sessionUpdate>[0]) => {
       const s = perf.start(label);
-      await this.client.sessionUpdate(notification);
+      await queue.send(notification);
       s.end();
     };
 
@@ -338,6 +384,7 @@ export class ClaudeAcpAgent implements Agent {
       waitSpan.end({ bufferDepth: router.bufferDepth });
       if (done || !message) {
         if (session.cancelled) {
+          await queue.flush();
           perf.summary();
           return { stopReason: "cancelled" };
         }
@@ -348,11 +395,14 @@ export class ClaudeAcpAgent implements Agent {
         case "system":
           switch (message.subtype) {
             case "init": {
-              const stats = readStatsCache();
-              const commands = listCommandNames();
-              const plugins = listPluginNames();
-              const skills = listSkillNames();
-              await timedUpdate("sessionUpdate.system.init",
+              // Read all disk metadata in parallel
+              const [stats, commands, plugins, skills] = await Promise.all([
+                readStatsCache(),
+                listCommandNames(),
+                listPluginNames(),
+                listSkillNames(),
+              ]);
+              enqueue("sessionUpdate.system.init",
                 systemInitNotification(params.sessionId, message as unknown as Record<string, unknown>, {
                   stats: stats
                     ? { lastComputedDate: stats.lastComputedDate, recentActivity: stats.dailyActivity.slice(-7) }
@@ -368,29 +418,29 @@ export class ClaudeAcpAgent implements Agent {
               // Intercepted by SessionMessageRouter (handles between turns too)
               break;
             case "compact_boundary":
-              await timedUpdate("sessionUpdate.compact_boundary",
+              enqueue("sessionUpdate.compact_boundary",
                 compactBoundaryNotification(params.sessionId, message as unknown as Record<string, unknown>),
               );
               break;
             case "hook_started":
-              await timedUpdate("sessionUpdate.hook_started",
+              enqueue("sessionUpdate.hook_started",
                 hookStartedNotification(params.sessionId, message as unknown as Record<string, unknown>),
               );
               break;
             case "hook_progress":
-              await timedUpdate("sessionUpdate.hook_progress",
+              enqueue("sessionUpdate.hook_progress",
                 hookProgressNotification(params.sessionId, message as unknown as Record<string, unknown>),
               );
               break;
             case "hook_response":
-              await timedUpdate("sessionUpdate.hook_response",
+              enqueue("sessionUpdate.hook_response",
                 hookResponseNotification(params.sessionId, message as unknown as Record<string, unknown>),
               );
               break;
             case "status":
               // Forward compaction status as an agent message
               if (message.status === "compacting") {
-                await timedUpdate("sessionUpdate.compacting", {
+                enqueue("sessionUpdate.compacting", {
                   sessionId: params.sessionId,
                   update: {
                     sessionUpdate: "agent_message_chunk",
@@ -403,7 +453,7 @@ export class ClaudeAcpAgent implements Agent {
               }
               break;
             case "files_persisted":
-              await timedUpdate("sessionUpdate.files_persisted",
+              enqueue("sessionUpdate.files_persisted",
                 filesPersistedNotification(params.sessionId, message as unknown as Record<string, unknown>),
               );
               break;
@@ -414,12 +464,13 @@ export class ClaudeAcpAgent implements Agent {
           break;
         case "result": {
           if (session.cancelled) {
+            await queue.flush();
             perf.summary();
             return { stopReason: "cancelled" };
           }
 
           // Read stats to include in result metadata
-          const resultStats = readStatsCache();
+          const resultStats = await readStatsCache();
 
           // Build result metadata to surface cost/usage info to ACP client
           const resultMeta: Record<string, unknown> = {
@@ -457,6 +508,7 @@ export class ClaudeAcpAgent implements Agent {
               if (message.is_error) {
                 throw RequestError.internalError(undefined, message.result);
               }
+              await queue.flush();
               perf.summary();
               return { stopReason: "end_turn", _meta: resultMeta };
             }
@@ -467,6 +519,7 @@ export class ClaudeAcpAgent implements Agent {
                   message.errors.join(", ") || message.subtype,
                 );
               }
+              await queue.flush();
               perf.summary();
               return { stopReason: "end_turn", _meta: resultMeta };
             case "error_max_budget_usd":
@@ -478,6 +531,7 @@ export class ClaudeAcpAgent implements Agent {
                   message.errors.join(", ") || message.subtype,
                 );
               }
+              await queue.flush();
               perf.summary();
               return { stopReason: "max_turn_requests", _meta: resultMeta };
             default:
@@ -498,7 +552,7 @@ export class ClaudeAcpAgent implements Agent {
           );
           convSpan.end({ count: notifications.length });
           for (const notification of notifications) {
-            await timedUpdate("sessionUpdate.stream_event", notification);
+            enqueue("sessionUpdate.stream_event", notification);
           }
           break;
         }
@@ -579,7 +633,7 @@ export class ClaudeAcpAgent implements Agent {
                 if (toolUse.name !== "TodoWrite") {
                   let rawInput;
                   try {
-                    rawInput = JSON.parse(JSON.stringify(toolUse.input));
+                    rawInput = structuredClone(toolUse.input);
                   } catch {
                     // ignore
                   }
@@ -647,7 +701,7 @@ export class ClaudeAcpAgent implements Agent {
           );
           msgConvSpan.end({ count: msgNotifications.length, role: message.message.role });
           for (const notification of msgNotifications) {
-            await timedUpdate("sessionUpdate.message", notification);
+            enqueue("sessionUpdate.message", notification);
           }
           break;
         }
@@ -655,7 +709,7 @@ export class ClaudeAcpAgent implements Agent {
           // Forward tool progress as in_progress tool_call_update
           const toolUse = this.toolUseCache[message.tool_use_id];
           if (toolUse) {
-            await timedUpdate("sessionUpdate.tool_progress", {
+            enqueue("sessionUpdate.tool_progress", {
               sessionId: params.sessionId,
               update: {
                 sessionUpdate: "tool_call_update",
@@ -678,7 +732,7 @@ export class ClaudeAcpAgent implements Agent {
         case "tool_use_summary": {
           // Forward collapsed tool descriptions as agent message
           if (message.summary) {
-            await timedUpdate("sessionUpdate.tool_summary", {
+            enqueue("sessionUpdate.tool_summary", {
               sessionId: params.sessionId,
               update: {
                 sessionUpdate: "agent_message_chunk",
@@ -691,9 +745,9 @@ export class ClaudeAcpAgent implements Agent {
           }
 
           // Check for task state after tool summaries (e.g., TodoWrite results)
-          const tasks = readSessionTasks(params.sessionId);
+          const tasks = await readSessionTasks(params.sessionId);
           if (tasks.length > 0) {
-            await timedUpdate("sessionUpdate.task_state", {
+            enqueue("sessionUpdate.task_state", {
               sessionId: params.sessionId,
               update: {
                 sessionUpdate: "session_info_update" as any,
@@ -709,7 +763,7 @@ export class ClaudeAcpAgent implements Agent {
           break;
         }
         case "auth_status":
-          await timedUpdate("sessionUpdate.auth_status",
+          enqueue("sessionUpdate.auth_status",
             authStatusNotification(params.sessionId, message as unknown as Record<string, unknown>),
           );
           break;
@@ -857,7 +911,7 @@ export class ClaudeAcpAgent implements Agent {
         if (!sessionId) throw new Error("sessionId is required");
         const t0 = performance.now();
         const projectDir = getProjectDir(params.cwd as string | undefined);
-        const entries = readSessionHistoryFull(projectDir, sessionId);
+        const entries = await readSessionHistoryFull(projectDir, sessionId);
         const t1 = performance.now();
         const byteSize = JSON.stringify(entries).length;
         console.error(`[extMethod] sessions/getHistory ${sessionId.slice(0, 8)} read=${(t1 - t0).toFixed(0)}ms entries=${entries.length} bytes=${byteSize}`);
@@ -870,7 +924,7 @@ export class ClaudeAcpAgent implements Agent {
         if (!sessionId || !agentId) throw new Error("sessionId and agentId are required");
         const t0 = performance.now();
         const projectDir = getProjectDir(params.cwd as string | undefined);
-        const entries = readSubagentHistoryFull(projectDir, sessionId, agentId);
+        const entries = await readSubagentHistoryFull(projectDir, sessionId, agentId);
         const t1 = performance.now();
         console.error(`[extMethod] sessions/getSubagentHistory ${sessionId.slice(0, 8)}:${agentId.slice(0, 8)} read=${(t1 - t0).toFixed(0)}ms entries=${entries.length}`);
         return { entries };
@@ -882,7 +936,7 @@ export class ClaudeAcpAgent implements Agent {
         const title = params.title as string;
         if (!sessionId || !title) throw new Error("sessionId and title are required");
         const projectDir = getProjectDir(params.cwd as string | undefined);
-        const diskSuccess = renameSessionOnDisk(projectDir, sessionId, title);
+        const diskSuccess = await renameSessionOnDisk(projectDir, sessionId, title);
         // Also update in-memory session title (live sessions may not be on disk yet)
         const liveSession = this.sessions[sessionId];
         if (liveSession) {
@@ -902,22 +956,29 @@ export class ClaudeAcpAgent implements Agent {
         const deletedIds: string[] = [];
 
         // Check if this session is a team leader with teammate sessions
-        const teamInfo = readSessionTeamInfo(projectDir, sessionId);
+        const teamInfo = await readSessionTeamInfo(projectDir, sessionId);
         if (teamInfo && !teamInfo.agentName) {
           // This is a team leader — find all teammates with the same teamName
-          const allEntries = readSessionsIndex(projectDir);
-          for (const entry of allEntries) {
-            if (entry.sessionId === sessionId) continue;
-            const entryTeam = readSessionTeamInfo(projectDir, entry.sessionId);
-            if (entryTeam?.teamName === teamInfo.teamName && entryTeam.agentName) {
-              if (deleteSessionFromDisk(projectDir, entry.sessionId)) {
+          const allEntries = await readSessionsIndex(projectDir);
+          // Read team info for all entries in parallel
+          const entryTeams = await Promise.all(
+            allEntries
+              .filter((entry) => entry.sessionId !== sessionId)
+              .map(async (entry) => ({
+                entry,
+                team: await readSessionTeamInfo(projectDir, entry.sessionId),
+              })),
+          );
+          for (const { entry, team } of entryTeams) {
+            if (team?.teamName === teamInfo.teamName && team.agentName) {
+              if (await deleteSessionFromDisk(projectDir, entry.sessionId)) {
                 deletedIds.push(entry.sessionId);
               }
             }
           }
         }
 
-        const success = deleteSessionFromDisk(projectDir, sessionId);
+        const success = await deleteSessionFromDisk(projectDir, sessionId);
         if (success) deletedIds.push(sessionId);
         console.error(`[extMethod] sessions/delete ${sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms deletedIds=${deletedIds.length}`);
         return { success, deletedIds };
@@ -939,6 +1000,10 @@ export class ClaudeAcpAgent implements Agent {
     } else if (session.query) {
       session.query.close();
     }
+    // Release shared settings manager reference
+    if (session.cwd) {
+      this.releaseSettingsManager(session.cwd);
+    }
     delete this.sessions[sessionId];
   }
 
@@ -959,11 +1024,8 @@ export class ClaudeAcpAgent implements Agent {
 
     const input = new Pushable<SDKUserMessage>();
 
-    const settingsSpan = perf.start("settingsManager.initialize");
-    const settingsManager = new SettingsManager(params.cwd, {
-      logger: this.logger,
-    });
-    await settingsManager.initialize();
+    const settingsSpan = perf.start("settingsManager.acquire");
+    const settingsManager = await this.acquireSettingsManager(params.cwd);
     settingsSpan.end();
 
     const mcpServers: Record<string, McpServerConfig> = {};
@@ -1163,8 +1225,10 @@ export class ClaudeAcpAgent implements Agent {
     };
 
     const cmdsSpan = perf.start("getAvailableCommands");
-    const availableCommands = await getAvailableSlashCommands(q);
-    const models = await getAvailableModels(q);
+    const [availableCommands, models] = await Promise.all([
+      getAvailableSlashCommands(q),
+      getAvailableModels(q),
+    ]);
     cmdsSpan.end();
 
     perf.summary();
@@ -1362,7 +1426,7 @@ export class ClaudeAcpAgent implements Agent {
     const cwd = params.cwd ?? undefined;
     const projectDir = getProjectDir(cwd);
     const indexSpan = perf.start("readSessionsIndex");
-    const entries = readSessionsIndex(projectDir);
+    const entries = await readSessionsIndex(projectDir);
     indexSpan.end({ count: entries.length });
 
     // Merge live sessions that aren't on disk yet
@@ -1386,12 +1450,17 @@ export class ClaudeAcpAgent implements Agent {
       }
     }
 
-    // Read team metadata for each session
+    // Read team metadata for ALL sessions in parallel (was serial before)
     const teamSpan = perf.start("readTeamMetadata");
     const teamInfoMap = new Map<string, { teamName: string; agentName?: string }>();
-    for (const e of entries) {
-      const info = readSessionTeamInfo(projectDir, e.sessionId);
-      if (info) teamInfoMap.set(e.sessionId, info);
+    const teamResults = await Promise.all(
+      entries.map(async (e) => ({
+        sessionId: e.sessionId,
+        info: await readSessionTeamInfo(projectDir, e.sessionId),
+      })),
+    );
+    for (const { sessionId, info } of teamResults) {
+      if (info) teamInfoMap.set(sessionId, info);
     }
     teamSpan.end({ sessions: entries.length, teamsFound: teamInfoMap.size });
 
@@ -1411,17 +1480,31 @@ export class ClaudeAcpAgent implements Agent {
 
     // Fallback: for teams with teammates but no leader detected via first-line metadata,
     // scan non-team sessions for TeamCreate tool calls to identify the leader.
-    for (const [teamName, group] of teamGroups) {
-      if (group.leaderSessionId || group.teammates.length === 0) continue;
-      const teammateIds = new Set(group.teammates);
-      for (const e of entries) {
-        if (teammateIds.has(e.sessionId)) continue;
-        if (teamInfoMap.has(e.sessionId)) continue;
-        const found = findTeamCreateInSession(projectDir, e.sessionId);
-        if (found === teamName) {
-          group.leaderSessionId = e.sessionId;
-          teamInfoMap.set(e.sessionId, { teamName });
-          break;
+    // Pre-scan all candidate sessions in parallel to avoid O(teams × sessions) sequential reads.
+    const teamsNeedingLeader = [...teamGroups.entries()].filter(
+      ([, g]) => !g.leaderSessionId && g.teammates.length > 0,
+    );
+    if (teamsNeedingLeader.length > 0) {
+      const allTeammateIds = new Set(teamsNeedingLeader.flatMap(([, g]) => g.teammates));
+      const candidateSessions = entries.filter(
+        (e) => !allTeammateIds.has(e.sessionId) && !teamInfoMap.has(e.sessionId),
+      );
+      const scanResults = await Promise.all(
+        candidateSessions.map(async (e) => ({
+          sessionId: e.sessionId,
+          teamName: await findTeamCreateInSession(projectDir, e.sessionId),
+        })),
+      );
+      const sessionTeamMap = new Map(
+        scanResults.filter((r) => r.teamName !== null).map((r) => [r.sessionId, r.teamName!]),
+      );
+      for (const [teamName, group] of teamsNeedingLeader) {
+        for (const [sessionId, foundTeam] of sessionTeamMap) {
+          if (foundTeam === teamName) {
+            group.leaderSessionId = sessionId;
+            teamInfoMap.set(sessionId, { teamName });
+            break;
+          }
         }
       }
     }
@@ -1438,11 +1521,25 @@ export class ClaudeAcpAgent implements Agent {
       }
     }
 
-    const sessions = entries
-      .filter((e) => !teammateSessionIds.has(e.sessionId))
+    const filteredEntries = entries.filter((e) => !teammateSessionIds.has(e.sessionId));
+
+    // Read subagents for all sessions in parallel (was synchronous per-session before)
+    const subagentSpan = perf.start("readSubagents");
+    const subagentMap = new Map<string, ReturnType<typeof buildSubagentTree>>();
+    const subagentResults = await Promise.all(
+      filteredEntries.map(async (e) => ({
+        sessionId: e.sessionId,
+        subagents: await readSubagents(projectDir, e.sessionId),
+      })),
+    );
+    for (const { sessionId, subagents } of subagentResults) {
+      subagentMap.set(sessionId, buildSubagentTree(subagents));
+    }
+    subagentSpan.end({ sessions: filteredEntries.length });
+
+    const sessions = filteredEntries
       .map((e) => {
-        const subagents = readSubagents(projectDir, e.sessionId);
-        const tree = buildSubagentTree(subagents);
+        const tree = subagentMap.get(e.sessionId) ?? [];
         const children: any[] = tree.map(function mapNode(s: any): any {
           return {
             agentId: s.agentId,

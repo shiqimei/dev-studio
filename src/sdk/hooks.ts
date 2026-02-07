@@ -6,16 +6,45 @@ import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../acp/types.js";
 import type { SettingsManager } from "../disk/settings.js";
 
-/* A global variable to store callbacks that should be executed when receiving hooks from Claude Code */
-const toolUseCallbacks: {
-  [toolUseId: string]: {
-    onPostToolUseHook?: (
-      toolUseID: string,
-      toolInput: unknown,
-      toolResponse: unknown,
-    ) => Promise<void>;
-  };
-} = {};
+/* Callbacks executed when receiving PostToolUse hooks from Claude Code.
+ * Entries are evicted after 5 minutes to prevent unbounded growth from
+ * orphaned tool_use_ids (e.g. cancelled background tasks). */
+const CALLBACK_TTL_MS = 5 * 60 * 1000;
+const SWEEP_INTERVAL_MS = 60 * 1000;
+
+interface ToolUseCallbackEntry {
+  registeredAt: number;
+  onPostToolUseHook?: (
+    toolUseID: string,
+    toolInput: unknown,
+    toolResponse: unknown,
+  ) => Promise<void>;
+}
+
+const toolUseCallbacks: Record<string, ToolUseCallbackEntry> = {};
+
+let sweepTimer: ReturnType<typeof setInterval> | null = null;
+
+function ensureSweepTimer(): void {
+  if (sweepTimer) return;
+  sweepTimer = setInterval(() => {
+    const now = Date.now();
+    for (const id of Object.keys(toolUseCallbacks)) {
+      if (now - toolUseCallbacks[id].registeredAt > CALLBACK_TTL_MS) {
+        delete toolUseCallbacks[id];
+      }
+    }
+    // Stop the timer when the map is empty to allow clean GC
+    if (Object.keys(toolUseCallbacks).length === 0 && sweepTimer) {
+      clearInterval(sweepTimer);
+      sweepTimer = null;
+    }
+  }, SWEEP_INTERVAL_MS);
+  // Don't block process exit
+  if (sweepTimer && typeof sweepTimer === "object" && "unref" in sweepTimer) {
+    sweepTimer.unref();
+  }
+}
 
 /* Setup callbacks that will be called when receiving hooks from Claude Code */
 export const registerHookCallback = (
@@ -31,8 +60,10 @@ export const registerHookCallback = (
   },
 ) => {
   toolUseCallbacks[toolUseID] = {
+    registeredAt: Date.now(),
     onPostToolUseHook,
   };
+  ensureSweepTimer();
 };
 
 /* A callback for Claude Code that is called when receiving a PostToolUse hook */

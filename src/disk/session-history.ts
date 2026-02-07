@@ -58,29 +58,29 @@ export function readSessionHistory(projectDir: string, sessionId: string): Histo
 const CONTENT_ENTRY_TYPES = new Set(["user", "assistant", "system", "result"]);
 
 /**
- * Reads a session's JSONL conversation file and returns the raw parsed entries.
+ * Reads a session's JSONL conversation file and returns the raw parsed entries (async).
  * Includes user, assistant, system, and result entries with all content blocks preserved.
  * Filters out control messages, stream_events, keep_alive, etc.
  */
-export function readSessionHistoryFull(projectDir: string, sessionId: string): JsonlEntry[] {
+export async function readSessionHistoryFull(projectDir: string, sessionId: string): Promise<JsonlEntry[]> {
   const jsonlPath = getSessionJsonlPath(projectDir, sessionId);
   return parseJsonlFile(jsonlPath);
 }
 
 /**
- * Reads a subagent's JSONL conversation file and returns the raw parsed entries.
+ * Reads a subagent's JSONL conversation file and returns the raw parsed entries (async).
  * Same filtering as readSessionHistoryFull but reads from the subagent path.
  */
-export function readSubagentHistoryFull(projectDir: string, sessionId: string, agentId: string): JsonlEntry[] {
+export async function readSubagentHistoryFull(projectDir: string, sessionId: string, agentId: string): Promise<JsonlEntry[]> {
   const jsonlPath = getSubagentJsonlPath(projectDir, sessionId, agentId);
   return parseJsonlFile(jsonlPath);
 }
 
-/** Parse a JSONL file and return content entries. */
-function parseJsonlFile(jsonlPath: string): JsonlEntry[] {
+/** Parse a JSONL file and return content entries (async). */
+async function parseJsonlFile(jsonlPath: string): Promise<JsonlEntry[]> {
   try {
     const t0 = performance.now();
-    const raw = fs.readFileSync(jsonlPath, "utf-8");
+    const raw = await fs.promises.readFile(jsonlPath, "utf-8");
     const t1 = performance.now();
     const lines = raw.split("\n").filter(Boolean);
     const entries: JsonlEntry[] = [];

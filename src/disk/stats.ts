@@ -17,9 +17,9 @@ export interface StatsCache {
   dailyActivity: DailyActivity[];
 }
 
-export function readStatsCache(): StatsCache | null {
+export async function readStatsCache(): Promise<StatsCache | null> {
   try {
-    const raw = fs.readFileSync(getStatsCachePath(), "utf-8");
+    const raw = await fs.promises.readFile(getStatsCachePath(), "utf-8");
     return JSON.parse(raw) as StatsCache;
   } catch {
     return null;

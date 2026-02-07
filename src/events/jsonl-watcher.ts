@@ -44,13 +44,11 @@ export class JsonlWatcher extends EventEmitter {
   }
 
   /** Start watching the directory for .jsonl changes. */
-  start(): void {
+  async start(): Promise<void> {
     if (this.watcher) return;
 
     try {
-      if (!fs.existsSync(this.dir)) {
-        fs.mkdirSync(this.dir, { recursive: true });
-      }
+      await fs.promises.mkdir(this.dir, { recursive: true });
 
       this.watcher = fs.watch(this.dir, (eventType, filename) => {
         if (!filename || !filename.endsWith(".jsonl")) return;
@@ -81,7 +79,7 @@ export class JsonlWatcher extends EventEmitter {
 
   /** Read new entries from a specific file (useful for initial catch-up). */
   readFile(filename: string): void {
-    this.readNewEntries(filename);
+    void this.readNewEntries(filename);
   }
 
   private scheduleRead(filename: string): void {
@@ -92,17 +90,17 @@ export class JsonlWatcher extends EventEmitter {
       filename,
       setTimeout(() => {
         this.debounceTimers.delete(filename);
-        this.readNewEntries(filename);
+        void this.readNewEntries(filename);
       }, this.debounceMs),
     );
   }
 
-  private readNewEntries(filename: string): void {
+  private async readNewEntries(filename: string): Promise<void> {
     const filePath = path.join(this.dir, filename);
     const sessionId = path.basename(filename, ".jsonl");
 
     try {
-      const stat = fs.statSync(filePath);
+      const stat = await fs.promises.stat(filePath);
       const currentOffset = this.offsets.get(filename) ?? 0;
 
       if (stat.size <= currentOffset) {
@@ -115,11 +113,11 @@ export class JsonlWatcher extends EventEmitter {
       }
 
       // Read only the new bytes
-      const fd = fs.openSync(filePath, "r");
+      const fh = await fs.promises.open(filePath, "r");
       try {
         const bytesToRead = stat.size - currentOffset;
         const buffer = Buffer.alloc(bytesToRead);
-        fs.readSync(fd, buffer, 0, bytesToRead, currentOffset);
+        await fh.read(buffer, 0, bytesToRead, currentOffset);
 
         const newContent = buffer.toString("utf-8");
         const lines = newContent.split("\n");
@@ -142,11 +140,13 @@ export class JsonlWatcher extends EventEmitter {
 
         this.offsets.set(filename, stat.size);
       } finally {
-        fs.closeSync(fd);
+        await fh.close();
       }
     } catch (err) {
-      // File may have been deleted
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      // File may have been deleted — clean up debounce timer
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        this.debounceTimers.delete(filename);
+      } else {
         this.logger.error(`[JsonlWatcher] error reading ${filename}:`, err);
         this.emit("error", err);
       }

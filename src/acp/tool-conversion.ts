@@ -10,6 +10,13 @@ import {
   ToolKind,
 } from "@agentclientprotocol/sdk";
 import { SYSTEM_REMINDER } from "./mcp-server.js";
+
+/** Fast removal of a known constant suffix string using indexOf + slice. */
+function stripSystemReminder(text: string): string {
+  const idx = text.indexOf(SYSTEM_REMINDER);
+  if (idx < 0) return text;
+  return text.slice(0, idx) + text.slice(idx + SYSTEM_REMINDER.length);
+}
 import * as diff from "diff";
 import {
   ImageBlockParam,
@@ -432,7 +439,7 @@ export function toolUpdateFromToolResult(
               content.type === "text"
                 ? {
                     type: "text",
-                    text: markdownEscape(content.text.replace(SYSTEM_REMINDER, "")),
+                    text: markdownEscape(stripSystemReminder(content.text)),
                   }
                 : content,
           })),
@@ -444,7 +451,7 @@ export function toolUpdateFromToolResult(
               type: "content",
               content: {
                 type: "text",
-                text: markdownEscape(toolResult.content.replace(SYSTEM_REMINDER, "")),
+                text: markdownEscape(stripSystemReminder(toolResult.content)),
               },
             },
           ],
@@ -671,5 +678,7 @@ export function markdownEscape(text: string): string {
       }
     }
   }
-  return escape + "\n" + text + (text.endsWith("\n") ? "" : "\n") + escape;
+  return text.endsWith("\n")
+    ? `${escape}\n${text}${escape}`
+    : `${escape}\n${text}\n${escape}`;
 }

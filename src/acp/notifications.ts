@@ -144,7 +144,8 @@ export function toAcpNotifications(
 
   const output = [];
   // Only handle the first chunk for streaming; extend as needed for batching
-  for (const chunk of content) {
+  for (let _i = 0; _i < content.length; _i++) {
+    const chunk = content[_i];
     let update: SessionNotification["update"] | null = null;
     switch (chunk.type) {
       case "text":

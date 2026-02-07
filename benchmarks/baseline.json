@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-02-07T17:05:54.914Z",
+  "timestamp": "2026-02-07T17:07:49.027Z",
   "nodeVersion": "v24.11.0",
   "results": [
     {
@@ -9,12 +9,12 @@
         "p95": 0.001,
         "p99": 0.001,
         "min": 0,
-        "max": 0.008,
+        "max": 0.005,
         "mean": 0,
         "count": 2000,
-        "opsPerSec": 3072197
+        "opsPerSec": 3266570
       },
-      "memoryDeltaMB": 1.832
+      "memoryDeltaMB": 1.833
     },
     {
       "name": "streamEvent.thinking_delta",
@@ -23,26 +23,26 @@
         "p95": 0,
         "p99": 0.001,
         "min": 0,
-        "max": 0.008,
+        "max": 0.006,
         "mean": 0,
         "count": 2000,
-        "opsPerSec": 3685495
+        "opsPerSec": 4022049
       },
-      "memoryDeltaMB": 1.946
+      "memoryDeltaMB": 1.685
     },
     {
       "name": "streamEvent.tool_use_start",
       "latency": {
         "p50": 0.001,
         "p95": 0.002,
-        "p99": 0.004,
+        "p99": 0.005,
         "min": 0.001,
-        "max": 0.023,
+        "max": 0.055,
         "mean": 0.001,
         "count": 2000,
-        "opsPerSec": 714012
+        "opsPerSec": 775976
       },
-      "memoryDeltaMB": 4.689
+      "memoryDeltaMB": 4.376
     },
     {
       "name": "toAcpNotifications.assistant_message",
@@ -51,26 +51,26 @@
         "p95": 0.001,
         "p99": 0.001,
         "min": 0,
-        "max": 0.021,
+        "max": 0.015,
         "mean": 0,
         "count": 2000,
-        "opsPerSec": 3957426
+        "opsPerSec": 4924107
       },
-      "memoryDeltaMB": 2.507
+      "memoryDeltaMB": 1.958
     },
     {
       "name": "toAcpNotifications.tool_result",
       "latency": {
         "p50": 0.001,
-        "p95": 0.001,
-        "p99": 0.004,
+        "p95": 0.002,
+        "p99": 0.003,
         "min": 0,
-        "max": 0.214,
-        "mean": 0.001,
+        "max": 1.035,
+        "mean": 0.002,
         "count": 2000,
-        "opsPerSec": 999374
+        "opsPerSec": 662548
       },
-      "memoryDeltaMB": -8.543
+      "memoryDeltaMB": -8.457
     },
     {
       "name": "toolInfoFromToolUse",
@@ -79,12 +79,12 @@
         "p95": 0,
         "p99": 0,
         "min": 0,
-        "max": 0.005,
+        "max": 0.006,
         "mean": 0,
         "count": 2000,
-        "opsPerSec": 3918841
+        "opsPerSec": 3839781
       },
-      "memoryDeltaMB": 0.706
+      "memoryDeltaMB": 0.718
     },
     {
       "name": "toolUpdateFromToolResult",
@@ -93,26 +93,26 @@
         "p95": 0,
         "p99": 0.001,
         "min": 0,
-        "max": 0.021,
+        "max": 0.019,
         "mean": 0,
         "count": 2000,
-        "opsPerSec": 2485346
+        "opsPerSec": 2536278
       },
-      "memoryDeltaMB": 1.454
+      "memoryDeltaMB": 1.442
     },
     {
       "name": "promptToClaude",
       "latency": {
         "p50": 0,
-        "p95": 0.001,
+        "p95": 0.002,
         "p99": 0.003,
         "min": 0,
-        "max": 0.039,
+        "max": 0.048,
         "mean": 0.001,
         "count": 2000,
-        "opsPerSec": 1580018
+        "opsPerSec": 1538733
       },
-      "memoryDeltaMB": 3.468
+      "memoryDeltaMB": 3.691
     },
     {
       "name": "NotificationQueue.enqueue",
@@ -121,12 +121,12 @@
         "p95": 0,
         "p99": 0.001,
         "min": 0,
-        "max": 0.007,
+        "max": 0.013,
         "mean": 0,
         "count": 2000,
-        "opsPerSec": 6434199
+        "opsPerSec": 5892769
       },
-      "memoryDeltaMB": 1.128
+      "memoryDeltaMB": 1.135
     },
     {
       "name": "NotificationQueue.send",
@@ -135,26 +135,26 @@
         "p95": 0.002,
         "p99": 0.002,
         "min": 0.001,
-        "max": 0.013,
+        "max": 0.015,
         "mean": 0.001,
         "count": 2000,
-        "opsPerSec": 1213062
+        "opsPerSec": 1215483
       },
-      "memoryDeltaMB": 2.485
+      "memoryDeltaMB": -11.778
     },
     {
       "name": "SessionMessageRouter.next",
       "latency": {
         "p50": 0.001,
         "p95": 0.001,
-        "p99": 0.001,
+        "p99": 0.002,
         "min": 0.001,
         "max": 0.003,
         "mean": 0.001,
         "count": 500,
-        "opsPerSec": 1335570
+        "opsPerSec": 1318837
       },
-      "memoryDeltaMB": -0.15
+      "memoryDeltaMB": -0.041
     },
     {
       "name": "SessionMessageRouter.task_notification_intercept",
@@ -166,7 +166,7 @@
         "max": 0.013,
         "mean": 0.001,
         "count": 200,
-        "opsPerSec": 909273
+        "opsPerSec": 904155
       },
       "memoryDeltaMB": 0.43
     },
@@ -180,37 +180,37 @@
         "max": 0.009,
         "mean": 0,
         "count": 2000,
-        "opsPerSec": 4517855
+        "opsPerSec": 4328817
       },
-      "memoryDeltaMB": 0.714
+      "memoryDeltaMB": 0.711
     },
     {
       "name": "full_prompt_pipeline",
       "latency": {
         "p50": 0.013,
-        "p95": 0.017,
+        "p95": 0.018,
         "p99": 0.028,
         "min": 0.012,
-        "max": 0.09,
+        "max": 0.098,
         "mean": 0.014,
         "count": 200,
-        "opsPerSec": 71675
+        "opsPerSec": 70286
       },
-      "memoryDeltaMB": 5.054
+      "memoryDeltaMB": 4.615
     },
     {
       "name": "concurrent_session_throughput",
       "latency": {
-        "p50": 0.042,
-        "p95": 0.065,
-        "p99": 0.391,
+        "p50": 0.043,
+        "p95": 0.077,
+        "p99": 0.367,
         "min": 0.041,
-        "max": 0.391,
-        "mean": 0.053,
+        "max": 0.367,
+        "mean": 0.059,
         "count": 50,
-        "opsPerSec": 18812
+        "opsPerSec": 17094
       },
-      "memoryDeltaMB": -5.964
+      "memoryDeltaMB": -5.904
     },
     {
       "name": "toolUseCache.set_get_delete",
@@ -219,10 +219,10 @@
         "p95": 0.001,
         "p99": 0.001,
         "min": 0,
-        "max": 0.477,
+        "max": 0.363,
         "mean": 0.001,
         "count": 2000,
-        "opsPerSec": 1518514
+        "opsPerSec": 1451362
       },
       "memoryDeltaMB": 0.74
     }
@@ -232,5 +232,5 @@
     "avgBlockTimeMs": 0,
     "totalBlocks": 0
   },
-  "heapUsedMB": 25.1
+  "heapUsedMB": 24.44
 }

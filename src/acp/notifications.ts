@@ -36,7 +36,9 @@ export function promptToClaude(prompt: PromptRequest): SDKUserMessage {
   const content: any[] = [];
   const context: any[] = [];
 
-  for (const chunk of prompt.prompt) {
+  const promptChunks = prompt.prompt;
+  for (let pi = 0; pi < promptChunks.length; pi++) {
+    const chunk = promptChunks[pi];
     switch (chunk.type) {
       case "text": {
         let text = chunk.text;

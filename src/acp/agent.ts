@@ -563,8 +563,8 @@ export class ClaudeAcpAgent implements Agent {
             this.backgroundTaskMap,
           );
           convSpan.end({ count: notifications.length });
-          for (const notification of notifications) {
-            enqueue("sessionUpdate.stream_event", notification);
+          for (let ni = 0; ni < notifications.length; ni++) {
+            enqueue("sessionUpdate.stream_event", notifications[ni]);
           }
           break;
         }
@@ -645,7 +645,7 @@ export class ClaudeAcpAgent implements Agent {
                 if (toolUse.name !== "TodoWrite") {
                   let rawInput;
                   try {
-                    rawInput = structuredClone(toolUse.input);
+                    rawInput = JSON.parse(JSON.stringify(toolUse.input));
                   } catch {
                     // ignore
                   }
@@ -662,7 +662,10 @@ export class ClaudeAcpAgent implements Agent {
                       sessionUpdate: "tool_call_update",
                       toolCallId: id,
                       rawInput,
-                      ...info,
+                      title: info.title,
+                      kind: info.kind,
+                      content: info.content,
+                      locations: info.locations,
                       _meta: { claudeCode: claudeCodeMeta } as ToolUpdateMeta,
                     },
                   });
@@ -696,8 +699,8 @@ export class ClaudeAcpAgent implements Agent {
             (message as any).parent_tool_use_id,
           );
           msgConvSpan.end({ count: msgNotifications.length, role: message.message.role });
-          for (const notification of msgNotifications) {
-            enqueue("sessionUpdate.message", notification);
+          for (let ni = 0; ni < msgNotifications.length; ni++) {
+            enqueue("sessionUpdate.message", msgNotifications[ni]);
           }
           break;
         }
@@ -1003,8 +1006,11 @@ export class ClaudeAcpAgent implements Agent {
     if (session.cwd) {
       this.releaseSettingsManager(session.cwd);
     }
-    // Clean up background resources for this session
-    for (const key in this.backgroundTaskMap) {
+    // Clean up background resources for this session.
+    // Use Object.keys() snapshot to avoid modifying during iteration.
+    const bgKeys = Object.keys(this.backgroundTaskMap);
+    for (let i = 0; i < bgKeys.length; i++) {
+      const key = bgKeys[i];
       if (this.toolUseCache[this.backgroundTaskMap[key]]) {
         delete this.backgroundTaskMap[key];
       }

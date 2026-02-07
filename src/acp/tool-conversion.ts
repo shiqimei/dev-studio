@@ -665,11 +665,12 @@ export type ClaudePlanEntry = {
 };
 
 export function planEntries(input: { todos: ClaudePlanEntry[] }): PlanEntry[] {
-  return input.todos.map((input) => ({
-    content: input.content,
-    status: input.status,
-    priority: "medium",
-  }));
+  const todos = input.todos;
+  const result: PlanEntry[] = new Array(todos.length);
+  for (let i = 0; i < todos.length; i++) {
+    result[i] = { content: todos[i].content, status: todos[i].status, priority: "medium" };
+  }
+  return result;
 }
 
 export function markdownEscape(text: string): string {

@@ -90,6 +90,19 @@ import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 // Bypass Permissions doesn't work if we are a root/sudo user
 const IS_ROOT = (process.geteuid?.() ?? process.getuid?.()) === 0;
 
+// Pre-allocated Sets for hot-path type checks (avoid Array.includes per content block)
+const TOOL_USE_TYPES = new Set(["tool_use", "server_tool_use", "mcp_tool_use"]);
+const FILTERED_ASSISTANT_TYPES = new Set(["text", "thinking", "tool_use", "server_tool_use", "mcp_tool_use"]);
+const FILTERED_USER_RESULT_TYPES = new Set([
+  "tool_search_tool_result",
+  "web_fetch_tool_result",
+  "web_search_tool_result",
+  "code_execution_tool_result",
+  "bash_code_execution_tool_result",
+  "text_editor_code_execution_tool_result",
+  "mcp_tool_result",
+]);
+
 /**
  * Creates a Query-like async iterator that replays the first result
  * and then forwards messages from the v2 stream.
@@ -180,29 +193,27 @@ export class ClaudeAcpAgent implements Agent {
     if (toolCallId) {
       const status: "completed" | "failed" =
         taskNotif.status === "completed" ? "completed" : "failed";
+      const taskUpdate: Record<string, unknown> = {
+        sessionUpdate: "tool_call_update",
+        toolCallId,
+        status,
+        _meta: {
+          claudeCode: {
+            toolName: "Task",
+            isBackground: true,
+            backgroundComplete: true,
+          },
+        } satisfies ToolUpdateMeta,
+      };
+      if (taskNotif.summary) {
+        taskUpdate.title = taskNotif.summary;
+        taskUpdate.content = [
+          { type: "content", content: { type: "text", text: taskNotif.summary } },
+        ];
+      }
       await this.client.sessionUpdate({
         sessionId,
-        update: {
-          sessionUpdate: "tool_call_update",
-          toolCallId,
-          status,
-          ...(taskNotif.summary && {
-            title: taskNotif.summary,
-            content: [
-              {
-                type: "content",
-                content: { type: "text", text: taskNotif.summary },
-              },
-            ],
-          }),
-          _meta: {
-            claudeCode: {
-              toolName: "Task",
-              isBackground: true,
-              backgroundComplete: true,
-            },
-          } satisfies ToolUpdateMeta,
-        },
+        update: taskUpdate as any,
       });
       // Clean up maps — evict the tool use cache entry for this background task
       delete this.toolUseCache[toolCallId];
@@ -477,32 +488,29 @@ export class ClaudeAcpAgent implements Agent {
           const resultStats = cachedStats;
 
           // Build result metadata to surface cost/usage info to ACP client
-          const resultMeta: Record<string, unknown> = {
-            claudeCode: {
-              duration_ms: message.duration_ms,
-              duration_api_ms: message.duration_api_ms,
-              num_turns: message.num_turns,
-              total_cost_usd: message.total_cost_usd,
-              usage: message.usage,
-              modelUsage: message.modelUsage,
-              session_id: message.session_id,
-              uuid: message.uuid,
-              ...("permission_denials" in message &&
-                message.permission_denials.length > 0 && {
-                  permission_denials: message.permission_denials,
-                }),
-              ...("structured_output" in message &&
-                message.structured_output !== undefined && {
-                  structured_output: message.structured_output,
-                }),
-              ...(resultStats && {
-                stats: {
-                  lastComputedDate: resultStats.lastComputedDate,
-                  recentActivity: resultStats.dailyActivity.slice(-7),
-                },
-              }),
-            },
+          const claudeCodeResult: Record<string, unknown> = {
+            duration_ms: message.duration_ms,
+            duration_api_ms: message.duration_api_ms,
+            num_turns: message.num_turns,
+            total_cost_usd: message.total_cost_usd,
+            usage: message.usage,
+            modelUsage: message.modelUsage,
+            session_id: message.session_id,
+            uuid: message.uuid,
           };
+          if ("permission_denials" in message && message.permission_denials.length > 0) {
+            claudeCodeResult.permission_denials = message.permission_denials;
+          }
+          if ("structured_output" in message && message.structured_output !== undefined) {
+            claudeCodeResult.structured_output = message.structured_output;
+          }
+          if (resultStats) {
+            claudeCodeResult.stats = {
+              lastComputedDate: resultStats.lastComputedDate,
+              recentActivity: resultStats.dailyActivity.slice(-7),
+            };
+          }
+          const resultMeta: Record<string, unknown> = { claudeCode: claudeCodeResult };
 
           switch (message.subtype) {
             case "success": {
@@ -629,7 +637,7 @@ export class ClaudeAcpAgent implements Agent {
             for (const item of message.message.content) {
               const t = (item as any).type;
               const id = (item as any).id;
-              if (["tool_use", "server_tool_use", "mcp_tool_use"].includes(t) && id) {
+              if (TOOL_USE_TYPES.has(t) && id) {
                 this.toolUseCache[id] = item as any;
 
                 // Send tool_call_update with complete input now that we have it
@@ -644,6 +652,10 @@ export class ClaudeAcpAgent implements Agent {
                   const inputObj = toolUse.input as Record<string, unknown> | undefined;
                   const isBackground = inputObj?.run_in_background === true;
                   const info = toolInfoFromToolUse(toolUse);
+                  const claudeCodeMeta: Record<string, unknown> = { toolName: toolUse.name };
+                  if (isBackground) claudeCodeMeta.isBackground = true;
+                  const parentId = (message as any).parent_tool_use_id;
+                  if (parentId) claudeCodeMeta.parentToolUseId = parentId;
                   await timedUpdate("sessionUpdate.tool_cache_update", {
                     sessionId: params.sessionId,
                     update: {
@@ -651,15 +663,7 @@ export class ClaudeAcpAgent implements Agent {
                       toolCallId: id,
                       rawInput,
                       ...info,
-                      _meta: {
-                        claudeCode: {
-                          toolName: toolUse.name,
-                          ...(isBackground && { isBackground: true }),
-                          ...((message as any).parent_tool_use_id && {
-                            parentToolUseId: (message as any).parent_tool_use_id,
-                          }),
-                        },
-                      } satisfies ToolUpdateMeta,
+                      _meta: { claudeCode: claudeCodeMeta } as ToolUpdateMeta,
                     },
                   });
                 }
@@ -670,25 +674,13 @@ export class ClaudeAcpAgent implements Agent {
           const content =
             message.type === "assistant"
               ? message.message.content.filter(
-                  (item) =>
-                    !["text", "thinking", "tool_use", "server_tool_use", "mcp_tool_use"].includes(
-                      item.type,
-                    ),
+                  (item) => !FILTERED_ASSISTANT_TYPES.has(item.type),
                 )
               : Array.isArray(message.message.content)
                 ? message.message.content.filter(
-                    (item) =>
-                      ![
-                        // Keep "tool_result" — it generates tool_call_update with
-                        // status + content for client-side tools (Read, Edit, etc.)
-                        "tool_search_tool_result",
-                        "web_fetch_tool_result",
-                        "web_search_tool_result",
-                        "code_execution_tool_result",
-                        "bash_code_execution_tool_result",
-                        "text_editor_code_execution_tool_result",
-                        "mcp_tool_result",
-                      ].includes(item.type),
+                    // Keep "tool_result" — it generates tool_call_update with
+                    // status + content for client-side tools (Read, Edit, etc.)
+                    (item) => !FILTERED_USER_RESULT_TYPES.has(item.type),
                   )
                 : message.message.content;
 
@@ -713,21 +705,18 @@ export class ClaudeAcpAgent implements Agent {
           // Forward tool progress as in_progress tool_call_update
           const toolUse = this.toolUseCache[message.tool_use_id];
           if (toolUse) {
+            const progressMeta: Record<string, unknown> = {
+              toolName: toolUse.name,
+              elapsed_time_seconds: message.elapsed_time_seconds,
+            };
+            if (message.parent_tool_use_id) progressMeta.parentToolUseId = message.parent_tool_use_id;
             enqueue("sessionUpdate.tool_progress", {
               sessionId: params.sessionId,
               update: {
                 sessionUpdate: "tool_call_update",
                 toolCallId: message.tool_use_id,
                 status: "in_progress",
-                _meta: {
-                  claudeCode: {
-                    toolName: toolUse.name,
-                    elapsed_time_seconds: message.elapsed_time_seconds,
-                    ...(message.parent_tool_use_id && {
-                      parentToolUseId: message.parent_tool_use_id,
-                    }),
-                  },
-                },
+                _meta: { claudeCode: progressMeta },
               },
             });
           }
@@ -1015,8 +1004,8 @@ export class ClaudeAcpAgent implements Agent {
       this.releaseSettingsManager(session.cwd);
     }
     // Clean up background resources for this session
-    for (const [key, toolCallId] of Object.entries(this.backgroundTaskMap)) {
-      if (this.toolUseCache[toolCallId]) {
+    for (const key in this.backgroundTaskMap) {
+      if (this.toolUseCache[this.backgroundTaskMap[key]]) {
         delete this.backgroundTaskMap[key];
       }
     }

@@ -21,22 +21,25 @@ export function getSessionTasksDir(sessionId: string): string {
 
 export async function readSessionTasks(sessionId: string): Promise<TaskEntry[]> {
   const dir = getSessionTasksDir(sessionId);
+  let files: string[];
   try {
-    const files = (await fs.promises.readdir(dir)).filter((f) => f.endsWith(".json"));
-    const tasks = await Promise.all(
-      files.map(async (file) => {
-        try {
-          const raw = await fs.promises.readFile(path.join(dir, file), "utf-8");
-          return JSON.parse(raw) as TaskEntry;
-        } catch {
-          return null; // skip malformed task files
-        }
-      }),
-    );
-    return tasks.filter((t): t is TaskEntry => t !== null);
+    files = (await fs.promises.readdir(dir)).filter((f) => f.endsWith(".json"));
   } catch {
     return [];
   }
+  if (files.length === 0) return [];
+
+  const results = await Promise.allSettled(
+    files.map(async (file) => {
+      const raw = await fs.promises.readFile(path.join(dir, file), "utf-8");
+      return JSON.parse(raw) as TaskEntry;
+    }),
+  );
+  const tasks: TaskEntry[] = [];
+  for (const r of results) {
+    if (r.status === "fulfilled") tasks.push(r.value);
+  }
+  return tasks;
 }
 
 export async function listSessionsWithTasks(): Promise<string[]> {

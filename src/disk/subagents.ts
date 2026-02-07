@@ -50,15 +50,20 @@ async function scanJsonlForTaskSpawns(jsonlPath: string): Promise<{ agentId: str
 
   try {
     const raw = await fs.promises.readFile(jsonlPath, "utf-8");
-    const lines = raw.split("\n");
 
     const taskTypeByToolId = new Map<string, string>();
     // Deferred tool_results whose tool_use hasn't been seen yet (rare but possible with streaming)
     const pendingResults: { toolUseId: string; resultText: string }[] = [];
     const agentIdRe = /agentId:\s*([a-f0-9]+)/;
 
-    for (const line of lines) {
-      if (!line) continue;
+    // Iterate lines without creating intermediate array (same pattern as parseJsonlFile)
+    let lineStart = 0;
+    while (lineStart < raw.length) {
+      const lineEnd = raw.indexOf("\n", lineStart);
+      const end = lineEnd === -1 ? raw.length : lineEnd;
+      if (end <= lineStart) { lineStart = end + 1; continue; }
+      const line = raw.substring(lineStart, end);
+      lineStart = end + 1;
       try {
         const entry = JSON.parse(line);
         const content = entry.message?.content;
@@ -313,19 +318,30 @@ export async function findTeamCreateInSession(projectDir: string, sessionId: str
     const raw = await fs.promises.readFile(jsonlPath, "utf-8");
     if (!raw.includes('"TeamCreate"')) return null;
 
-    for (const line of raw.split("\n")) {
-      if (!line || !line.includes('"TeamCreate"')) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (entry.type !== "assistant") continue;
-        const content = entry.message?.content;
-        if (!Array.isArray(content)) continue;
-        for (const block of content) {
-          if (block.type === "tool_use" && block.name === "TeamCreate" && block.input?.team_name) {
-            return block.input.team_name;
-          }
+    // Iterate lines without creating intermediate array
+    let lineStart = 0;
+    while (lineStart < raw.length) {
+      const lineEnd = raw.indexOf("\n", lineStart);
+      const end = lineEnd === -1 ? raw.length : lineEnd;
+      if (end > lineStart) {
+        const line = raw.substring(lineStart, end);
+        if (line.includes('"TeamCreate"')) {
+          try {
+            const entry = JSON.parse(line);
+            if (entry.type === "assistant") {
+              const content = entry.message?.content;
+              if (Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type === "tool_use" && block.name === "TeamCreate" && block.input?.team_name) {
+                    return block.input.team_name;
+                  }
+                }
+              }
+            }
+          } catch { /* skip malformed lines */ }
         }
-      } catch { /* skip malformed lines */ }
+      }
+      lineStart = end + 1;
     }
 
     return null;

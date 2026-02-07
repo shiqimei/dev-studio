@@ -63,20 +63,15 @@ export async function renameSessionOnDisk(projectDir: string, sessionId: string,
 
 export async function deleteSessionFromDisk(projectDir: string, sessionId: string): Promise<boolean> {
   const indexPath = getSessionsIndexPath(projectDir);
-  console.log(`[deleteSessionFromDisk] indexPath=${indexPath}, sessionId=${sessionId}`);
 
   // Remove entry from index
   try {
     const raw = await fs.promises.readFile(indexPath, "utf-8");
     const index = JSON.parse(raw) as SessionsIndex;
     const before = index.entries.length;
-    const ids = index.entries.map((e) => e.sessionId);
-    console.log(`[deleteSessionFromDisk] Found ${before} entries. IDs: ${ids.slice(0, 5).join(", ")}${ids.length > 5 ? "..." : ""}`);
-    console.log(`[deleteSessionFromDisk] Looking for: "${sessionId}", match: ${ids.includes(sessionId)}`);
     index.entries = index.entries.filter((e) => e.sessionId !== sessionId);
     if (index.entries.length === before) return false; // not found
     await fs.promises.writeFile(indexPath, JSON.stringify(index, null, 2));
-    console.log(`[deleteSessionFromDisk] Wrote updated index with ${index.entries.length} entries`);
   } catch (err) {
     console.error(`[deleteSessionFromDisk] Error:`, err);
     return false;

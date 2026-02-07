@@ -899,10 +899,16 @@ export function replaceAndCalculateLocation(
     }
   }
 
-  // Remove all markers from the final content
-  let finalContent = currentContent;
-  for (const marker of markers) {
-    finalContent = finalContent.replace(marker, "");
+  // Remove all markers from the final content in a single pass using a regex
+  // rather than O(markers) separate string scans.
+  let finalContent: string;
+  if (markers.length === 0) {
+    finalContent = currentContent;
+  } else if (markers.length === 1) {
+    finalContent = currentContent.replace(markers[0], "");
+  } else {
+    const markerRe = new RegExp(markerPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\d+__", "g");
+    finalContent = currentContent.replace(markerRe, "");
   }
 
   // Dedupe and sort line numbers

@@ -252,6 +252,11 @@ export class SettingsManager {
   private logger: { log: (...args: any[]) => void; error: (...args: any[]) => void };
   private initialized = false;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Cached parsed permission rules — rebuilt when settings change to avoid
+   *  re-parsing rule strings on every checkPermission() call. */
+  private parsedDenyRules: ParsedRule[] = [];
+  private parsedAllowRules: ParsedRule[] = [];
+  private parsedAskRules: ParsedRule[] = [];
 
   constructor(cwd: string, options?: SettingsManagerOptions) {
     this.cwd = cwd;
@@ -361,6 +366,11 @@ export class SettingsManager {
     }
 
     this.mergedSettings = merged;
+
+    // Pre-parse permission rules so checkPermission() avoids per-call parsing overhead
+    this.parsedDenyRules = (merged.permissions?.deny ?? []).map(parseRule);
+    this.parsedAllowRules = (merged.permissions?.allow ?? []).map(parseRule);
+    this.parsedAskRules = (merged.permissions?.ask ?? []).map(parseRule);
   }
 
   /**
@@ -431,33 +441,32 @@ export class SettingsManager {
       return { decision: "ask" };
     }
 
-    const permissions = this.mergedSettings.permissions;
-
-    if (!permissions) {
+    if (!this.mergedSettings.permissions) {
       return { decision: "ask" };
     }
 
-    // Check deny rules first (highest priority)
-    for (const rule of permissions.deny || []) {
-      const parsed = parseRule(rule);
-      if (matchesRule(parsed, toolName, toolInput, this.cwd)) {
-        return { decision: "deny", rule, source: "deny" };
+    const denyRules = this.mergedSettings.permissions.deny;
+    const allowRules = this.mergedSettings.permissions.allow;
+    const askRules = this.mergedSettings.permissions.ask;
+
+    // Check deny rules first (highest priority) — uses pre-parsed rules
+    for (let i = 0; i < this.parsedDenyRules.length; i++) {
+      if (matchesRule(this.parsedDenyRules[i], toolName, toolInput, this.cwd)) {
+        return { decision: "deny", rule: denyRules![i], source: "deny" };
       }
     }
 
     // Check allow rules
-    for (const rule of permissions.allow || []) {
-      const parsed = parseRule(rule);
-      if (matchesRule(parsed, toolName, toolInput, this.cwd)) {
-        return { decision: "allow", rule, source: "allow" };
+    for (let i = 0; i < this.parsedAllowRules.length; i++) {
+      if (matchesRule(this.parsedAllowRules[i], toolName, toolInput, this.cwd)) {
+        return { decision: "allow", rule: allowRules![i], source: "allow" };
       }
     }
 
     // Check ask rules
-    for (const rule of permissions.ask || []) {
-      const parsed = parseRule(rule);
-      if (matchesRule(parsed, toolName, toolInput, this.cwd)) {
-        return { decision: "ask", rule, source: "ask" };
+    for (let i = 0; i < this.parsedAskRules.length; i++) {
+      if (matchesRule(this.parsedAskRules[i], toolName, toolInput, this.cwd)) {
+        return { decision: "ask", rule: askRules![i], source: "ask" };
       }
     }
 

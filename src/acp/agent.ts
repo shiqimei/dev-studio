@@ -963,8 +963,8 @@ export class ClaudeAcpAgent implements Agent {
         if (teamInfo && !teamInfo.agentName) {
           // This is a team leader — find all teammates with the same teamName
           const allEntries = await readSessionsIndex(projectDir);
-          // Read team info for all entries in parallel
-          const entryTeams = await Promise.all(
+          // Read team info for all entries in parallel — tolerate individual failures
+          const entryTeamsSettled = await Promise.allSettled(
             allEntries
               .filter((entry) => entry.sessionId !== sessionId)
               .map(async (entry) => ({
@@ -972,6 +972,9 @@ export class ClaudeAcpAgent implements Agent {
                 team: await readSessionTeamInfo(projectDir, entry.sessionId),
               })),
           );
+          const entryTeams = entryTeamsSettled
+            .filter((r): r is PromiseFulfilledResult<{ entry: SessionIndexEntry; team: Awaited<ReturnType<typeof readSessionTeamInfo>> }> => r.status === "fulfilled")
+            .map((r) => r.value);
           for (const { entry, team } of entryTeams) {
             if (team?.teamName === teamInfo.teamName && team.agentName) {
               if (await deleteSessionFromDisk(projectDir, entry.sessionId)) {
@@ -1467,17 +1470,20 @@ export class ClaudeAcpAgent implements Agent {
       }
     }
 
-    // Read team metadata for ALL sessions in parallel (was serial before)
+    // Read team metadata for ALL sessions in parallel — use allSettled to
+    // tolerate individual session read failures without aborting the list.
     const teamSpan = perf.start("readTeamMetadata");
     const teamInfoMap = new Map<string, { teamName: string; agentName?: string }>();
-    const teamResults = await Promise.all(
+    const teamResults = await Promise.allSettled(
       entries.map(async (e) => ({
         sessionId: e.sessionId,
         info: await readSessionTeamInfo(projectDir, e.sessionId),
       })),
     );
-    for (const { sessionId, info } of teamResults) {
-      if (info) teamInfoMap.set(sessionId, info);
+    for (const result of teamResults) {
+      if (result.status === "fulfilled" && result.value.info) {
+        teamInfoMap.set(result.value.sessionId, result.value.info);
+      }
     }
     teamSpan.end({ sessions: entries.length, teamsFound: teamInfoMap.size });
 
@@ -1506,12 +1512,15 @@ export class ClaudeAcpAgent implements Agent {
       const candidateSessions = entries.filter(
         (e) => !allTeammateIds.has(e.sessionId) && !teamInfoMap.has(e.sessionId),
       );
-      const scanResults = await Promise.all(
+      const scanSettled = await Promise.allSettled(
         candidateSessions.map(async (e) => ({
           sessionId: e.sessionId,
           teamName: await findTeamCreateInSession(projectDir, e.sessionId),
         })),
       );
+      const scanResults = scanSettled
+        .filter((r): r is PromiseFulfilledResult<{ sessionId: string; teamName: string | null }> => r.status === "fulfilled")
+        .map((r) => r.value);
       const sessionTeamMap = new Map(
         scanResults.filter((r) => r.teamName !== null).map((r) => [r.sessionId, r.teamName!]),
       );
@@ -1540,17 +1549,20 @@ export class ClaudeAcpAgent implements Agent {
 
     const filteredEntries = entries.filter((e) => !teammateSessionIds.has(e.sessionId));
 
-    // Read subagents for all sessions in parallel (was synchronous per-session before)
+    // Read subagents for all sessions in parallel — use allSettled so one
+    // corrupt session directory doesn't crash the entire listing.
     const subagentSpan = perf.start("readSubagents");
     const subagentMap = new Map<string, ReturnType<typeof buildSubagentTree>>();
-    const subagentResults = await Promise.all(
+    const subagentSettled = await Promise.allSettled(
       filteredEntries.map(async (e) => ({
         sessionId: e.sessionId,
         subagents: await readSubagents(projectDir, e.sessionId),
       })),
     );
-    for (const { sessionId, subagents } of subagentResults) {
-      subagentMap.set(sessionId, buildSubagentTree(subagents));
+    for (const result of subagentSettled) {
+      if (result.status === "fulfilled") {
+        subagentMap.set(result.value.sessionId, buildSubagentTree(result.value.subagents));
+      }
     }
     subagentSpan.end({ sessions: filteredEntries.length });
 
@@ -1602,9 +1614,10 @@ export class ClaudeAcpAgent implements Agent {
         };
       })
       .sort((a, b) => {
-        const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-        const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-        return tb - ta;
+        // ISO-8601 strings sort lexicographically — avoids Date allocation in O(n log n) comparator
+        const ta = a.updatedAt ?? "";
+        const tb = b.updatedAt ?? "";
+        return ta < tb ? 1 : ta > tb ? -1 : 0;
       });
     perf.summary();
     return { sessions };

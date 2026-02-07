@@ -98,7 +98,10 @@ export function promptToClaude(prompt: PromptRequest): SDKUserMessage {
     }
   }
 
-  content.push(...context);
+  // Append context items without spread to avoid extra array copy when context is empty
+  for (let ci = 0; ci < context.length; ci++) {
+    content.push(context[ci]);
+  }
 
   return {
     type: "user",

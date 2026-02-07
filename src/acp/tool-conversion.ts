@@ -432,18 +432,18 @@ export function toolUpdateFromToolResult(
     case "Read":
     case acpToolNames.read:
       if (Array.isArray(toolResult.content) && toolResult.content.length > 0) {
-        return {
-          content: toolResult.content.map((content: any) => ({
+        const mapped: ToolCallContent[] = new Array(toolResult.content.length);
+        for (let i = 0; i < toolResult.content.length; i++) {
+          const c = toolResult.content[i] as any;
+          mapped[i] = {
             type: "content",
             content:
-              content.type === "text"
-                ? {
-                    type: "text",
-                    text: markdownEscape(stripSystemReminder(content.text)),
-                  }
-                : content,
-          })),
-        };
+              c.type === "text"
+                ? { type: "text", text: markdownEscape(stripSystemReminder(c.text)) }
+                : c,
+          };
+        }
+        return { content: mapped };
       } else if (typeof toolResult.content === "string" && toolResult.content.length > 0) {
         return {
           content: [
@@ -555,12 +555,11 @@ function toAcpContentUpdate(
   isError: boolean = false,
 ): { content?: ToolCallContent[] } {
   if (Array.isArray(content) && content.length > 0) {
-    return {
-      content: content.map((c: any) => ({
-        type: "content" as const,
-        content: toAcpContentBlock(c, isError),
-      })),
-    };
+    const mapped: ToolCallContent[] = new Array(content.length);
+    for (let i = 0; i < content.length; i++) {
+      mapped[i] = { type: "content", content: toAcpContentBlock(content[i], isError) };
+    }
+    return { content: mapped };
   } else if (typeof content === "object" && content !== null && "type" in content) {
     return {
       content: [

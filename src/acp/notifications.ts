@@ -13,6 +13,9 @@ import { registerHookCallback } from "../sdk/hooks.js";
 import { extractBackgroundTaskInfo } from "./background-tasks.js";
 import { perfStart } from "../utils/perf.js";
 
+/** Pre-compiled regex for MCP command rewriting in promptToClaude. */
+const MCP_CMD_RE = /^\/mcp:([^:\s]+):(\S+)(\s+.*)?$/;
+
 function formatUriAsLink(uri: string): string {
   try {
     if (uri.startsWith("file://") || uri.startsWith("zed://")) {
@@ -38,7 +41,7 @@ export function promptToClaude(prompt: PromptRequest): SDKUserMessage {
       case "text": {
         let text = chunk.text;
         // change /mcp:server:command args -> /server:command (MCP) args
-        const mcpMatch = text.match(/^\/mcp:([^:\s]+):(\S+)(\s+.*)?$/);
+        const mcpMatch = MCP_CMD_RE.exec(text);
         if (mcpMatch) {
           const [, server, command, args] = mcpMatch;
           text = `/${server}:${command} (MCP)${args || ""}`;
@@ -229,7 +232,7 @@ export function toAcpNotifications(
 
           let rawInput;
           try {
-            rawInput = structuredClone(chunk.input);
+            rawInput = JSON.parse(JSON.stringify(chunk.input));
           } catch {
             // ignore if we can't turn it to JSON
           }
@@ -242,6 +245,8 @@ export function toAcpNotifications(
           const toolCallMeta: Record<string, unknown> = { toolName: chunk.name };
           if (isBackground) toolCallMeta.isBackground = true;
           if (parentToolUseId) toolCallMeta.parentToolUseId = parentToolUseId;
+          // Avoid spread operator — assign toolInfo properties directly to reduce allocations
+          const toolInfo = toolInfoFromToolUse(chunk);
           update = {
             _meta: {
               claudeCode: toolCallMeta,
@@ -250,7 +255,10 @@ export function toAcpNotifications(
             sessionUpdate: "tool_call",
             rawInput,
             status: "pending",
-            ...toolInfoFromToolUse(chunk),
+            title: toolInfo.title,
+            kind: toolInfo.kind,
+            content: toolInfo.content,
+            locations: toolInfo.locations,
           };
         }
         break;
@@ -306,7 +314,8 @@ export function toAcpNotifications(
             sessionUpdate: "tool_call_update",
             status: "is_error" in chunk && chunk.is_error ? "failed" : "completed",
             rawOutput: chunk.content,
-            ...resultUpdate,
+            content: resultUpdate.content,
+            locations: resultUpdate.locations,
             title: derivedTitle,
           };
         }

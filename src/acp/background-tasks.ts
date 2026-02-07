@@ -47,10 +47,14 @@ export function extractBackgroundTaskInfo(response: unknown): {
   if (typeof response === "string") {
     text = response;
   } else if (Array.isArray(response)) {
-    text = response
-      .filter((c: any) => c?.type === "text" && typeof c?.text === "string")
-      .map((c: any) => c.text)
-      .join("\n");
+    const parts: string[] = [];
+    for (let i = 0; i < response.length; i++) {
+      const c = response[i];
+      if (c?.type === "text" && typeof c?.text === "string") {
+        parts.push(c.text);
+      }
+    }
+    text = parts.join("\n");
   } else {
     try {
       text = JSON.stringify(response);

@@ -47,7 +47,7 @@ export function perfStart(op: string): Span {
   const t0 = now();
   return {
     end(meta?: Record<string, unknown>): number {
-      const ms = +(now() - t0).toFixed(2);
+      const ms = Math.round((now() - t0) * 100) / 100;
       log({ perf: { op, ms, ...meta } });
       return ms;
     },
@@ -85,7 +85,7 @@ export function perfScope(name: string) {
       const st = now();
       return {
         end(meta?: Record<string, unknown>): number {
-          const ms = +(now() - st).toFixed(2);
+          const ms = Math.round((now() - st) * 100) / 100;
           track(op, ms);
           if (ms > 50) {
             // Only log individual spans that are slow (>50ms)
@@ -97,13 +97,13 @@ export function perfScope(name: string) {
     },
 
     summary() {
-      const totalMs = +(now() - t0).toFixed(2);
+      const totalMs = Math.round((now() - t0) * 100) / 100;
       const byOp: Record<string, { n: number; total_ms: number; max_ms: number }> = {};
       for (const [op, s] of ops) {
         byOp[op] = {
           n: s.count,
-          total_ms: +s.totalMs.toFixed(2),
-          max_ms: +s.maxMs.toFixed(2),
+          total_ms: Math.round(s.totalMs * 100) / 100,
+          max_ms: Math.round(s.maxMs * 100) / 100,
         };
       }
       log({ perf_summary: { scope: name, total_ms: totalMs, ops: byOp } });

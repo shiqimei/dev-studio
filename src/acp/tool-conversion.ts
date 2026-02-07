@@ -586,12 +586,14 @@ function toAcpContentUpdate(
   return {};
 }
 
-function toAcpContentBlock(content: ToolResultContent, isError: boolean): ContentBlock {
-  const wrapText = (text: string): ContentBlock => ({
+function wrapText(text: string, isError: boolean): ContentBlock {
+  return {
     type: "text" as const,
     text: isError ? `\`\`\`\n${text}\n\`\`\`` : text,
-  });
+  };
+}
 
+function toAcpContentBlock(content: ToolResultContent, isError: boolean): ContentBlock {
   switch (content.type) {
     case "text":
       return {
@@ -606,51 +608,54 @@ function toAcpContentBlock(content: ToolResultContent, isError: boolean): Conten
           mimeType: content.source.media_type,
         };
       }
-      // URL and file-based images can't be converted to ACP format (requires data)
       return wrapText(
         content.source.type === "url"
           ? `[image: ${content.source.url}]`
           : "[image: file reference]",
+        isError,
       );
 
     case "tool_reference":
-      return wrapText(`Tool: ${content.tool_name}`);
+      return wrapText(`Tool: ${content.tool_name}`, isError);
     case "tool_search_tool_search_result":
       return wrapText(
         `Tools found: ${content.tool_references.map((r) => r.tool_name).join(", ") || "none"}`,
+        isError,
       );
     case "tool_search_tool_result_error":
       return wrapText(
         `Error: ${content.error_code}${content.error_message ? ` - ${content.error_message}` : ""}`,
+        isError,
       );
     case "web_search_result":
-      return wrapText(`${content.title} (${content.url})`);
+      return wrapText(`${content.title} (${content.url})`, isError);
     case "web_search_tool_result_error":
-      return wrapText(`Error: ${content.error_code}`);
+      return wrapText(`Error: ${content.error_code}`, isError);
     case "web_fetch_result":
-      return wrapText(`Fetched: ${content.url}`);
+      return wrapText(`Fetched: ${content.url}`, isError);
     case "web_fetch_tool_result_error":
-      return wrapText(`Error: ${content.error_code}`);
+      return wrapText(`Error: ${content.error_code}`, isError);
     case "code_execution_result":
-      return wrapText(`Output: ${content.stdout || content.stderr || ""}`);
+      return wrapText(`Output: ${content.stdout || content.stderr || ""}`, isError);
     case "bash_code_execution_result":
-      return wrapText(`Output: ${content.stdout || content.stderr || ""}`);
+      return wrapText(`Output: ${content.stdout || content.stderr || ""}`, isError);
     case "code_execution_tool_result_error":
     case "bash_code_execution_tool_result_error":
-      return wrapText(`Error: ${content.error_code}`);
+      return wrapText(`Error: ${content.error_code}`, isError);
     case "text_editor_code_execution_view_result":
-      return wrapText(content.content);
+      return wrapText(content.content, isError);
     case "text_editor_code_execution_create_result":
-      return wrapText(content.is_file_update ? "File updated" : "File created");
+      return wrapText(content.is_file_update ? "File updated" : "File created", isError);
     case "text_editor_code_execution_str_replace_result":
-      return wrapText(content.lines?.join("\n") || "");
+      return wrapText(content.lines?.join("\n") || "", isError);
     case "text_editor_code_execution_tool_result_error":
       return wrapText(
         `Error: ${content.error_code}${content.error_message ? ` - ${content.error_message}` : ""}`,
+        isError,
       );
 
     default:
-      return wrapText(JSON.stringify(content));
+      return wrapText(JSON.stringify(content), isError);
   }
 }
 

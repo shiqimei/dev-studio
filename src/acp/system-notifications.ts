@@ -115,8 +115,13 @@ export function systemInitNotification(
     apiKeySource: message.api_key_source as string | undefined,
     betas: message.betas as string[] | undefined,
     sessionId: message.session_id as string | undefined,
-    ...diskData,
   };
+  if (diskData) {
+    if (diskData.stats !== undefined) meta.stats = diskData.stats;
+    if (diskData.diskCommands) meta.diskCommands = diskData.diskCommands;
+    if (diskData.diskPlugins) meta.diskPlugins = diskData.diskPlugins;
+    if (diskData.diskSkills) meta.diskSkills = diskData.diskSkills;
+  }
 
   const parts: string[] = [];
   if (meta.model) parts.push(`model=${meta.model}`);

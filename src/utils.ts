@@ -95,7 +95,9 @@ export function unreachable(value: never, logger: Logger = console) {
     if (v && typeof v === "object") {
       // For SDK messages, type+subtype is all we need to identify the case
       if ("type" in v) {
-        valueAsString = JSON.stringify({ type: v.type, ...(v.subtype ? { subtype: v.subtype } : {}) });
+        const obj: Record<string, unknown> = { type: v.type };
+        if (v.subtype) obj.subtype = v.subtype;
+        valueAsString = JSON.stringify(obj);
       } else {
         valueAsString = JSON.stringify(value);
       }

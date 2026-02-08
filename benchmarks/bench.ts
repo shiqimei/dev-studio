@@ -6,9 +6,10 @@
  *
  * Coverage:
  *   ACP Methods: initialize, newSession, prompt, cancel, setSessionMode,
- *                setSessionModel, forkSession, resumeSession
+ *                setSessionModel, forkSession, resumeSession, authenticate
  *   ExtMethods:  sessions/list, sessions/getHistory, sessions/getSubagentHistory,
- *                sessions/rename, sessions/delete
+ *                sessions/rename, sessions/delete, sessions/getAvailableCommands,
+ *                sessions/getSubagents
  *   Notifications: agent_message_chunk, agent_thought_chunk, tool_call,
  *                  tool_call_update, plan, available_commands_update,
  *                  current_mode_update, session_info_update (tracked per-type)
@@ -470,6 +471,24 @@ async function runBenchmarks() {
     console.log("");
   }
 
+  // ── 1i. authenticate (error path — stub throws "not implemented") ──
+
+  console.log("Running: authenticate (error path)");
+  {
+    const samples: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const t0 = performance.now();
+      try {
+        await (connection as any).authenticate({ authMethodId: "claude-login" });
+      } catch {
+        // Expected — authenticate is not implemented
+      }
+      samples.push(performance.now() - t0);
+    }
+    results.push({ name: "authenticate_error", latency: computeStats(samples), samples });
+    logBench("authenticate_error", samples);
+  }
+
   // ════════════════════════════════════════════════════════════════════
   // SECTION 2: EXT METHODS
   // ════════════════════════════════════════════════════════════════════
@@ -539,6 +558,38 @@ async function runBenchmarks() {
     results.push({ name: "ext:sessions/delete", latency: computeStats(samples), samples });
     logBench("ext:sessions/delete", samples);
   }
+
+  // ── 2f. sessions/getAvailableCommands ─────────────────────────────
+  // First call is cold (loads commands from SDK), subsequent calls hit cache.
+  // May error if no live session has an active query process — measure latency regardless.
+
+  console.log("Running: ext:sessions/getAvailableCommands");
+  {
+    const samples: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const t0 = performance.now();
+      try {
+        await connection.extMethod("sessions/getAvailableCommands", {});
+      } catch {
+        // May fail if no live session has an active query
+      }
+      samples.push(performance.now() - t0);
+    }
+    results.push({ name: "ext:sessions/getAvailableCommands", latency: computeStats(samples), samples });
+    logBench("ext:sessions/getAvailableCommands", samples);
+  }
+
+  // ── 2g. sessions/getSubagents ───────────────────────────────────
+
+  await bench("ext:sessions/getSubagents", results, 5, async () => {
+    try {
+      await connection.extMethod("sessions/getSubagents", {
+        sessionId: allSessionIds[0],
+      });
+    } catch {
+      // May error if session has no subagents — that's fine, we measure latency
+    }
+  });
 
   // ════════════════════════════════════════════════════════════════════
   // SECTION 3: NOTIFICATION PROFILING

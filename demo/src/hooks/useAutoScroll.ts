@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from "react";
+import { useRef, useLayoutEffect, useCallback } from "react";
 
 export function useAutoScroll<T extends HTMLElement>(...deps: unknown[]) {
   const ref = useRef<T>(null);
@@ -11,7 +11,9 @@ export function useAutoScroll<T extends HTMLElement>(...deps: unknown[]) {
     autoScroll.current = gap < 40;
   }, []);
 
-  useEffect(() => {
+  // useLayoutEffect fires synchronously after DOM mutations, before paint —
+  // correct timing for scroll manipulation (no visual flicker).
+  useLayoutEffect(() => {
     const el = ref.current;
     if (el && autoScroll.current) {
       el.scrollTop = el.scrollHeight;

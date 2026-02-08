@@ -39,6 +39,10 @@ export interface ToolUseBlock {
   status?: "pending" | "completed" | "failed";
   result?: string;
   agentId?: string;
+  // Timing / background task tracking
+  startTime?: number;
+  endTime?: number;
+  isBackground?: boolean;
 }
 
 export interface ToolResultBlock {
@@ -150,6 +154,8 @@ export interface DiskSession {
   teamName?: string;
   /** True when this session is active in the ACP connection. */
   isLive?: boolean;
+  /** Server-side turn status for this session (only present for live sessions). */
+  turnStatus?: "in_progress" | "completed" | "error";
 }
 
 export interface SessionSnapshot {

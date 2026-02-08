@@ -26,4 +26,6 @@ export type ManagedSession = {
   updatedAt: string;
   // Pending timers to clear on close
   pendingTimers?: ReturnType<typeof setTimeout>[];
+  /** True after auto-rename has been triggered (prevents duplicate triggers). */
+  autoRenamed?: boolean;
 };

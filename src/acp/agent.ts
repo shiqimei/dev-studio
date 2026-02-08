@@ -53,7 +53,11 @@ import { createMcpServer } from "./mcp-server.js";
 import { acpToolNames, EDIT_TOOL_NAMES } from "./types.js";
 import { toolInfoFromToolUse } from "./tool-conversion.js";
 import { createPostToolUseHook, createPreToolUseHook } from "../sdk/hooks.js";
-import { toAcpNotifications, streamEventToAcpNotifications, promptToClaude } from "./notifications.js";
+import {
+  toAcpNotifications,
+  streamEventToAcpNotifications,
+  promptToClaude,
+} from "./notifications.js";
 import {
   systemInitNotification,
   hookStartedNotification,
@@ -72,15 +76,26 @@ import { readSessionTasks } from "../disk/tasks.js";
 import { listCommandNames } from "../disk/commands.js";
 import { listPluginNames } from "../disk/plugins.js";
 import { listSkillNames } from "../disk/skills.js";
-import { readSessionsIndex, renameSessionOnDisk, deleteSessionFromDisk, upsertSessionInIndex } from "../disk/sessions-index.js";
+import {
+  readSessionsIndex,
+  renameSessionOnDisk,
+  deleteSessionFromDisk,
+  upsertSessionInIndex,
+} from "../disk/sessions-index.js";
 import { readSessionHistoryFull, readSubagentHistoryFull } from "../disk/session-history.js";
-import { readSubagents, buildSubagentTree, readSessionTeamInfo, findTeamCreateInSession } from "../disk/subagents.js";
+import {
+  readSubagents,
+  buildSubagentTree,
+  readSessionTeamInfo,
+  findTeamCreateInSession,
+} from "../disk/subagents.js";
 import type { ManagedSession } from "../sdk/types.js";
 import type { SessionIndexEntry } from "../disk/types.js";
 import type { Logger, NewSessionMeta, ToolUpdateMeta, ToolUseCache } from "./types.js";
 import type { BackgroundTerminal } from "./background-tasks.js";
 import { extractBackgroundTaskInfo } from "./background-tasks.js";
 import { NotificationQueue } from "./notification-queue.js";
+import { generateSessionTitle } from "./auto-rename.js";
 import { perfScope, type PerfScope } from "../utils/perf.js";
 import packageJson from "../../package.json" with { type: "json" };
 import { randomUUID } from "node:crypto";
@@ -92,7 +107,13 @@ const IS_ROOT = (process.geteuid?.() ?? process.getuid?.()) === 0;
 
 // Pre-allocated Sets for hot-path type checks (avoid Array.includes per content block)
 const TOOL_USE_TYPES = new Set(["tool_use", "server_tool_use", "mcp_tool_use"]);
-const FILTERED_ASSISTANT_TYPES = new Set(["text", "thinking", "tool_use", "server_tool_use", "mcp_tool_use"]);
+const FILTERED_ASSISTANT_TYPES = new Set([
+  "text",
+  "thinking",
+  "tool_use",
+  "server_tool_use",
+  "mcp_tool_use",
+]);
 const FILTERED_USER_RESULT_TYPES = new Set([
   "tool_search_tool_result",
   "web_fetch_tool_result",
@@ -303,7 +324,9 @@ export class ClaudeAcpAgent implements Agent {
     const result = await this.createSession(params, {
       resume: (params._meta as NewSessionMeta | undefined)?.claudeCode?.options?.resume,
     });
-    console.error(`[perf] newSession ${result.sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms`);
+    console.error(
+      `[perf] newSession ${result.sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms`,
+    );
     return result;
   }
 
@@ -333,7 +356,9 @@ export class ClaudeAcpAgent implements Agent {
         resume: params.sessionId,
       },
     );
-    console.error(`[perf] unstable_resumeSession ${params.sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms`);
+    console.error(
+      `[perf] unstable_resumeSession ${params.sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms`,
+    );
     return response;
   }
 
@@ -353,13 +378,19 @@ export class ClaudeAcpAgent implements Agent {
     const queue = new NotificationQueue(this.client, this.logger);
 
     // Helper: fire-and-forget for non-critical notifications (streaming, progress, chunks)
-    const enqueue = (label: string, notification: Parameters<typeof this.client.sessionUpdate>[0]) => {
+    const enqueue = (
+      label: string,
+      notification: Parameters<typeof this.client.sessionUpdate>[0],
+    ) => {
       perf.start(label).end();
       queue.enqueue(notification);
     };
 
     // Helper: awaited send for critical notifications (results, errors, tool cache updates)
-    const timedUpdate = async (label: string, notification: Parameters<typeof this.client.sessionUpdate>[0]) => {
+    const timedUpdate = async (
+      label: string,
+      notification: Parameters<typeof this.client.sessionUpdate>[0],
+    ) => {
       const s = perf.start(label);
       await queue.send(notification);
       s.end();
@@ -378,15 +409,17 @@ export class ClaudeAcpAgent implements Agent {
       const firstText = params.prompt.find((c) => c.type === "text");
       if (firstText && "text" in firstText) {
         session.title = firstText.text.slice(0, 100);
-        this.client.sessionUpdate({
-          sessionId: params.sessionId,
-          update: {
-            sessionUpdate: "session_info_update" as any,
-            title: session.title,
-          } as any,
-        }).catch((err) => {
-          this.logger.error("[claude-code-acp] session_info_update failed:", err);
-        });
+        this.client
+          .sessionUpdate({
+            sessionId: params.sessionId,
+            update: {
+              sessionUpdate: "session_info_update" as any,
+              title: session.title,
+            } as any,
+          })
+          .catch((err) => {
+            this.logger.error("[claude-code-acp] session_info_update failed:", err);
+          });
         // Persist title to disk index
         const projectDir = getProjectDir(session.cwd);
         upsertSessionInIndex(projectDir, {
@@ -397,6 +430,17 @@ export class ClaudeAcpAgent implements Agent {
       }
     }
     session.updatedAt = new Date().toISOString();
+
+    // Auto-rename: capture context for title generation after first turn
+    const isFirstTurn = !session.autoRenamed;
+    let userMessageForRename = "";
+    let assistantTextForRename = "";
+    if (isFirstTurn) {
+      const firstText = params.prompt.find((c) => c.type === "text");
+      if (firstText && "text" in firstText) {
+        userMessageForRename = firstText.text.slice(0, 500);
+      }
+    }
 
     if (session.sdkSession) {
       await session.sdkSession.send(promptMessage);
@@ -430,15 +474,23 @@ export class ClaudeAcpAgent implements Agent {
                 listSkillNames(),
               ]);
               cachedStats = stats;
-              enqueue("sessionUpdate.system.init",
-                systemInitNotification(params.sessionId, message as unknown as Record<string, unknown>, {
-                  stats: stats
-                    ? { lastComputedDate: stats.lastComputedDate, recentActivity: stats.dailyActivity.slice(-7) }
-                    : undefined,
-                  diskCommands: commands.length > 0 ? commands : undefined,
-                  diskPlugins: plugins.length > 0 ? plugins : undefined,
-                  diskSkills: skills.length > 0 ? skills : undefined,
-                }),
+              enqueue(
+                "sessionUpdate.system.init",
+                systemInitNotification(
+                  params.sessionId,
+                  message as unknown as Record<string, unknown>,
+                  {
+                    stats: stats
+                      ? {
+                          lastComputedDate: stats.lastComputedDate,
+                          recentActivity: stats.dailyActivity.slice(-7),
+                        }
+                      : undefined,
+                    diskCommands: commands.length > 0 ? commands : undefined,
+                    diskPlugins: plugins.length > 0 ? plugins : undefined,
+                    diskSkills: skills.length > 0 ? skills : undefined,
+                  },
+                ),
               );
               break;
             }
@@ -446,23 +498,39 @@ export class ClaudeAcpAgent implements Agent {
               // Intercepted by SessionMessageRouter (handles between turns too)
               break;
             case "compact_boundary":
-              enqueue("sessionUpdate.compact_boundary",
-                compactBoundaryNotification(params.sessionId, message as unknown as Record<string, unknown>),
+              enqueue(
+                "sessionUpdate.compact_boundary",
+                compactBoundaryNotification(
+                  params.sessionId,
+                  message as unknown as Record<string, unknown>,
+                ),
               );
               break;
             case "hook_started":
-              enqueue("sessionUpdate.hook_started",
-                hookStartedNotification(params.sessionId, message as unknown as Record<string, unknown>),
+              enqueue(
+                "sessionUpdate.hook_started",
+                hookStartedNotification(
+                  params.sessionId,
+                  message as unknown as Record<string, unknown>,
+                ),
               );
               break;
             case "hook_progress":
-              enqueue("sessionUpdate.hook_progress",
-                hookProgressNotification(params.sessionId, message as unknown as Record<string, unknown>),
+              enqueue(
+                "sessionUpdate.hook_progress",
+                hookProgressNotification(
+                  params.sessionId,
+                  message as unknown as Record<string, unknown>,
+                ),
               );
               break;
             case "hook_response":
-              enqueue("sessionUpdate.hook_response",
-                hookResponseNotification(params.sessionId, message as unknown as Record<string, unknown>),
+              enqueue(
+                "sessionUpdate.hook_response",
+                hookResponseNotification(
+                  params.sessionId,
+                  message as unknown as Record<string, unknown>,
+                ),
               );
               break;
             case "status":
@@ -481,8 +549,12 @@ export class ClaudeAcpAgent implements Agent {
               }
               break;
             case "files_persisted":
-              enqueue("sessionUpdate.files_persisted",
-                filesPersistedNotification(params.sessionId, message as unknown as Record<string, unknown>),
+              enqueue(
+                "sessionUpdate.files_persisted",
+                filesPersistedNotification(
+                  params.sessionId,
+                  message as unknown as Record<string, unknown>,
+                ),
               );
               break;
             default:
@@ -535,6 +607,22 @@ export class ClaudeAcpAgent implements Agent {
               }
               await queue.flush();
               perf.summary();
+
+              // Fire-and-forget auto-rename after first successful turn
+              if (isFirstTurn && userMessageForRename.length > 0) {
+                session.autoRenamed = true;
+                const titleAtTrigger = session.title;
+                this.autoRenameSession(
+                  params.sessionId,
+                  session,
+                  titleAtTrigger,
+                  userMessageForRename,
+                  assistantTextForRename,
+                ).catch((err) => {
+                  this.logger.error("[auto-rename] Unhandled error:", err);
+                });
+              }
+
               return { stopReason: "end_turn", _meta: resultMeta };
             }
             case "error_during_execution":
@@ -566,6 +654,14 @@ export class ClaudeAcpAgent implements Agent {
           break;
         }
         case "stream_event": {
+          // Accumulate assistant text for auto-rename (only first turn, capped at 500 chars)
+          if (isFirstTurn && assistantTextForRename.length < 500) {
+            const evt = (message as any).event;
+            if (evt?.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+              assistantTextForRename += evt.delta.text;
+            }
+          }
+
           const convSpan = perf.start("convert.stream_event");
           const notifications = streamEventToAcpNotifications(
             message,
@@ -689,9 +785,7 @@ export class ClaudeAcpAgent implements Agent {
 
           const content =
             message.type === "assistant"
-              ? message.message.content.filter(
-                  (item) => !FILTERED_ASSISTANT_TYPES.has(item.type),
-                )
+              ? message.message.content.filter((item) => !FILTERED_ASSISTANT_TYPES.has(item.type))
               : Array.isArray(message.message.content)
                 ? message.message.content.filter(
                     // Keep "tool_result" — it generates tool_call_update with
@@ -725,7 +819,8 @@ export class ClaudeAcpAgent implements Agent {
               toolName: toolUse.name,
               elapsed_time_seconds: message.elapsed_time_seconds,
             };
-            if (message.parent_tool_use_id) progressMeta.parentToolUseId = message.parent_tool_use_id;
+            if (message.parent_tool_use_id)
+              progressMeta.parentToolUseId = message.parent_tool_use_id;
             enqueue("sessionUpdate.tool_progress", {
               sessionId: params.sessionId,
               update: {
@@ -772,7 +867,8 @@ export class ClaudeAcpAgent implements Agent {
           break;
         }
         case "auth_status":
-          enqueue("sessionUpdate.auth_status",
+          enqueue(
+            "sessionUpdate.auth_status",
             authStatusNotification(params.sessionId, message as unknown as Record<string, unknown>),
           );
           break;
@@ -906,137 +1002,289 @@ export class ClaudeAcpAgent implements Agent {
     return createCanUseTool(sessionId, this.sessions, this.client);
   }
 
-  async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async extMethod(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
     const extT0 = performance.now();
     try {
-    switch (method) {
-      case "sessions/list": {
-        const result = await this.unstable_listSessions({ cwd: params.cwd as string | undefined });
-        return result as unknown as Record<string, unknown>;
-      }
-
-      case "sessions/getHistory": {
-        const sessionId = params.sessionId as string;
-        if (!sessionId) throw new Error("sessionId is required");
-        const t0 = performance.now();
-        const projectDir = getProjectDir(params.cwd as string | undefined);
-        const entries = await readSessionHistoryFull(projectDir, sessionId);
-        const t1 = performance.now();
-        console.error(`[extMethod] sessions/getHistory ${sessionId.slice(0, 8)} read=${(t1 - t0).toFixed(0)}ms entries=${entries.length}`);
-        return { entries };
-      }
-
-      case "sessions/getSubagentHistory": {
-        const sessionId = params.sessionId as string;
-        const agentId = params.agentId as string;
-        if (!sessionId || !agentId) throw new Error("sessionId and agentId are required");
-        const t0 = performance.now();
-        const projectDir = getProjectDir(params.cwd as string | undefined);
-        const entries = await readSubagentHistoryFull(projectDir, sessionId, agentId);
-        const t1 = performance.now();
-        console.error(`[extMethod] sessions/getSubagentHistory ${sessionId.slice(0, 8)}:${agentId.slice(0, 8)} read=${(t1 - t0).toFixed(0)}ms entries=${entries.length}`);
-        return { entries };
-      }
-
-      case "sessions/rename": {
-        const t0 = performance.now();
-        const sessionId = params.sessionId as string;
-        const title = params.title as string;
-        if (!sessionId || !title) throw new Error("sessionId and title are required");
-        const projectDir = getProjectDir(params.cwd as string | undefined);
-        const diskSuccess = await renameSessionOnDisk(projectDir, sessionId, title);
-        if (!diskSuccess) {
-          // Entry not in index yet — upsert it so rename persists
-          await upsertSessionInIndex(projectDir, { sessionId, firstPrompt: title, modified: new Date().toISOString() });
+      switch (method) {
+        case "sessions/list": {
+          const result = await this.unstable_listSessions({
+            cwd: params.cwd as string | undefined,
+          });
+          return result as unknown as Record<string, unknown>;
         }
-        // Also update in-memory session title (live sessions may not be on disk yet)
-        const liveSession = this.sessions[sessionId];
-        if (liveSession) {
-          liveSession.title = title;
-        }
-        console.error(`[extMethod] sessions/rename ${sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms`);
-        return { success: true };
-      }
 
-      case "sessions/delete": {
-        const t0 = performance.now();
-        const sessionId = params.sessionId as string;
-        if (!sessionId) throw new Error("sessionId is required");
-        const projectDir = getProjectDir(params.cwd as string | undefined);
-
-        // Collect child session IDs (teammates) that should be deleted too
-        const deletedIds: string[] = [];
-
-        // Check if this session is a team leader with teammate sessions
-        const teamInfo = await readSessionTeamInfo(projectDir, sessionId);
-        if (teamInfo && !teamInfo.agentName) {
-          // This is a team leader — find all teammates with the same teamName
-          const allEntries = await readSessionsIndex(projectDir);
-          // Read team info for all entries in parallel — tolerate individual failures
-          const entryTeamsSettled = await Promise.allSettled(
-            allEntries
-              .filter((entry) => entry.sessionId !== sessionId)
-              .map(async (entry) => ({
-                entry,
-                team: await readSessionTeamInfo(projectDir, entry.sessionId),
-              })),
+        case "sessions/getHistory": {
+          const sessionId = params.sessionId as string;
+          if (!sessionId) throw new Error("sessionId is required");
+          const t0 = performance.now();
+          const projectDir = getProjectDir(params.cwd as string | undefined);
+          const entries = await readSessionHistoryFull(projectDir, sessionId);
+          const t1 = performance.now();
+          console.error(
+            `[extMethod] sessions/getHistory ${sessionId.slice(0, 8)} read=${(t1 - t0).toFixed(0)}ms entries=${entries.length}`,
           );
-          const entryTeams = entryTeamsSettled
-            .filter((r): r is PromiseFulfilledResult<{ entry: SessionIndexEntry; team: Awaited<ReturnType<typeof readSessionTeamInfo>> }> => r.status === "fulfilled")
-            .map((r) => r.value);
-          for (const { entry, team } of entryTeams) {
-            if (team?.teamName === teamInfo.teamName && team.agentName) {
-              if (await deleteSessionFromDisk(projectDir, entry.sessionId)) {
-                deletedIds.push(entry.sessionId);
+          return { entries };
+        }
+
+        case "sessions/getSubagentHistory": {
+          const sessionId = params.sessionId as string;
+          const agentId = params.agentId as string;
+          if (!sessionId || !agentId) throw new Error("sessionId and agentId are required");
+          const t0 = performance.now();
+          const projectDir = getProjectDir(params.cwd as string | undefined);
+          const entries = await readSubagentHistoryFull(projectDir, sessionId, agentId);
+          const t1 = performance.now();
+          console.error(
+            `[extMethod] sessions/getSubagentHistory ${sessionId.slice(0, 8)}:${agentId.slice(0, 8)} read=${(t1 - t0).toFixed(0)}ms entries=${entries.length}`,
+          );
+          return { entries };
+        }
+
+        case "sessions/rename": {
+          const t0 = performance.now();
+          const sessionId = params.sessionId as string;
+          const title = params.title as string;
+          if (!sessionId || !title) throw new Error("sessionId and title are required");
+          const projectDir = getProjectDir(params.cwd as string | undefined);
+          const diskSuccess = await renameSessionOnDisk(projectDir, sessionId, title);
+          if (!diskSuccess) {
+            // Entry not in index yet — upsert it so rename persists
+            await upsertSessionInIndex(projectDir, {
+              sessionId,
+              firstPrompt: title,
+              modified: new Date().toISOString(),
+            });
+          }
+          // Also update in-memory session title (live sessions may not be on disk yet)
+          const liveSession = this.sessions[sessionId];
+          if (liveSession) {
+            liveSession.title = title;
+          }
+          console.error(
+            `[extMethod] sessions/rename ${sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms`,
+          );
+          return { success: true };
+        }
+
+        case "sessions/delete": {
+          const t0 = performance.now();
+          const sessionId = params.sessionId as string;
+          if (!sessionId) throw new Error("sessionId is required");
+          const projectDir = getProjectDir(params.cwd as string | undefined);
+
+          // Collect child session IDs (teammates) that should be deleted too
+          const deletedIds: string[] = [];
+
+          // Check if this session is a team leader with teammate sessions
+          const teamInfo = await readSessionTeamInfo(projectDir, sessionId);
+          if (teamInfo && !teamInfo.agentName) {
+            // This is a team leader — find all teammates with the same teamName
+            const allEntries = await readSessionsIndex(projectDir);
+            // Read team info for all entries in parallel — tolerate individual failures
+            const entryTeamsSettled = await Promise.allSettled(
+              allEntries
+                .filter((entry) => entry.sessionId !== sessionId)
+                .map(async (entry) => ({
+                  entry,
+                  team: await readSessionTeamInfo(projectDir, entry.sessionId),
+                })),
+            );
+            const entryTeams = entryTeamsSettled
+              .filter(
+                (
+                  r,
+                ): r is PromiseFulfilledResult<{
+                  entry: SessionIndexEntry;
+                  team: Awaited<ReturnType<typeof readSessionTeamInfo>>;
+                }> => r.status === "fulfilled",
+              )
+              .map((r) => r.value);
+            for (const { entry, team } of entryTeams) {
+              if (team?.teamName === teamInfo.teamName && team.agentName) {
+                if (await deleteSessionFromDisk(projectDir, entry.sessionId)) {
+                  deletedIds.push(entry.sessionId);
+                }
               }
             }
           }
+
+          const diskSuccess = await deleteSessionFromDisk(projectDir, sessionId);
+
+          // Also clean up live in-memory session (may exist even if not yet on disk)
+          const liveSession = this.sessions[sessionId];
+          if (liveSession) {
+            try {
+              this.close(sessionId);
+            } catch {}
+          }
+
+          const success = diskSuccess || !!liveSession;
+          if (success) deletedIds.push(sessionId);
+          console.error(
+            `[extMethod] sessions/delete ${sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms deletedIds=${deletedIds.length} disk=${diskSuccess} live=${!!liveSession}`,
+          );
+          return { success, deletedIds };
         }
 
-        const diskSuccess = await deleteSessionFromDisk(projectDir, sessionId);
-
-        // Also clean up live in-memory session (may exist even if not yet on disk)
-        const liveSession = this.sessions[sessionId];
-        if (liveSession) {
-          try { this.close(sessionId); } catch {}
+        case "sessions/getAvailableCommands": {
+          if (!this.cachedCommands) {
+            // Find any live session's query to ask for commands
+            const session = Object.values(this.sessions).find((s) => s.query);
+            if (!session?.query) throw new Error("No active session");
+            const [cmds, models] = await Promise.all([
+              getAvailableSlashCommands(session.query),
+              getAvailableModels(session.query),
+            ]);
+            this.cachedCommands = cmds;
+            this.cachedModels = models;
+          }
+          return { commands: this.cachedCommands, models: this.cachedModels };
         }
 
-        const success = diskSuccess || !!liveSession;
-        if (success) deletedIds.push(sessionId);
-        console.error(`[extMethod] sessions/delete ${sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms deletedIds=${deletedIds.length} disk=${diskSuccess} live=${!!liveSession}`);
-        return { success, deletedIds };
-      }
-
-      case "sessions/getAvailableCommands": {
-        if (!this.cachedCommands) {
-          // Find any live session's query to ask for commands
-          const session = Object.values(this.sessions).find(s => s.query);
-          if (!session?.query) throw new Error("No active session");
-          const [cmds, models] = await Promise.all([
-            getAvailableSlashCommands(session.query),
-            getAvailableModels(session.query),
-          ]);
-          this.cachedCommands = cmds;
-          this.cachedModels = models;
+        case "sessions/getSubagents": {
+          const sessionId = params.sessionId as string;
+          if (!sessionId) throw new Error("sessionId is required");
+          const projectDir = getProjectDir(params.cwd as string | undefined);
+          const subagents = await readSubagents(projectDir, sessionId);
+          const tree = buildSubagentTree(subagents);
+          return { sessionId, children: tree };
         }
-        return { commands: this.cachedCommands, models: this.cachedModels };
-      }
 
-      case "sessions/getSubagents": {
-        const sessionId = params.sessionId as string;
-        if (!sessionId) throw new Error("sessionId is required");
-        const projectDir = getProjectDir(params.cwd as string | undefined);
-        const subagents = await readSubagents(projectDir, sessionId);
-        const tree = buildSubagentTree(subagents);
-        return { sessionId, children: tree };
-      }
+        case "sessions/autoRename": {
+          const sessionId = params.sessionId as string;
+          if (!sessionId) throw new Error("sessionId is required");
+          const session = this.sessions[sessionId];
+          if (!session) throw new Error("Session not found");
 
-      default:
-        throw RequestError.methodNotFound(method);
-    }
+          const userMessage = (params.userMessage as string) || session.title || "";
+          const assistantText = (params.assistantText as string) || "";
+
+          if (!userMessage && !assistantText) {
+            throw new Error("At least userMessage or assistantText is required");
+          }
+
+          const title = await generateSessionTitle({
+            cwd: session.cwd,
+            userMessage,
+            assistantText,
+            logger: this.logger,
+          });
+
+          if (!title) {
+            return { success: false, reason: "Failed to generate title" };
+          }
+
+          // Apply the generated title
+          session.title = title;
+          session.autoRenamed = true;
+
+          const projectDir = getProjectDir(session.cwd);
+          const diskSuccess = await renameSessionOnDisk(projectDir, sessionId, title);
+          if (!diskSuccess) {
+            await upsertSessionInIndex(projectDir, {
+              sessionId,
+              firstPrompt: title,
+              modified: new Date().toISOString(),
+            });
+          }
+
+          this.client
+            .sessionUpdate({
+              sessionId,
+              update: {
+                sessionUpdate: "session_info_update" as any,
+                title,
+              } as any,
+            })
+            .catch((err) => {
+              this.logger.error("[auto-rename] session_info_update failed:", err);
+            });
+
+          return { success: true, title };
+        }
+
+        default:
+          throw RequestError.methodNotFound(method);
+      }
     } finally {
-      console.error(`[perf] extMethod(${method}) total=${(performance.now() - extT0).toFixed(0)}ms`);
+      console.error(
+        `[perf] extMethod(${method}) total=${(performance.now() - extT0).toFixed(0)}ms`,
+      );
     }
+  }
+
+  /**
+   * Generates and applies an AI-generated session title.
+   * Fire-and-forget — errors are logged but never thrown to the caller.
+   */
+  private async autoRenameSession(
+    sessionId: string,
+    session: ManagedSession,
+    titleAtTrigger: string | null,
+    userMessage: string,
+    assistantText: string,
+  ): Promise<void> {
+    const t0 = performance.now();
+
+    const title = await generateSessionTitle({
+      cwd: session.cwd,
+      userMessage,
+      assistantText,
+      logger: this.logger,
+    });
+
+    if (!title) {
+      console.error(
+        `[auto-rename] ${sessionId.slice(0, 8)} no title generated ${(performance.now() - t0).toFixed(0)}ms`,
+      );
+      return;
+    }
+
+    // Guard: session might have been closed while we were generating
+    if (!this.sessions[sessionId]) {
+      console.error(`[auto-rename] ${sessionId.slice(0, 8)} session closed, skipping`);
+      return;
+    }
+
+    // Guard: user may have manually renamed the session
+    if (session.title !== titleAtTrigger) {
+      console.error(`[auto-rename] ${sessionId.slice(0, 8)} title changed externally, skipping`);
+      return;
+    }
+
+    // Apply the generated title
+    session.title = title;
+
+    // Persist to disk
+    const projectDir = getProjectDir(session.cwd);
+    const diskSuccess = await renameSessionOnDisk(projectDir, sessionId, title);
+    if (!diskSuccess) {
+      await upsertSessionInIndex(projectDir, {
+        sessionId,
+        firstPrompt: title,
+        modified: new Date().toISOString(),
+      });
+    }
+
+    // Notify the client
+    this.client
+      .sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: "session_info_update" as any,
+          title,
+        } as any,
+      })
+      .catch((err) => {
+        this.logger.error("[auto-rename] session_info_update failed:", err);
+      });
+
+    console.error(
+      `[auto-rename] ${sessionId.slice(0, 8)} "${title}" ${(performance.now() - t0).toFixed(0)}ms`,
+    );
   }
 
   close(sessionId: string): void {
@@ -1285,6 +1533,11 @@ export class ClaudeAcpAgent implements Agent {
       updatedAt: now,
     };
 
+    // For resumed/forked sessions, skip auto-rename (they already have meaningful context)
+    if (creationOpts.resume) {
+      this.sessions[sessionId].autoRenamed = true;
+    }
+
     // Persist session to disk index so it survives process restarts.
     // The CLI creates JSONL files but doesn't update sessions-index.json
     // for long-running SDK sessions that never complete.
@@ -1453,15 +1706,32 @@ export class ClaudeAcpAgent implements Agent {
       updatedAt: new Date().toISOString(),
     };
 
+    // For resumed sessions, skip auto-rename
+    if (creationOpts.resume) {
+      this.sessions[sessionId].autoRenamed = true;
+    }
+
     const availableModes = [
-      { id: "default", name: "Default", description: "Standard behavior, prompts for dangerous operations" },
+      {
+        id: "default",
+        name: "Default",
+        description: "Standard behavior, prompts for dangerous operations",
+      },
       { id: "acceptEdits", name: "Accept Edits", description: "Auto-accept file edit operations" },
       { id: "plan", name: "Plan Mode", description: "Planning mode, no actual tool execution" },
-      { id: "dontAsk", name: "Don't Ask", description: "Don't prompt for permissions, deny if not pre-approved" },
+      {
+        id: "dontAsk",
+        name: "Don't Ask",
+        description: "Don't prompt for permissions, deny if not pre-approved",
+      },
       { id: "delegate", name: "Delegate", description: "Delegation mode for sub-agents" },
     ];
     if (!IS_ROOT) {
-      availableModes.push({ id: "bypassPermissions", name: "Bypass Permissions", description: "Bypass all permission checks" });
+      availableModes.push({
+        id: "bypassPermissions",
+        name: "Bypass Permissions",
+        description: "Bypass all permission checks",
+      });
     }
 
     return {
@@ -1620,7 +1890,9 @@ export class ClaudeAcpAgent implements Agent {
             gitBranch: e.gitBranch ?? null,
             projectPath: e.projectPath ?? null,
             ...(children.length > 0 ? { children } : {}),
-            ...(teamInfoMap.get(e.sessionId)?.teamName ? { teamName: teamInfoMap.get(e.sessionId)!.teamName } : {}),
+            ...(teamInfoMap.get(e.sessionId)?.teamName
+              ? { teamName: teamInfoMap.get(e.sessionId)!.teamName }
+              : {}),
           },
         };
       })

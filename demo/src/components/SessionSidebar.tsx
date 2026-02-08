@@ -1,6 +1,63 @@
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { useWs } from "../context/WebSocketContext";
-import type { DiskSession, SubagentChild, SubagentType } from "../types";
+import type { DiskSession, SubagentChild, SubagentType, TurnStatus, TurnActivity } from "../types";
+
+const SPARKLE_CHARS = ["·", "✻", "✽", "✶", "✳", "✢"];
+
+/** Animated sparkle for in-progress sessions (matches TurnStatusBar active style). */
+function SidebarSparkleActive() {
+  const [idx, setIdx] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setIdx((i) => (i + 1) % SPARKLE_CHARS.length), 250);
+    return () => clearInterval(id);
+  }, []);
+  return <span className="sidebar-status-star active">{SPARKLE_CHARS[idx]}</span>;
+}
+
+/** Static star for idle sessions (matches TurnStatusBar completed style). */
+function SidebarSparkleIdle() {
+  return <span className="sidebar-status-star idle">*</span>;
+}
+
+const ACTIVITY_LABELS: Record<TurnActivity, string> = {
+  brewing: "Brewing",
+  thinking: "Thinking",
+  responding: "Responding",
+  reading: "Reading",
+  editing: "Editing",
+  running: "Running",
+  searching: "Searching",
+  delegating: "Delegating",
+  planning: "Planning",
+  compacting: "Compacting",
+};
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
+}
+
+/** Compact in-progress label for sidebar: "Reading... (5s)" */
+function SidebarInProgressLabel({ turnInfo }: { turnInfo: TurnStatus }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const elapsed = now - turnInfo.startedAt;
+  const activity = turnInfo.activity ?? "brewing";
+  const label = ACTIVITY_LABELS[activity];
+
+  return (
+    <span className="truncate">
+      {label}... ({formatDuration(elapsed)})
+    </span>
+  );
+}
 
 /** Strip XML tags from session titles and extract a readable summary. */
 function cleanTitle(raw: string | null): string {
@@ -63,6 +120,8 @@ function SessionItem({
   session,
   isActive,
   isLive,
+  turnStatus,
+  turnInfo,
   hasChildren,
   onClick,
   onMore,
@@ -70,10 +129,15 @@ function SessionItem({
   session: DiskSession;
   isActive: boolean;
   isLive: boolean;
+  turnStatus?: "in_progress" | "completed" | "error";
+  /** Full turn status (only available for the current session). */
+  turnInfo?: TurnStatus | null;
   hasChildren: boolean;
   onClick: () => void;
   onMore: (e: React.MouseEvent) => void;
 }) {
+  const isInProgress = isLive && turnStatus === "in_progress";
+
   return (
     <button
       onClick={onClick}
@@ -105,16 +169,23 @@ function SessionItem({
         </span>
       </div>
       <div className="text-[10px] text-dim mt-0.5 flex items-center justify-between min-w-0">
-        <span className="truncate opacity-60 flex items-center gap-1 min-w-0">
-          {isLive && (
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+        <span className={`truncate flex items-center gap-1 min-w-0 ${isInProgress ? "sidebar-in-progress" : "opacity-60"}`}>
+          {isInProgress && <SidebarSparkleActive />}
+          {isLive && !isInProgress && <SidebarSparkleIdle />}
+          {isInProgress ? (
+            turnInfo ? (
+              <SidebarInProgressLabel turnInfo={turnInfo} />
+            ) : (
+              <span className="truncate">Working...</span>
+            )
+          ) : (
+            <span className="truncate">
+              {shortPath(session.projectPath) ?? session.sessionId.slice(0, 8)}
+              {session.gitBranch && (
+                <span className="opacity-60"> ({session.gitBranch})</span>
+              )}
+            </span>
           )}
-          <span className="truncate">
-            {shortPath(session.projectPath) ?? session.sessionId.slice(0, 8)}
-            {session.gitBranch && (
-              <span className="opacity-60"> ({session.gitBranch})</span>
-            )}
-          </span>
         </span>
         <span className="shrink-0 ml-1">
           {relativeTime(session.updatedAt)}
@@ -524,6 +595,8 @@ export function SessionSidebar() {
                     session={session}
                     isActive={session.sessionId === activeSessionId}
                     isLive={liveSessionIds.has(session.sessionId)}
+                    turnStatus={session.turnStatus}
+                    turnInfo={session.sessionId === state.currentSessionId ? state.turnStatus : undefined}
                     hasChildren={hasChildren}
                     onClick={() => {
                       if (session.sessionId !== activeSessionId)

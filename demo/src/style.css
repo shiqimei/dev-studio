@@ -1147,6 +1147,29 @@
   margin-left: 20px;
 }
 
+/* ── Sidebar session status sparkle ───────── */
+
+.sidebar-status-star {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.sidebar-in-progress {
+  color: var(--color-yellow);
+}
+
+.sidebar-status-star.active {
+  color: var(--color-yellow);
+}
+
+.sidebar-status-star.idle {
+  color: var(--color-dim);
+}
+
 /* ── Sidebar loading spinner ─────────────── */
 
 .sidebar-spinner {

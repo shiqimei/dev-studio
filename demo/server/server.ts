@@ -400,6 +400,8 @@ export function startServer(port: number) {
       // Start an empty buffer — user message is already in session history (JSONL)
       turnContentBuffers.set(sessionId, []);
       broadcast({ type: "turn_start", startedAt: turnStartedAt, sessionId });
+      // Refresh sidebar so it shows in_progress status
+      broadcastSessions().catch(() => {});
 
       const acpPromptT0 = performance.now();
       log.info({ session: sid(sessionId) }, "api: acp.prompt started");
@@ -506,6 +508,7 @@ export function startServer(port: number) {
           ...(s._meta?.children ? { children: s._meta.children } : {}),
           ...(s._meta?.teamName ? { teamName: s._meta.teamName } : {}),
           isLive: liveSessionIds.has(s.sessionId),
+          ...(turnStates[s.sessionId] ? { turnStatus: turnStates[s.sessionId].status } : {}),
         }));
         log.info({ durationMs: Math.round(t1 - t0), sessions: sessions.length, clients: clients.size }, "api: sessions/list completed");
         broadcast({ type: "sessions", sessions });

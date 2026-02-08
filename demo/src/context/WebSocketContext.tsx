@@ -157,7 +157,7 @@ function finalizeStreaming(messages: ChatEntry[], turnId: string | null): ChatEn
  * new content after a tool result, so any "pending" tool_use blocks are done.
  */
 function completePendingTools(block: ContentBlock): ContentBlock {
-  if (block.type === "tool_use" && block.status === "pending") {
+  if (block.type === "tool_use" && block.status === "pending" && !block.isBackground) {
     return { ...block, status: "completed" };
   }
   return block;
@@ -334,6 +334,8 @@ function reducer(state: AppState, action: Action): AppState {
         title: action.title || action.toolCallId,
         kind: action.kind || "tool",
         status: "pending",
+        startTime: Date.now(),
+        isBackground: isBg || undefined,
       };
 
       return {
@@ -390,6 +392,7 @@ function reducer(state: AppState, action: Action): AppState {
       }
 
       // Update the tool_use block in whichever turn contains it
+      const isBgComplete = action.meta?.claudeCode?.backgroundComplete === true;
       const newStatus =
         action.status === "completed"
           ? ("completed" as const)
@@ -411,14 +414,27 @@ function reducer(state: AppState, action: Action): AppState {
             ...m,
             content: m.content.map((b) => {
               if (b.type !== "tool_use" || b.id !== action.toolCallId) return b;
+
+              // For background tasks, don't mark completed until backgroundComplete arrives
+              let effectiveStatus: typeof newStatus;
+              if (b.isBackground && newStatus === "completed" && !isBgComplete) {
+                effectiveStatus = undefined; // keep current status (pending = still running)
+              } else {
+                effectiveStatus = newStatus;
+              }
+
               const updated = {
                 ...b,
-                status: newStatus ?? b.status,
+                status: effectiveStatus ?? b.status,
                 title: action.title || b.title,
                 result: action.content || b.result,
                 // Merge rawInput and kind when the complete assistant message arrives
                 ...(action.rawInput != null && { input: action.rawInput }),
                 ...(action.kind && { kind: action.kind }),
+                // Set endTime when actually completed/failed
+                ...((effectiveStatus === "completed" || effectiveStatus === "failed") && {
+                  endTime: Date.now(),
+                }),
               };
               // Link Task tool calls to their sub-agent session
               if (b.name === "Task" && action.content) {

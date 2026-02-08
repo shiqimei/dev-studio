@@ -52,6 +52,9 @@ export function AssistantTurn({ entry, isLatest }: Props) {
                     ? () => resumeSubagent(parentSessionId!, block.agentId!)
                     : undefined
                 }
+                startTime={block.startTime}
+                endTime={block.endTime}
+                isBackground={block.isBackground}
               />
             );
           default:

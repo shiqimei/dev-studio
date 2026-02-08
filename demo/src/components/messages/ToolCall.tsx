@@ -1,10 +1,30 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import { codeToTokens, type ThemedToken } from "shiki";
 import { Streamdown } from "streamdown";
 import { createCodePlugin, type CodeHighlighterPlugin } from "@streamdown/code";
 import { detectLanguage } from "../../lang-detect";
 import { toolOverview } from "../../jsonl-convert";
 import type { BundledLanguage } from "shiki";
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
+}
+
+/** Live-ticking duration display for in-progress background tasks. */
+const LiveDuration = memo(function LiveDuration({ startTime }: { startTime: number }) {
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return <>{formatDuration(now - startTime)}</>;
+});
 
 /** Streamdown code plugin for rendering markdown in task results. */
 function withAutoDetect(plugin: CodeHighlighterPlugin): CodeHighlighterPlugin {
@@ -33,9 +53,12 @@ interface Props {
   input?: unknown;
   agentId?: string;
   onNavigateToAgent?: () => void;
+  startTime?: number;
+  endTime?: number;
+  isBackground?: boolean;
 }
 
-export function ToolCall({ kind, title, content, status, input, agentId, onNavigateToAgent }: Props) {
+export function ToolCall({ kind, title, content, status, input, agentId, onNavigateToAgent, startTime, endTime, isBackground }: Props) {
   const overview = (!title && content) ? toolOverview(kind, content) : "";
   const rawDisplayTitle = title || overview || (content && content.length <= 100 ? content : "");
   const displayTitle = rawDisplayTitle ? stripKindPrefix(stripToolError(rawDisplayTitle).text, kind) : "";
@@ -48,8 +71,13 @@ export function ToolCall({ kind, title, content, status, input, agentId, onNavig
   const taskResult = content ? parseTaskResult(content) : null;
   const expandable = hasDiff || hasCode || hasSearchResults || !!taskResult || (content && (title || content.length > 100));
   const [open, setOpen] = useState(false);
-  const statusLabel =
-    status === "completed" ? "completed" : status === "failed" ? "failed" : "running";
+
+  // Background tasks: show live timer while running, final duration when done
+  const isRunning = isBackground && status === "pending";
+  const showDuration = isBackground && startTime != null;
+  const statusLabel = isRunning
+    ? undefined // replaced by live duration
+    : status === "completed" ? "completed" : status === "failed" ? "failed" : "running";
 
   return (
     <div className="tool-call">
@@ -68,7 +96,16 @@ export function ToolCall({ kind, title, content, status, input, agentId, onNavig
             {agentId.slice(0, 7)} →
           </button>
         )}
-        <span className={`tool-status ${status}`}>{statusLabel}</span>
+        {isRunning && startTime != null ? (
+          <span className="tool-status pending"><LiveDuration startTime={startTime} /></span>
+        ) : (
+          <span className={`tool-status ${status}`}>
+            {statusLabel}
+            {showDuration && endTime != null && startTime != null && (
+              <span className="tool-duration"> {formatDuration(endTime - startTime)}</span>
+            )}
+          </span>
+        )}
       </div>
       {open && hasDiff && (
         <DiffView input={input as Record<string, unknown>} filePath={title} />

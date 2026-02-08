@@ -171,6 +171,7 @@ export interface SessionSnapshot {
   turnToolCallIds: string[];
   turnStatus: TurnStatus | null;
   queuedMessages: string[];
+  latestPlan: PlanEntryItem[] | null;
 }
 
 // ── Turn status ──────────────────────────────
@@ -257,10 +258,19 @@ export interface AppState {
   currentSessionId: string | null;
   switchingToSessionId: string | null;
   sessionHistory: Record<string, SessionSnapshot>;
+  // Session metadata
+  /** Available models from session_info (e.g. ["claude-opus-4-6-20250219"]). */
+  models: string[];
+  /** Currently selected model (e.g. "claude-opus-4-6-20250219"). */
+  currentModel: string | null;
   // Slash commands
   commands: SlashCommand[];
   /** Tracks recently deleted session IDs to prevent stale SESSIONS broadcasts from re-adding them. */
   _recentlyDeletedIds: string[];
+  /** Latest plan/todo entries from the most recent TodoWrite call. */
+  latestPlan: PlanEntryItem[] | null;
+  /** Sessions whose turn completed while the user was viewing a different session. */
+  unreadCompletedSessions: Record<string, true>;
 }
 
 // ── Actions ─────────────────────────────────
@@ -277,7 +287,7 @@ export type Action =
   | { type: "TOOL_CALL_UPDATE"; toolCallId: string; status: string; title?: string; kind?: string; content?: string; rawInput?: unknown; meta: any }
   | { type: "PLAN"; entries: PlanEntryItem[] }
   | { type: "PERMISSION"; title: string }
-  | { type: "SESSION_INFO"; sessionId: string; models: string[]; modes: { id: string }[] }
+  | { type: "SESSION_INFO"; sessionId: string; models: string[]; currentModel?: string | null; modes: { id: string }[] }
   | { type: "SYSTEM"; text: string }
   | { type: "TURN_START"; startedAt: number }
   | { type: "TURN_ACTIVITY"; activity: TurnActivity; detail?: string; approxTokens?: number; thinkingDurationMs?: number }
@@ -296,6 +306,6 @@ export type Action =
   | { type: "MESSAGE_QUEUED"; queueId: string }
   | { type: "QUEUE_DRAIN_START"; queueId: string }
   | { type: "QUEUE_CANCELLED"; queueId: string }
-  | { type: "COMMANDS"; commands: SlashCommand[] }
+  | { type: "COMMANDS"; commands: SlashCommand[]; models?: string[]; currentModel?: string | null }
   | { type: "SESSION_SUBAGENTS"; sessionId: string; children: SubagentChild[] }
   | { type: "SESSION_DELETED"; sessionIds: string[] };

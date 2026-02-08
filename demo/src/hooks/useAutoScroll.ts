@@ -20,5 +20,11 @@ export function useAutoScroll<T extends HTMLElement>(...deps: unknown[]) {
     }
   }, deps);
 
-  return { ref, onScroll };
+  const scrollToBottom = useCallback(() => {
+    autoScroll.current = true;
+    const el = ref.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  return { ref, onScroll, scrollToBottom };
 }

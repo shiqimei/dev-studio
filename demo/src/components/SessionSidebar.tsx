@@ -40,6 +40,24 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
+/** Compact completed label matching CompletedBar format: "* Brewed for Xs · Xk tokens" */
+function SidebarCompletedLabel({ turnInfo }: { turnInfo: TurnStatus }) {
+  const duration = turnInfo.durationMs ?? 0;
+  const tokens = turnInfo.outputTokens ?? turnInfo.approxTokens;
+  const thinkingMs = turnInfo.thinkingDurationMs ?? 0;
+
+  const parts: string[] = [formatDuration(duration)];
+  if (tokens && tokens > 0) parts.push(`${formatTokens(tokens)} tokens`);
+  if (thinkingMs >= 1000) parts.push(`thought for ${formatDuration(thinkingMs)}`);
+
+  return <>* Brewed for {parts.join(" · ")}</>;
+}
+
 /** Compact in-progress label for sidebar: "Reading... (5s)" */
 function SidebarInProgressLabel({ turnInfo }: { turnInfo: TurnStatus }) {
   const [now, setNow] = useState(Date.now());
@@ -123,6 +141,7 @@ const SessionItem = memo(function SessionItem({
   turnStatus,
   turnInfo,
   hasChildren,
+  isUnread,
   onClick,
   onMore,
 }: {
@@ -133,10 +152,12 @@ const SessionItem = memo(function SessionItem({
   /** Full turn status (only available for the current session). */
   turnInfo?: TurnStatus | null;
   hasChildren: boolean;
+  isUnread: boolean;
   onClick: () => void;
   onMore: (e: React.MouseEvent) => void;
 }) {
   const isInProgress = isLive && turnStatus === "in_progress";
+  const isCompleted = turnStatus === "completed";
 
   return (
     <button
@@ -153,11 +174,7 @@ const SessionItem = memo(function SessionItem({
         {session.teamName && (
           <span className="team-badge">Team</span>
         )}
-        <div
-          className={`text-xs truncate flex-1 min-w-0 ${
-            isActive ? "text-text font-medium" : "text-dim"
-          }`}
-        >
+        <div className="text-xs truncate flex-1 min-w-0 text-dim">
           {cleanTitle(session.title)}
         </div>
         <span
@@ -169,15 +186,19 @@ const SessionItem = memo(function SessionItem({
         </span>
       </div>
       <div className="text-[10px] text-dim mt-0.5 flex items-center justify-between min-w-0">
-        <span className={`truncate flex items-center gap-1 min-w-0 ${isInProgress ? "sidebar-in-progress" : "opacity-60"}`}>
+        <span className={`truncate flex items-center gap-1 min-w-0 ${isInProgress ? "sidebar-in-progress" : isCompleted && isUnread ? "" : "opacity-60"}`}>
           {isInProgress && <SidebarSparkleActive />}
-          {isLive && !isInProgress && <SidebarSparkleIdle />}
-          {isInProgress && !isActive ? (
+          {isLive && !isInProgress && !isCompleted && <SidebarSparkleIdle />}
+          {isInProgress ? (
             turnInfo ? (
               <SidebarInProgressLabel turnInfo={turnInfo} />
             ) : (
               <span className="truncate">Working...</span>
             )
+          ) : isCompleted ? (
+            <span className="truncate" style={isUnread ? { color: "#6ADAFF" } : undefined}>
+              {turnInfo ? <SidebarCompletedLabel turnInfo={turnInfo} /> : "* Brewed"}
+            </span>
           ) : (
             <span className="truncate">
               {shortPath(session.projectPath) ?? session.sessionId.slice(0, 8)}
@@ -200,7 +221,8 @@ const SessionItem = memo(function SessionItem({
     && prev.isLive === next.isLive
     && prev.turnStatus === next.turnStatus
     && prev.turnInfo === next.turnInfo
-    && prev.hasChildren === next.hasChildren;
+    && prev.hasChildren === next.hasChildren
+    && prev.isUnread === next.isUnread;
 });
 
 const AGENT_TYPE_STYLES: Record<SubagentType, { label: string; className: string }> = {
@@ -249,7 +271,7 @@ const SubagentItem = memo(function SubagentItem({
             : "hover:bg-[var(--color-border)] border-l-2 border-l-transparent"
         }`}
       >
-        <div className={`text-xs truncate flex items-center gap-1.5 ${isActive ? "text-text font-medium" : "text-dim"}`}>
+        <div className="text-xs truncate flex items-center gap-1.5 text-dim">
           <span className={badge.className}>{badge.label}</span>
           <span className="truncate">{child.taskPrompt || "Sub-agent"}</span>
         </div>
@@ -611,8 +633,9 @@ export function SessionSidebar() {
                     isActive={session.sessionId === activeSessionId}
                     isLive={liveSessionIds.has(session.sessionId)}
                     turnStatus={session.turnStatus}
-                    turnInfo={session.sessionId === state.currentSessionId ? state.turnStatus : state.liveTurnStatus[session.sessionId]}
+                    turnInfo={state.liveTurnStatus[session.sessionId] ?? (session.sessionId === state.currentSessionId ? state.turnStatus : null)}
                     hasChildren={hasChildren}
+                    isUnread={!!state.unreadCompletedSessions[session.sessionId]}
                     onClick={() => {
                       if (session.sessionId !== activeSessionId)
                         resumeSession(session.sessionId);

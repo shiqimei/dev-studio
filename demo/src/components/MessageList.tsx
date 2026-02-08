@@ -1,3 +1,4 @@
+import { useLayoutEffect } from "react";
 import { useWsState, useWsActions } from "../context/WebSocketContext";
 import { useAutoScroll } from "../hooks/useAutoScroll";
 import { UserMessage } from "./messages/UserMessage";
@@ -10,7 +11,14 @@ import type { MessageEntry } from "../types";
 export function MessageList() {
   const state = useWsState();
   const { cancelQueued, resumeSubagent } = useWsActions();
-  const { ref, onScroll } = useAutoScroll<HTMLDivElement>(state.messages, state.turnStatus);
+  const { ref, onScroll, scrollToBottom } = useAutoScroll<HTMLDivElement>(state.messages, state.turnStatus);
+
+  // Force scroll to bottom when the user sends a message, even if they had scrolled up
+  const lastMsg = state.messages[state.messages.length - 1];
+  const lastUserMsgId = lastMsg?.type === "message" && lastMsg.role === "user" ? lastMsg.id : undefined;
+  useLayoutEffect(() => {
+    if (lastUserMsgId) scrollToBottom();
+  }, [lastUserMsgId, scrollToBottom]);
 
   // Derive parent session ID once for all assistant turns
   const parentSessionId = state.currentSessionId?.split(":subagent:")[0] ?? null;

@@ -23,6 +23,7 @@ import type {
   FileAttachment,
   SlashCommand,
   FileBlock,
+  PlanEntryItem,
 } from "../types";
 import { classifyTool } from "../utils";
 import { jsonlToEntries, prettyToolName, extractAgentId } from "../jsonl-convert";
@@ -80,6 +81,7 @@ const emptySnapshot: SessionSnapshot = {
   turnToolCallIds: [],
   turnStatus: null,
   queuedMessages: [],
+  latestPlan: null,
 };
 
 const initialState: AppState = {
@@ -107,9 +109,14 @@ const initialState: AppState = {
   currentSessionId: null,
   switchingToSessionId: null,
   sessionHistory: {},
+  // Session metadata
+  models: [],
+  currentModel: null,
   // Slash commands
   commands: [],
   _recentlyDeletedIds: [],
+  latestPlan: null,
+  unreadCompletedSessions: {},
 };
 
 // ── Reducer helpers ──
@@ -165,6 +172,14 @@ function completePendingTools(block: ContentBlock): ContentBlock {
     return { ...block, status: "completed" };
   }
   return block;
+}
+
+/** Extract the latest plan entries from a message list (last PlanEntry, if any). */
+function extractLatestPlan(messages: ChatEntry[]): PlanEntryItem[] | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].type === "plan") return (messages[i] as any).entries;
+  }
+  return null;
 }
 
 /** Ensure an assistant turn exists, creating one if needed. Returns [messages, turnId]. */
@@ -462,6 +477,7 @@ function reducer(state: AppState, action: Action): AppState {
           { type: "plan", id: uid(), entries: action.entries },
         ],
         currentTurnId: null,
+        latestPlan: action.entries,
       };
 
     case "PERMISSION":
@@ -477,6 +493,8 @@ function reducer(state: AppState, action: Action): AppState {
     case "SESSION_INFO":
       return {
         ...state,
+        models: action.models,
+        currentModel: action.currentModel || action.models[0] || null,
         messages: [
           ...state.messages,
           {
@@ -485,8 +503,8 @@ function reducer(state: AppState, action: Action): AppState {
             text:
               "Session " +
               action.sessionId.slice(0, 8) +
-              "... | Models: " +
-              action.models.join(", ") +
+              " | Model: " +
+              (action.currentModel || action.models.join(", ") || "unknown") +
               " | Modes: " +
               action.modes.map((m) => m.id).join(", "),
           },
@@ -521,6 +539,7 @@ function reducer(state: AppState, action: Action): AppState {
       };
       return {
         ...state,
+        busy: true,
         turnStatus: ts,
         liveTurnStatus: state.currentSessionId
           ? { ...state.liveTurnStatus, [state.currentSessionId]: ts }
@@ -589,12 +608,8 @@ function reducer(state: AppState, action: Action): AppState {
         tasks: updatedTasks,
         taskPanelOpen,
         turnStatus: completedStatus,
-        liveTurnStatus: state.currentSessionId
-          ? (() => {
-              const next = { ...state.liveTurnStatus };
-              delete next[state.currentSessionId!];
-              return next;
-            })()
+        liveTurnStatus: state.currentSessionId && completedStatus
+          ? { ...state.liveTurnStatus, [state.currentSessionId]: completedStatus }
           : state.liveTurnStatus,
         messages: finalizeStreaming(state.messages, state.currentTurnId),
       };
@@ -671,6 +686,7 @@ function reducer(state: AppState, action: Action): AppState {
 
       // Seed liveTurnStatus from server-provided turn data on each session
       const lts = { ...state.liveTurnStatus };
+      const unread = { ...state.unreadCompletedSessions };
       for (const s of action.sessions) {
         if (s.turnStatus === "in_progress" && s.turnStartedAt) {
           // Don't overwrite real-time updates for the current session
@@ -682,12 +698,31 @@ function reducer(state: AppState, action: Action): AppState {
               activityDetail: s.turnActivityDetail,
             };
           }
+          // Back to in_progress — no longer unread-completed
+          delete unread[s.sessionId];
+        } else if (lts[s.sessionId]?.status === "in_progress") {
+          // Transition: was in_progress, now completed — compute approximate stats
+          const existing = lts[s.sessionId];
+          lts[s.sessionId] = {
+            status: "completed",
+            startedAt: existing.startedAt,
+            endedAt: Date.now(),
+            durationMs: Date.now() - existing.startedAt,
+          };
+          if (s.sessionId !== state.currentSessionId) {
+            unread[s.sessionId] = true;
+          }
+        } else if (lts[s.sessionId]?.status === "completed") {
+          // Already completed — keep stats. Clean up if server no longer reports turnStatus.
+          if (!s.turnStatus) {
+            delete lts[s.sessionId];
+            delete unread[s.sessionId];
+          }
         } else {
-          // Session no longer in progress — clean up stale entry
-          delete lts[s.sessionId];
+          // No liveTurnStatus entry and not in_progress — nothing to track
         }
       }
-      return { ...state, diskSessions: merged, diskSessionsLoaded: true, liveTurnStatus: lts, _recentlyDeletedIds: [] };
+      return { ...state, diskSessions: merged, diskSessionsLoaded: true, liveTurnStatus: lts, unreadCompletedSessions: unread, _recentlyDeletedIds: [] };
     }
 
     case "SESSION_HISTORY": {
@@ -705,13 +740,16 @@ function reducer(state: AppState, action: Action): AppState {
             turnToolCallIds: [],
             turnStatus: null,
             queuedMessages: [],
+            latestPlan: extractLatestPlan(historyMessages),
           },
         },
       };
     }
 
-    case "SESSION_SWITCH_PENDING":
-      return { ...state, switchingToSessionId: action.sessionId };
+    case "SESSION_SWITCH_PENDING": {
+      const { [action.sessionId]: _, ...pendingUnread } = state.unreadCompletedSessions;
+      return { ...state, switchingToSessionId: action.sessionId, unreadCompletedSessions: pendingUnread };
+    }
 
     case "SESSION_SWITCHED": {
       // Use freshly received history (SESSION_HISTORY arrived just before this)
@@ -724,6 +762,9 @@ function reducer(state: AppState, action: Action): AppState {
 
       // Clear consumed entry to prevent stale reuse on future switches
       delete cleanHistory[action.sessionId];
+
+      // Mark the target session as read (no longer unread-completed)
+      const { [action.sessionId]: _, ...readUnread } = state.unreadCompletedSessions;
 
       return {
         ...state,
@@ -739,6 +780,8 @@ function reducer(state: AppState, action: Action): AppState {
         busy: restored.queuedMessages.length > 0,
         queuedMessages: restored.queuedMessages,
         peekStatus: {},
+        latestPlan: restored.latestPlan,
+        unreadCompletedSessions: readUnread,
       };
     }
 
@@ -773,8 +816,12 @@ function reducer(state: AppState, action: Action): AppState {
         ),
       };
 
-    case "COMMANDS":
-      return { ...state, commands: action.commands };
+    case "COMMANDS": {
+      const updates: Partial<AppState> = { commands: action.commands };
+      if (action.models) updates.models = action.models;
+      if (action.currentModel !== undefined) updates.currentModel = action.currentModel;
+      return { ...state, ...updates };
+    }
 
     case "SESSION_DELETED": {
       const deletedSet = new Set(action.sessionIds);
@@ -1078,6 +1125,13 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           }
           return;
         }
+        // Defense-in-depth: drop session-scoped messages that don't belong to the
+        // current session. The server already filters by session, but this guards
+        // against bugs like a missing sessionId on a broadcast.
+        if (msg.sessionId && currentSessionRef.current && msg.sessionId !== currentSessionRef.current) {
+          const globalTypes = new Set(["sessions", "session_history", "session_switched", "session_title_update", "session_deleted", "session_subagents", "protocol"]);
+          if (!globalTypes.has(msg.type)) return;
+        }
         handleMsg(msg, dispatch);
       };
     }
@@ -1315,6 +1369,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
         type: "SESSION_INFO",
         sessionId: msg.sessionId,
         models: msg.models,
+        currentModel: msg.currentModel,
         modes: msg.modes,
       });
       break;
@@ -1380,7 +1435,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       dispatch({ type: "QUEUE_CANCELLED", queueId: msg.queueId });
       break;
     case "commands":
-      dispatch({ type: "COMMANDS", commands: msg.commands ?? [] });
+      dispatch({ type: "COMMANDS", commands: msg.commands ?? [], models: msg.models, currentModel: msg.currentModel });
       break;
     case "session_deleted":
       dispatch({ type: "SESSION_DELETED", sessionIds: msg.sessionIds ?? [msg.sessionId] });

@@ -408,7 +408,7 @@ export class ClaudeAcpAgent implements Agent {
       // Set title from first user prompt text
       const firstText = params.prompt.find((c) => c.type === "text");
       if (firstText && "text" in firstText) {
-        session.title = firstText.text.slice(0, 100);
+        session.title = firstText.text;
         this.client
           .sessionUpdate({
             sessionId: params.sessionId,
@@ -1062,7 +1062,20 @@ export class ClaudeAcpAgent implements Agent {
           const liveSession = this.sessions[sessionId];
           if (liveSession) {
             liveSession.title = title;
+            liveSession.autoRenamed = true; // Prevent auto-rename from overwriting manual rename
           }
+          // Notify client immediately so header updates without waiting for broadcastSessions
+          this.client
+            .sessionUpdate({
+              sessionId,
+              update: {
+                sessionUpdate: "session_info_update" as any,
+                title,
+              } as any,
+            })
+            .catch((err) => {
+              this.logger.error("[sessions/rename] session_info_update failed:", err);
+            });
           console.error(
             `[extMethod] sessions/rename ${sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms`,
           );
@@ -1549,6 +1562,30 @@ export class ClaudeAcpAgent implements Agent {
       projectPath: params.cwd,
     }).catch((err) => this.logger.error("[upsertSessionInIndex] create failed:", err));
 
+    // Fetch available models from the query to include in the response.
+    // supportedModels() may fail if the SDK hasn't initialized yet, so fall
+    // back to the CLAUDE_MODEL env var which the demo server always sets.
+    let models: SessionModelState | undefined;
+    try {
+      const supportedModels = await q.supportedModels();
+      const currentModel = supportedModels[0];
+      models = {
+        availableModels: supportedModels.map((m) => ({
+          modelId: m.value,
+          name: m.displayName,
+          description: m.description,
+        })),
+        currentModelId: currentModel?.value,
+      };
+    } catch {
+      // supportedModels() not available yet — use env var as fallback
+      const envModel = process.env.CLAUDE_MODEL || "sonnet";
+      models = {
+        availableModels: [{ modelId: envModel, name: envModel }],
+        currentModelId: envModel,
+      };
+    }
+
     perf.summary();
 
     const availableModes = [
@@ -1588,6 +1625,7 @@ export class ClaudeAcpAgent implements Agent {
 
     return {
       sessionId,
+      models,
       modes: {
         currentModeId: permissionMode,
         availableModes,
@@ -1736,6 +1774,10 @@ export class ClaudeAcpAgent implements Agent {
 
     return {
       sessionId,
+      models: {
+        availableModels: [{ modelId: model, name: model }],
+        currentModelId: model,
+      },
       modes: {
         currentModeId: permissionMode,
         availableModes,
@@ -1882,7 +1924,7 @@ export class ClaudeAcpAgent implements Agent {
         return {
           sessionId: e.sessionId,
           cwd: sessionCwd,
-          title: e.firstPrompt?.slice(0, 100) ?? null,
+          title: e.firstPrompt ?? null,
           updatedAt: e.modified ?? e.created ?? null,
           _meta: {
             created: e.created ?? null,

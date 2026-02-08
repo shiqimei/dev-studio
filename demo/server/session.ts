@@ -157,10 +157,14 @@ export async function createNewSession(
   });
   log.info({ durationMs: Math.round(performance.now() - t0), session: session.sessionId.slice(0, 8), models: session.models?.availableModels?.length ?? 0, modes: session.modes?.availableModes?.length ?? 0, boot: bootMs() }, "api: newSession completed");
 
+  const currentModelId = (session.models as any)?.currentModelId;
+  const currentModelName = session.models?.availableModels.find((m) => m.modelId === currentModelId)?.name;
+
   broadcast({
     type: "session_info",
     sessionId: session.sessionId,
     models: session.models?.availableModels.map((m) => m.modelId) ?? [],
+    currentModel: currentModelName || currentModelId || null,
     modes: session.modes?.availableModes.map((m) => ({ id: m.id, name: m.name })) ?? [],
   });
 

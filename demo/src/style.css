@@ -753,6 +753,86 @@
 .plan-entry .marker.in_progress { background: var(--color-yellow); color: var(--color-bg); }
 .plan-entry .marker.completed { background: var(--color-green); color: var(--color-bg); }
 
+/* ── Tasks sidecar ────────────────────────── */
+
+.tasks-sidecar {
+  width: 260px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--color-border);
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.tasks-sidecar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 12px;
+}
+
+.tasks-sidecar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tasks-sidecar-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.tasks-sidecar-item:hover {
+  background: var(--color-accent-dim);
+}
+
+.tasks-sidecar-check {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.tasks-sidecar-check.pending {
+  border: 1.5px solid #404040;
+  color: transparent;
+}
+
+.tasks-sidecar-check.in_progress {
+  border: 1.5px solid var(--color-yellow);
+  color: transparent;
+  box-shadow: 0 0 0 1px var(--color-yellow) inset;
+}
+
+.tasks-sidecar-check.completed {
+  background: var(--color-green);
+  color: var(--color-bg);
+  border: 1.5px solid var(--color-green);
+}
+
+.tasks-sidecar-text {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-text);
+}
+
+.tasks-sidecar-item.completed .tasks-sidecar-text {
+  text-decoration: line-through;
+  color: var(--color-dim);
+}
+
+.tasks-sidecar-item.in_progress .tasks-sidecar-text {
+  color: var(--color-text);
+}
+
 /* ── Permission ───────────────────────────── */
 
 .permission {

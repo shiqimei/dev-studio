@@ -301,7 +301,7 @@ export function startServer(port: number) {
     // ── Capture per-session state (survives turn boundaries) ──
     if (msgSessionId) {
       if (m.type === "session_info") {
-        getSessionMeta(msgSessionId).sessionInfo = { type: "session_info", sessionId: msgSessionId, models: m.models, modes: m.modes } as any;
+        getSessionMeta(msgSessionId).sessionInfo = { type: "session_info", sessionId: msgSessionId, models: m.models, currentModel: m.currentModel, modes: m.modes } as any;
       } else if (m.type === "system" && m.text) {
         const meta = getSessionMeta(msgSessionId);
         if (!meta.systemMessages.includes(m.text)) meta.systemMessages.push(m.text);
@@ -862,7 +862,26 @@ export function startServer(port: number) {
               const result = await acpConnection.connection.extMethod("sessions/getAvailableCommands", {});
               const cmdCount = (result.commands as unknown[])?.length ?? 0;
               log.info({ durationMs: Math.round(performance.now() - t0), commands: cmdCount }, "api: sessions/getAvailableCommands completed");
-              ws.send(JSON.stringify({ type: "commands", commands: result.commands }));
+              // Extract model info from the result (getAvailableCommands fetches models lazily)
+              const models = result.models as { availableModels?: { modelId: string; name?: string }[]; currentModelId?: string } | undefined;
+              const currentModelId = models?.currentModelId;
+              const currentModelName = models?.availableModels?.find((m) => m.modelId === currentModelId)?.name;
+              ws.send(JSON.stringify({
+                type: "commands",
+                commands: result.commands,
+                ...(models && {
+                  models: models.availableModels?.map((m) => m.modelId) ?? [],
+                  currentModel: currentModelName || currentModelId || null,
+                }),
+              }));
+              // Update session meta so reconnecting clients get the model info
+              if (models && clientState.currentSessionId) {
+                const meta = getSessionMeta(clientState.currentSessionId);
+                if (meta.sessionInfo) {
+                  meta.sessionInfo.models = models.availableModels?.map((m) => m.modelId) ?? [];
+                  (meta.sessionInfo as any).currentModel = currentModelName || currentModelId || null;
+                }
+              }
             } catch (err: any) {
               log.error({ client: cid, err: err.message }, "ws: get_commands error");
               ws.send(JSON.stringify({ type: "commands", commands: [] }));

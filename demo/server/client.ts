@@ -132,6 +132,7 @@ export class WebClient implements Client {
     log.info({ tool: params.toolCall.title }, "notify: requestPermission → auto-allow");
     this.broadcast({
       type: "permission",
+      sessionId: params.sessionId,
       title: params.toolCall.title,
       decision: "auto-allow",
     });

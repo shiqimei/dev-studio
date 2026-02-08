@@ -62,10 +62,14 @@ interface ParsedRule {
 const SHELL_OPERATORS = ["&&", "||", ";", "|", "$(", "`", "\n"];
 
 /**
- * Checks if a string contains shell operators that could allow command chaining
+ * Checks if a string contains shell operators that could allow command chaining.
+ * Uses a manual loop instead of Array.some() to avoid closure allocation per call.
  */
 function containsShellOperator(str: string): boolean {
-  return SHELL_OPERATORS.some((op) => str.includes(op));
+  for (let i = 0; i < SHELL_OPERATORS.length; i++) {
+    if (str.includes(SHELL_OPERATORS[i])) return true;
+  }
+  return false;
 }
 
 /*

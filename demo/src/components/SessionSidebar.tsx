@@ -319,10 +319,13 @@ function findTeammateParent(diskSessions: DiskSession[], teammateSessionId: stri
 }
 
 export function SessionSidebar() {
-  const { state, newSession, resumeSession, resumeSubagent } = useWs();
+  const { state, newSession, resumeSession, resumeSubagent, requestSubagents } = useWs();
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<{ sessionId: string; title: string | null; x: number; y: number } | null>(null);
+  // Track which sessions have had subagents loaded
+  const [subagentsLoaded, setSubagentsLoaded] = useState<Set<string>>(new Set());
+  const [subagentsLoading, setSubagentsLoading] = useState<Set<string>>(new Set());
 
   // Use pending session id for optimistic active highlighting
   const activeSessionId = state.switchingToSessionId ?? state.currentSessionId;
@@ -345,13 +348,19 @@ export function SessionSidebar() {
       targetId = activeSessionId;
     }
 
-    // Expand the parent session
+    // Expand the parent session and load subagents if needed
     setExpandedSessions((prev) => {
       if (prev.has(parentId)) return prev;
       const next = new Set(prev);
       next.add(parentId);
       return next;
     });
+
+    // Load subagents for the parent if not yet loaded
+    if (!subagentsLoaded.has(parentId) && !subagentsLoading.has(parentId)) {
+      setSubagentsLoading((p) => { const n = new Set(p); n.add(parentId); return n; });
+      requestSubagents(parentId);
+    }
 
     // Expand ancestor agents in the tree path to the target
     const session = state.diskSessions.find((s) => s.sessionId === parentId);
@@ -367,7 +376,7 @@ export function SessionSidebar() {
       for (const id of missing) next.add(id);
       return next;
     });
-  }, [activeSessionId, state.diskSessions]);
+  }, [activeSessionId, state.diskSessions, subagentsLoaded, subagentsLoading, requestSubagents]);
 
   // Scroll active sub-agent into view after tree expansion
   const activeSubagentRef = useRef<HTMLDivElement>(null);
@@ -388,11 +397,32 @@ export function SessionSidebar() {
   const toggleExpand = (sessionId: string) => {
     setExpandedSessions((prev) => {
       const next = new Set(prev);
-      if (next.has(sessionId)) next.delete(sessionId);
-      else next.add(sessionId);
+      if (next.has(sessionId)) {
+        next.delete(sessionId);
+      } else {
+        next.add(sessionId);
+        // Load subagents on first expand if not yet loaded
+        if (!subagentsLoaded.has(sessionId) && !subagentsLoading.has(sessionId)) {
+          setSubagentsLoading((p) => { const n = new Set(p); n.add(sessionId); return n; });
+          requestSubagents(sessionId);
+        }
+      }
       return next;
     });
   };
+
+  // Mark subagents as loaded when they arrive via SESSION_SUBAGENTS
+  useEffect(() => {
+    for (const sessionId of subagentsLoading) {
+      const session = state.diskSessions.find((s) => s.sessionId === sessionId);
+      // If the session now has non-teammate children, the subagents have loaded
+      const hasSubagents = session?.children?.some((c: any) => !c.sessionId);
+      if (hasSubagents || session) {
+        setSubagentsLoaded((p) => { const n = new Set(p); n.add(sessionId); return n; });
+        setSubagentsLoading((p) => { const n = new Set(p); n.delete(sessionId); return n; });
+      }
+    }
+  }, [state.diskSessions, subagentsLoading]);
 
   const toggleAgentExpand = (agentId: string) => {
     setExpandedAgents((prev) => {
@@ -470,6 +500,7 @@ export function SessionSidebar() {
         {state.diskSessions.map((session) => {
           const hasChildren = (session.children?.length ?? 0) > 0;
           const isExpanded = expandedSessions.has(session.sessionId);
+          const isLoadingSubagents = subagentsLoading.has(session.sessionId);
           return (
             <div key={session.sessionId}>
               <div className="relative flex items-center min-w-0">
@@ -479,9 +510,13 @@ export function SessionSidebar() {
                     className={`absolute left-1 top-1/2 -translate-y-1/2 z-10 session-chevron${isExpanded ? " expanded" : ""}`}
                     title={`${session.children!.length} sub-agent${session.children!.length > 1 ? "s" : ""}`}
                   >
-                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                      <path d="M4.5 2.5L7.5 6L4.5 9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
+                    {isLoadingSubagents ? (
+                      <span className="sidebar-spinner" style={{ width: 12, height: 12 }} />
+                    ) : (
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M4.5 2.5L7.5 6L4.5 9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
                   </button>
                 )}
                 <div className="flex-1 min-w-0">

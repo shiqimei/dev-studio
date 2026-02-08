@@ -267,4 +267,5 @@ export type Action =
   | { type: "MESSAGE_QUEUED"; queueId: string }
   | { type: "QUEUE_DRAIN_START"; queueId: string }
   | { type: "QUEUE_CANCELLED"; queueId: string }
-  | { type: "COMMANDS"; commands: SlashCommand[] };
+  | { type: "COMMANDS"; commands: SlashCommand[] }
+  | { type: "SESSION_SUBAGENTS"; sessionId: string; children: SubagentChild[] };

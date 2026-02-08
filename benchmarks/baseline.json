@@ -1,236 +1,450 @@
 {
-  "timestamp": "2026-02-07T17:12:10.719Z",
+  "timestamp": "2026-02-07T17:45:59.555Z",
   "nodeVersion": "v24.11.0",
   "results": [
     {
-      "name": "streamEvent.text_delta",
+      "name": "initialize",
       "latency": {
-        "p50": 0,
-        "p95": 0.001,
-        "p99": 0.001,
-        "min": 0,
-        "max": 0.007,
-        "mean": 0,
-        "count": 2000,
-        "opsPerSec": 3327610
+        "p50": 144.126,
+        "p95": 172.538,
+        "p99": 172.538,
+        "min": 143.857,
+        "max": 172.538,
+        "mean": 153.507,
+        "count": 3,
+        "opsPerSec": 7
       },
-      "memoryDeltaMB": 1.492
+      "samples": [
+        172.53808299999997,
+        144.125791,
+        143.85724999999996
+      ]
     },
     {
-      "name": "streamEvent.thinking_delta",
+      "name": "new_session",
       "latency": {
-        "p50": 0,
-        "p95": 0,
-        "p99": 0.001,
-        "min": 0,
-        "max": 0.006,
-        "mean": 0,
-        "count": 2000,
-        "opsPerSec": 4074390
+        "p50": 1290.841,
+        "p95": 1491.759,
+        "p99": 1491.759,
+        "min": 1260.468,
+        "max": 1491.759,
+        "mean": 1334.329,
+        "count": 5,
+        "opsPerSec": 1
       },
-      "memoryDeltaMB": 1.695
+      "samples": [
+        1290.8407089999998,
+        1491.7586659999997,
+        1260.4680829999998,
+        1279.1633329999995,
+        1349.4143750000003
+      ]
     },
     {
-      "name": "streamEvent.tool_use_start",
+      "name": "set_session_mode",
       "latency": {
-        "p50": 0.001,
-        "p95": 0.002,
-        "p99": 0.004,
-        "min": 0.001,
-        "max": 0.043,
-        "mean": 0.001,
-        "count": 2000,
-        "opsPerSec": 789585
+        "p50": 0.283,
+        "p95": 4.095,
+        "p99": 4.095,
+        "min": 0.181,
+        "max": 4.095,
+        "mean": 0.949,
+        "count": 6,
+        "opsPerSec": 1054
       },
-      "memoryDeltaMB": 4.33
+      "samples": [
+        4.094708000000537,
+        0.5772080000006099,
+        0.3668340000003809,
+        0.19287500000064028,
+        0.18079199999920093,
+        0.2825840000004973
+      ]
     },
     {
-      "name": "toAcpNotifications.assistant_message",
+      "name": "set_session_model",
       "latency": {
-        "p50": 0,
-        "p95": 0.001,
-        "p99": 0.001,
-        "min": 0,
-        "max": 0.031,
-        "mean": 0,
-        "count": 2000,
-        "opsPerSec": 4715102
+        "p50": 0.794,
+        "p95": 0.932,
+        "p99": 0.932,
+        "min": 0.409,
+        "max": 0.932,
+        "mean": 0.712,
+        "count": 3,
+        "opsPerSec": 1405
       },
-      "memoryDeltaMB": 1.959
+      "samples": [
+        0.9322499999998399,
+        0.4085830000003625,
+        0.7940830000006827
+      ]
     },
     {
-      "name": "toAcpNotifications.tool_result",
+      "name": "fork_session",
       "latency": {
-        "p50": 0.001,
-        "p95": 0.001,
-        "p99": 0.003,
-        "min": 0,
-        "max": 0.974,
-        "mean": 0.001,
-        "count": 2000,
-        "opsPerSec": 780370
+        "p50": 1327.912,
+        "p95": 1337.56,
+        "p99": 1337.56,
+        "min": 1271.305,
+        "max": 1337.56,
+        "mean": 1312.259,
+        "count": 3,
+        "opsPerSec": 1
       },
-      "memoryDeltaMB": -9.261
+      "samples": [
+        1337.5604999999996,
+        1327.9116250000006,
+        1271.3046669999985
+      ]
     },
     {
-      "name": "toolInfoFromToolUse",
+      "name": "resume_session",
       "latency": {
-        "p50": 0,
-        "p95": 0,
-        "p99": 0.001,
-        "min": 0,
-        "max": 0.005,
-        "mean": 0,
-        "count": 2000,
-        "opsPerSec": 3728985
+        "p50": 1334.304,
+        "p95": 1787.684,
+        "p99": 1787.684,
+        "min": 1285.666,
+        "max": 1787.684,
+        "mean": 1469.218,
+        "count": 3,
+        "opsPerSec": 1
       },
-      "memoryDeltaMB": 0.706
+      "samples": [
+        1334.3039160000008,
+        1285.6661660000009,
+        1787.683916
+      ]
     },
     {
-      "name": "toolUpdateFromToolResult",
+      "name": "prompt_simple",
       "latency": {
-        "p50": 0,
-        "p95": 0,
-        "p99": 0.001,
-        "min": 0,
-        "max": 0.015,
-        "mean": 0,
-        "count": 2000,
-        "opsPerSec": 4991402
+        "p50": 3071.577,
+        "p95": 4445.712,
+        "p99": 4445.712,
+        "min": 2546.576,
+        "max": 4445.712,
+        "mean": 3354.622,
+        "count": 3,
+        "opsPerSec": 0
       },
-      "memoryDeltaMB": 0.54
+      "samples": [
+        2546.5762499999983,
+        4445.711667,
+        3071.576792
+      ]
     },
     {
-      "name": "promptToClaude",
+      "name": "prompt_ttft",
       "latency": {
-        "p50": 0,
-        "p95": 0.001,
-        "p99": 0.002,
-        "min": 0,
-        "max": 0.011,
-        "mean": 0.001,
-        "count": 2000,
-        "opsPerSec": 1792625
+        "p50": 1.032,
+        "p95": 2.979,
+        "p99": 2.979,
+        "min": 0.645,
+        "max": 2.979,
+        "mean": 1.552,
+        "count": 3,
+        "opsPerSec": 644
       },
-      "memoryDeltaMB": 3.1
+      "samples": [
+        2.979083999998693,
+        0.6450829999994312,
+        1.0322919999998703
+      ]
     },
     {
-      "name": "NotificationQueue.enqueue",
+      "name": "cancel_during_prompt",
       "latency": {
-        "p50": 0,
-        "p95": 0,
-        "p99": 0.002,
-        "min": 0,
-        "max": 0.013,
-        "mean": 0,
-        "count": 2000,
-        "opsPerSec": 6099718
+        "p50": 8.99,
+        "p95": 104.845,
+        "p99": 104.845,
+        "min": 6.745,
+        "max": 104.845,
+        "mean": 40.193,
+        "count": 3,
+        "opsPerSec": 25
       },
-      "memoryDeltaMB": 1.125
+      "samples": [
+        104.8449580000015,
+        6.7445000000006985,
+        8.989999999997963
+      ]
     },
     {
-      "name": "NotificationQueue.send",
+      "name": "ext:sessions/list",
       "latency": {
-        "p50": 0.001,
-        "p95": 0.002,
-        "p99": 0.002,
-        "min": 0.001,
-        "max": 0.029,
-        "mean": 0.001,
-        "count": 2000,
-        "opsPerSec": 1171709
+        "p50": 386.67,
+        "p95": 505.118,
+        "p99": 505.118,
+        "min": 370.013,
+        "max": 505.118,
+        "mean": 398.677,
+        "count": 10,
+        "opsPerSec": 3
       },
-      "memoryDeltaMB": 2.485
+      "samples": [
+        505.1181250000009,
+        386.6702090000035,
+        417.7283329999991,
+        370.013082999998,
+        397.44208300000173,
+        372.0875420000011,
+        395.78683399999863,
+        373.763374999995,
+        391.0246249999982,
+        377.1394169999985
+      ]
     },
     {
-      "name": "SessionMessageRouter.next",
+      "name": "ext:sessions/getHistory",
       "latency": {
-        "p50": 0.001,
-        "p95": 0.002,
-        "p99": 0.002,
-        "min": 0.001,
-        "max": 0.004,
-        "mean": 0.001,
-        "count": 500,
-        "opsPerSec": 1086505
+        "p50": 0.229,
+        "p95": 0.395,
+        "p99": 0.395,
+        "min": 0.156,
+        "max": 0.395,
+        "mean": 0.246,
+        "count": 5,
+        "opsPerSec": 4064
       },
-      "memoryDeltaMB": 0.169
+      "samples": [
+        0.3953330000003916,
+        0.2134589999986929,
+        0.23649999999906868,
+        0.22875000000203727,
+        0.15612500000133878
+      ]
     },
     {
-      "name": "SessionMessageRouter.task_notification_intercept",
+      "name": "ext:sessions/getSubagentHistory",
       "latency": {
-        "p50": 0.001,
-        "p95": 0.003,
-        "p99": 0.004,
-        "min": 0.001,
-        "max": 0.017,
-        "mean": 0.001,
-        "count": 200,
-        "opsPerSec": 688859
+        "p50": 0.433,
+        "p95": 0.572,
+        "p99": 0.572,
+        "min": 0.218,
+        "max": 0.572,
+        "mean": 0.408,
+        "count": 3,
+        "opsPerSec": 2454
       },
-      "memoryDeltaMB": 0.43
+      "samples": [
+        0.43270900000061374,
+        0.5715839999975287,
+        0.21833400000468828
+      ]
     },
     {
-      "name": "extractBackgroundTaskInfo",
+      "name": "ext:sessions/rename",
       "latency": {
-        "p50": 0,
-        "p95": 0,
-        "p99": 0.001,
-        "min": 0,
-        "max": 0.013,
-        "mean": 0,
-        "count": 2000,
-        "opsPerSec": 4220504
+        "p50": 0.525,
+        "p95": 0.678,
+        "p99": 0.678,
+        "min": 0.322,
+        "max": 0.678,
+        "mean": 0.501,
+        "count": 5,
+        "opsPerSec": 1996
       },
-      "memoryDeltaMB": -13.399
+      "samples": [
+        0.6113750000004075,
+        0.6775410000045667,
+        0.5247910000034608,
+        0.3694160000013653,
+        0.32162500000413274
+      ]
     },
     {
-      "name": "full_prompt_pipeline",
+      "name": "ext:sessions/delete",
       "latency": {
-        "p50": 0.013,
-        "p95": 0.017,
-        "p99": 0.03,
-        "min": 0.012,
-        "max": 0.138,
-        "mean": 0.015,
-        "count": 200,
-        "opsPerSec": 68594
+        "p50": 1.22,
+        "p95": 1.364,
+        "p99": 1.364,
+        "min": 0.616,
+        "max": 1.364,
+        "mean": 1.067,
+        "count": 3,
+        "opsPerSec": 937
       },
-      "memoryDeltaMB": 4.523
+      "samples": [
+        1.2203329999974812,
+        1.3644170000043232,
+        0.6160830000007991
+      ]
     },
     {
-      "name": "concurrent_session_throughput",
+      "name": "prompt_with_tool_use",
       "latency": {
-        "p50": 0.057,
-        "p95": 0.079,
-        "p99": 0.145,
-        "min": 0.042,
-        "max": 0.145,
-        "mean": 0.06,
-        "count": 50,
-        "opsPerSec": 16636
+        "p50": 12257.306,
+        "p95": 12257.306,
+        "p99": 12257.306,
+        "min": 12257.306,
+        "max": 12257.306,
+        "mean": 12257.306,
+        "count": 1,
+        "opsPerSec": 0
       },
-      "memoryDeltaMB": 9.517
+      "samples": [
+        12257.306082999996
+      ]
     },
     {
-      "name": "toolUseCache.set_get_delete",
+      "name": "pressure:rapid_session_10",
       "latency": {
-        "p50": 0,
-        "p95": 0.001,
-        "p99": 0.001,
-        "min": 0,
-        "max": 0.372,
-        "mean": 0.001,
-        "count": 2000,
-        "opsPerSec": 1610416
+        "p50": 6853.804,
+        "p95": 6853.804,
+        "p99": 6853.804,
+        "min": 6853.804,
+        "max": 6853.804,
+        "mean": 6853.804,
+        "count": 1,
+        "opsPerSec": 0
       },
-      "memoryDeltaMB": 0.74
+      "samples": [
+        6853.804499999991
+      ]
+    },
+    {
+      "name": "pressure:concurrent_prompts_3",
+      "latency": {
+        "p50": 3189.581,
+        "p95": 3189.581,
+        "p99": 3189.581,
+        "min": 3189.581,
+        "max": 3189.581,
+        "mean": 3189.581,
+        "count": 1,
+        "opsPerSec": 0
+      },
+      "samples": [
+        3189.580833999993
+      ]
+    },
+    {
+      "name": "pressure:concurrent_prompts_5",
+      "latency": {
+        "p50": 4236.022,
+        "p95": 4236.022,
+        "p99": 4236.022,
+        "min": 4236.022,
+        "max": 4236.022,
+        "mean": 4236.022,
+        "count": 1,
+        "opsPerSec": 0
+      },
+      "samples": [
+        4236.021500000003
+      ]
+    },
+    {
+      "name": "pressure:session_churn",
+      "latency": {
+        "p50": 4297.752,
+        "p95": 6358.453,
+        "p99": 6358.453,
+        "min": 4152.75,
+        "max": 6358.453,
+        "mean": 4936.318,
+        "count": 3,
+        "opsPerSec": 0
+      },
+      "samples": [
+        6358.452707999997,
+        4297.75224999999,
+        4152.749666999996
+      ]
+    },
+    {
+      "name": "pressure:notification_flood",
+      "latency": {
+        "p50": 4441.415,
+        "p95": 4441.415,
+        "p99": 4441.415,
+        "min": 4441.415,
+        "max": 4441.415,
+        "mean": 4441.415,
+        "count": 1,
+        "opsPerSec": 0
+      },
+      "samples": [
+        4441.414665999997
+      ]
+    },
+    {
+      "name": "pressure:list_sessions_loaded",
+      "latency": {
+        "p50": 401.913,
+        "p95": 575.725,
+        "p99": 575.725,
+        "min": 387.011,
+        "max": 575.725,
+        "mean": 436.524,
+        "count": 5,
+        "opsPerSec": 2
+      },
+      "samples": [
+        575.7250829999975,
+        397.5154579999944,
+        420.45508299999346,
+        387.0107080000016,
+        401.91279199998826
+      ]
+    },
+    {
+      "name": "pressure:rapid_mode_switch_20",
+      "latency": {
+        "p50": 0.252,
+        "p95": 0.515,
+        "p99": 2.091,
+        "min": 0.135,
+        "max": 2.091,
+        "mean": 0.356,
+        "count": 20,
+        "opsPerSec": 2811
+      },
+      "samples": [
+        2.090874999994412,
+        0.4084580000053393,
+        0.35616599999775644,
+        0.2921669999923324,
+        0.2424170000012964,
+        0.282666999992216,
+        0.25191600000835024,
+        0.34608300001127645,
+        0.20595800000592135,
+        0.21508300000277814,
+        0.14604200000758283,
+        0.1994589999958407,
+        0.26829199999338016,
+        0.5149589999928139,
+        0.25475000000733417,
+        0.26141599999391474,
+        0.24316700000781566,
+        0.21737500000745058,
+        0.18179099999542814,
+        0.1351250000006985
+      ]
+    },
+    {
+      "name": "pressure:rapid_cancel",
+      "latency": {
+        "p50": 364.421,
+        "p95": 368.832,
+        "p99": 368.832,
+        "min": 361.575,
+        "max": 368.832,
+        "mean": 364.942,
+        "count": 3,
+        "opsPerSec": 3
+      },
+      "samples": [
+        368.8315830000065,
+        364.4205840000068,
+        361.57466600000043
+      ]
     }
   ],
-  "eventLoopMetrics": {
-    "maxBlockTimeMs": 0,
-    "avgBlockTimeMs": 0,
-    "totalBlocks": 0
-  },
-  "heapUsedMB": 37.96
+  "notificationProfile": {
+    "session_info_update": 4,
+    "agent_message_chunk": 32,
+    "available_commands_update": 4
+  }
 }

@@ -744,6 +744,18 @@ function reducer(state: AppState, action: Action): AppState {
     case "COMMANDS":
       return { ...state, commands: action.commands };
 
+    case "SESSION_SUBAGENTS": {
+      return {
+        ...state,
+        diskSessions: state.diskSessions.map((s) => {
+          if (s.sessionId !== action.sessionId) return s;
+          // Merge loaded subagent children with existing teammate children
+          const existingTeammates = (s.children ?? []).filter((c: any) => !!c.sessionId);
+          return { ...s, children: [...existingTeammates, ...action.children] };
+        }),
+      };
+    }
+
     default:
       return state;
   }
@@ -760,6 +772,8 @@ interface WsContextValue {
   renameSession: (sessionId: string, title: string) => void;
   cancelQueued: (queueId: string) => void;
   searchFiles: (query: string, callback: (files: string[]) => void) => void;
+  requestCommands: () => void;
+  requestSubagents: (sessionId: string) => void;
 }
 
 const WsContext = createContext<WsContextValue | null>(null);
@@ -840,6 +854,16 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const cancelQueued = useCallback((queueId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify({ type: "cancel_queued", queueId }));
+  }, []);
+
+  const requestCommands = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "get_commands" }));
+  }, []);
+
+  const requestSubagents = useCallback((sessionId: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "get_subagents", sessionId }));
   }, []);
 
   const fileSearchCallbacks = useRef<Map<string, (files: string[]) => void>>(new Map());
@@ -997,7 +1021,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   }, [state.currentSessionId, state.connected, state.messages.length]);
 
   return (
-    <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb, deleteSession: deleteSessionCb, renameSession: renameSessionCb, cancelQueued, searchFiles }}>
+    <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb, deleteSession: deleteSessionCb, renameSession: renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents }}>
       {children}
     </WsContext.Provider>
   );
@@ -1117,6 +1141,9 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       break;
     case "commands":
       dispatch({ type: "COMMANDS", commands: msg.commands ?? [] });
+      break;
+    case "session_subagents":
+      dispatch({ type: "SESSION_SUBAGENTS", sessionId: msg.sessionId, children: msg.children ?? [] });
       break;
   }
 }

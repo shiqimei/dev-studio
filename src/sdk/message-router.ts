@@ -9,6 +9,8 @@ import type { MessageSource } from "./types.js";
 
 export class SessionMessageRouter {
   private buffer: SDKMessage[] = [];
+  /** Read cursor into buffer — avoids O(n) shift() by only advancing a pointer. */
+  private bufferReadIndex = 0;
   private resolver: ((result: IteratorResult<SDKMessage, void>) => void) | null = null;
   private rejecter: ((err: unknown) => void) | null = null;
   private finished = false;
@@ -62,6 +64,7 @@ export class SessionMessageRouter {
       this.finished = true;
       this.streamError = err;
       this.buffer.length = 0; // Release buffered messages on error
+      this.bufferReadIndex = 0;
       if (this.rejecter) {
         this.rejecter(err);
         this.resolver = null;
@@ -72,13 +75,21 @@ export class SessionMessageRouter {
 
   /** Current number of buffered messages waiting for consumption. */
   get bufferDepth(): number {
-    return this.buffer.length;
+    return this.buffer.length - this.bufferReadIndex;
   }
 
   /** Drop-in replacement for query.next() used by prompt(). */
   async next(): Promise<IteratorResult<SDKMessage, void>> {
-    if (this.buffer.length > 0) {
-      return { value: this.buffer.shift()!, done: false };
+    if (this.bufferReadIndex < this.buffer.length) {
+      const value = this.buffer[this.bufferReadIndex];
+      this.buffer[this.bufferReadIndex] = undefined as any; // Release reference for GC
+      this.bufferReadIndex++;
+      // Compact when we've consumed more than 64 entries to reclaim memory
+      if (this.bufferReadIndex > 64) {
+        this.buffer = this.buffer.slice(this.bufferReadIndex);
+        this.bufferReadIndex = 0;
+      }
+      return { value, done: false };
     }
     if (this.finished) {
       if (this.streamError) {

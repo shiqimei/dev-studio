@@ -21,7 +21,8 @@ interface ToolUseCallbackEntry {
   ) => Promise<void>;
 }
 
-const toolUseCallbacks: Record<string, ToolUseCallbackEntry> = {};
+/** Map-based callback store — O(1) has/get/set/delete, avoids Object.keys() overhead in sweep. */
+const toolUseCallbacks = new Map<string, ToolUseCallbackEntry>();
 
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -29,13 +30,13 @@ function ensureSweepTimer(): void {
   if (sweepTimer) return;
   sweepTimer = setInterval(() => {
     const now = Date.now();
-    for (const id of Object.keys(toolUseCallbacks)) {
-      if (now - toolUseCallbacks[id].registeredAt > CALLBACK_TTL_MS) {
-        delete toolUseCallbacks[id];
+    for (const [id, entry] of toolUseCallbacks) {
+      if (now - entry.registeredAt > CALLBACK_TTL_MS) {
+        toolUseCallbacks.delete(id);
       }
     }
     // Stop the timer when the map is empty to allow clean GC
-    if (Object.keys(toolUseCallbacks).length === 0 && sweepTimer) {
+    if (toolUseCallbacks.size === 0 && sweepTimer) {
       clearInterval(sweepTimer);
       sweepTimer = null;
     }
@@ -59,10 +60,10 @@ export const registerHookCallback = (
     ) => Promise<void>;
   },
 ) => {
-  toolUseCallbacks[toolUseID] = {
+  toolUseCallbacks.set(toolUseID, {
     registeredAt: Date.now(),
     onPostToolUseHook,
-  };
+  });
   ensureSweepTimer();
 };
 
@@ -71,17 +72,17 @@ export const createPostToolUseHook =
   (logger: Logger = console): HookCallback =>
   async (input: any, toolUseID: string | undefined): Promise<{ continue: boolean }> => {
     if (input.hook_event_name === "PostToolUse" && toolUseID) {
+      const entry = toolUseCallbacks.get(toolUseID);
       // Skip tool_use_ids that were never registered (e.g. from background sub-agents)
-      if (!(toolUseID in toolUseCallbacks)) {
+      if (!entry) {
         return { continue: true };
       }
-      const onPostToolUseHook = toolUseCallbacks[toolUseID]?.onPostToolUseHook;
-      if (onPostToolUseHook) {
-        await onPostToolUseHook(toolUseID, input.tool_input, input.tool_response);
+      if (entry.onPostToolUseHook) {
+        await entry.onPostToolUseHook(toolUseID, input.tool_input, input.tool_response);
       } else {
         logger.error(`No onPostToolUseHook found for tool use ID: ${toolUseID}`);
       }
-      delete toolUseCallbacks[toolUseID];
+      toolUseCallbacks.delete(toolUseID);
     }
     return { continue: true };
   };

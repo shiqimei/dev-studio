@@ -142,6 +142,10 @@ export class ClaudeAcpAgent implements Agent {
   backgroundTaskMap: Record<string, string> = {};
   clientCapabilities?: ClientCapabilities;
   logger: Logger;
+  /** Cached slash commands (loaded on demand, shared across sessions) */
+  private cachedCommands: Awaited<ReturnType<typeof getAvailableSlashCommands>> | null = null;
+  /** Cached models (loaded on demand, shared across sessions) */
+  private cachedModels: Awaited<ReturnType<typeof getAvailableModels>> | null = null;
   /** Shared SettingsManagers keyed by cwd — avoids duplicate file watchers */
   private settingsManagerCache = new Map<string, { manager: SettingsManager; refCount: number }>();
 
@@ -982,6 +986,30 @@ export class ClaudeAcpAgent implements Agent {
         return { success, deletedIds };
       }
 
+      case "sessions/getAvailableCommands": {
+        if (!this.cachedCommands) {
+          // Find any live session's query to ask for commands
+          const session = Object.values(this.sessions).find(s => s.query);
+          if (!session?.query) throw new Error("No active session");
+          const [cmds, models] = await Promise.all([
+            getAvailableSlashCommands(session.query),
+            getAvailableModels(session.query),
+          ]);
+          this.cachedCommands = cmds;
+          this.cachedModels = models;
+        }
+        return { commands: this.cachedCommands, models: this.cachedModels };
+      }
+
+      case "sessions/getSubagents": {
+        const sessionId = params.sessionId as string;
+        if (!sessionId) throw new Error("sessionId is required");
+        const projectDir = getProjectDir(params.cwd as string | undefined);
+        const subagents = await readSubagents(projectDir, sessionId);
+        const tree = buildSubagentTree(subagents);
+        return { sessionId, children: tree };
+      }
+
       default:
         throw RequestError.methodNotFound(method);
     }
@@ -1235,29 +1263,7 @@ export class ClaudeAcpAgent implements Agent {
       updatedAt: new Date().toISOString(),
     };
 
-    const cmdsSpan = perf.start("getAvailableCommands");
-    const [availableCommands, models] = await Promise.all([
-      getAvailableSlashCommands(q),
-      getAvailableModels(q),
-    ]);
-    cmdsSpan.end();
-
     perf.summary();
-
-    // Needs to happen after we return the session — track timer for cleanup on close
-    const session = this.sessions[sessionId];
-    if (!session.pendingTimers) session.pendingTimers = [];
-    session.pendingTimers.push(
-      setTimeout(() => {
-        this.client.sessionUpdate({
-          sessionId,
-          update: {
-            sessionUpdate: "available_commands_update",
-            availableCommands,
-          },
-        });
-      }, 0),
-    );
 
     const availableModes = [
       {
@@ -1296,7 +1302,6 @@ export class ClaudeAcpAgent implements Agent {
 
     return {
       sessionId,
-      models,
       modes: {
         currentModeId: permissionMode,
         availableModes,
@@ -1544,38 +1549,10 @@ export class ClaudeAcpAgent implements Agent {
 
     const filteredEntries = entries.filter((e) => !teammateSessionIds.has(e.sessionId));
 
-    // Read subagents for all sessions in parallel — use allSettled so one
-    // corrupt session directory doesn't crash the entire listing.
-    const subagentSpan = perf.start("readSubagents");
-    const subagentMap = new Map<string, ReturnType<typeof buildSubagentTree>>();
-    const subagentSettled = await Promise.allSettled(
-      filteredEntries.map(async (e) => ({
-        sessionId: e.sessionId,
-        subagents: await readSubagents(projectDir, e.sessionId),
-      })),
-    );
-    for (const result of subagentSettled) {
-      if (result.status === "fulfilled") {
-        subagentMap.set(result.value.sessionId, buildSubagentTree(result.value.subagents));
-      }
-    }
-    subagentSpan.end({ sessions: filteredEntries.length });
-
     const sessions = filteredEntries
       .map((e) => {
-        const tree = subagentMap.get(e.sessionId) ?? [];
-        const children: any[] = tree.map(function mapNode(s: any): any {
-          return {
-            agentId: s.agentId,
-            taskPrompt: s.taskPrompt,
-            timestamp: s.timestamp,
-            agentType: s.agentType,
-            ...(s.parentAgentId ? { parentAgentId: s.parentAgentId } : {}),
-            ...(s.children && s.children.length > 0
-              ? { children: s.children.map(mapNode) }
-              : {}),
-          };
-        });
+        // Only include teammate children (not subagent trees — those are loaded on demand)
+        const children: any[] = [];
 
         // Append teammate sessions as children of the team leader
         const teammates = leaderTeammates.get(e.sessionId);

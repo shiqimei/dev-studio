@@ -1,0 +1,236 @@
+{
+  "timestamp": "2026-02-07T16:55:35.816Z",
+  "nodeVersion": "v24.11.0",
+  "results": [
+    {
+      "name": "streamEvent.text_delta",
+      "latency": {
+        "p50": 0,
+        "p95": 0.001,
+        "p99": 0.002,
+        "min": 0,
+        "max": 0.023,
+        "mean": 0,
+        "count": 2000,
+        "opsPerSec": 2608933
+      },
+      "memoryDeltaMB": 1.895
+    },
+    {
+      "name": "streamEvent.thinking_delta",
+      "latency": {
+        "p50": 0,
+        "p95": 0.001,
+        "p99": 0.002,
+        "min": 0,
+        "max": 0.042,
+        "mean": 0,
+        "count": 2000,
+        "opsPerSec": 3353038
+      },
+      "memoryDeltaMB": 1.921
+    },
+    {
+      "name": "streamEvent.tool_use_start",
+      "latency": {
+        "p50": 0.002,
+        "p95": 0.004,
+        "p99": 0.007,
+        "min": 0.001,
+        "max": 1.363,
+        "mean": 0.003,
+        "count": 2000,
+        "opsPerSec": 357857
+      },
+      "memoryDeltaMB": -4.298
+    },
+    {
+      "name": "toAcpNotifications.assistant_message",
+      "latency": {
+        "p50": 0,
+        "p95": 0.001,
+        "p99": 0.003,
+        "min": 0,
+        "max": 0.019,
+        "mean": 0,
+        "count": 2000,
+        "opsPerSec": 2892979
+      },
+      "memoryDeltaMB": 2.507
+    },
+    {
+      "name": "toAcpNotifications.tool_result",
+      "latency": {
+        "p50": 0.001,
+        "p95": 0.002,
+        "p99": 0.005,
+        "min": 0.001,
+        "max": 0.272,
+        "mean": 0.001,
+        "count": 2000,
+        "opsPerSec": 787942
+      },
+      "memoryDeltaMB": 4.466
+    },
+    {
+      "name": "toolInfoFromToolUse",
+      "latency": {
+        "p50": 0,
+        "p95": 0,
+        "p99": 0.001,
+        "min": 0,
+        "max": 0.005,
+        "mean": 0,
+        "count": 2000,
+        "opsPerSec": 3708697
+      },
+      "memoryDeltaMB": 0.706
+    },
+    {
+      "name": "toolUpdateFromToolResult",
+      "latency": {
+        "p50": 0,
+        "p95": 0,
+        "p99": 0.001,
+        "min": 0,
+        "max": 2.827,
+        "mean": 0.002,
+        "count": 2000,
+        "opsPerSec": 543688
+      },
+      "memoryDeltaMB": -11.422
+    },
+    {
+      "name": "promptToClaude",
+      "latency": {
+        "p50": 0,
+        "p95": 0.001,
+        "p99": 0.001,
+        "min": 0,
+        "max": 0.018,
+        "mean": 0.001,
+        "count": 2000,
+        "opsPerSec": 1742831
+      },
+      "memoryDeltaMB": 3.469
+    },
+    {
+      "name": "NotificationQueue.enqueue",
+      "latency": {
+        "p50": 0,
+        "p95": 0,
+        "p99": 0.001,
+        "min": 0,
+        "max": 0.014,
+        "mean": 0,
+        "count": 2000,
+        "opsPerSec": 5750993
+      },
+      "memoryDeltaMB": 1.472
+    },
+    {
+      "name": "NotificationQueue.send",
+      "latency": {
+        "p50": 0.001,
+        "p95": 0.001,
+        "p99": 0.002,
+        "min": 0.001,
+        "max": 0.005,
+        "mean": 0.001,
+        "count": 2000,
+        "opsPerSec": 1361509
+      },
+      "memoryDeltaMB": 2.424
+    },
+    {
+      "name": "SessionMessageRouter.next",
+      "latency": {
+        "p50": 0.001,
+        "p95": 0.001,
+        "p99": 0.004,
+        "min": 0.001,
+        "max": 0.005,
+        "mean": 0.001,
+        "count": 500,
+        "opsPerSec": 1173816
+      },
+      "memoryDeltaMB": 0.49
+    },
+    {
+      "name": "SessionMessageRouter.task_notification_intercept",
+      "latency": {
+        "p50": 0.001,
+        "p95": 0.002,
+        "p99": 0.003,
+        "min": 0.001,
+        "max": 0.012,
+        "mean": 0.001,
+        "count": 200,
+        "opsPerSec": 788871
+      },
+      "memoryDeltaMB": 0.427
+    },
+    {
+      "name": "extractBackgroundTaskInfo",
+      "latency": {
+        "p50": 0,
+        "p95": 0,
+        "p99": 0.001,
+        "min": 0,
+        "max": 0.007,
+        "mean": 0,
+        "count": 2000,
+        "opsPerSec": 4407801
+      },
+      "memoryDeltaMB": 0.778
+    },
+    {
+      "name": "full_prompt_pipeline",
+      "latency": {
+        "p50": 0.016,
+        "p95": 0.023,
+        "p99": 0.037,
+        "min": 0.011,
+        "max": 0.414,
+        "mean": 0.018,
+        "count": 200,
+        "opsPerSec": 54713
+      },
+      "memoryDeltaMB": -9.812
+    },
+    {
+      "name": "concurrent_session_throughput",
+      "latency": {
+        "p50": 0.063,
+        "p95": 0.081,
+        "p99": 0.123,
+        "min": 0.049,
+        "max": 0.123,
+        "mean": 0.063,
+        "count": 50,
+        "opsPerSec": 15896
+      },
+      "memoryDeltaMB": 11.559
+    },
+    {
+      "name": "toolUseCache.set_get_delete",
+      "latency": {
+        "p50": 0,
+        "p95": 0.001,
+        "p99": 0.001,
+        "min": 0,
+        "max": 0.384,
+        "mean": 0.001,
+        "count": 2000,
+        "opsPerSec": 1657800
+      },
+      "memoryDeltaMB": 0.754
+    }
+  ],
+  "eventLoopMetrics": {
+    "maxBlockTimeMs": 0,
+    "avgBlockTimeMs": 0,
+    "totalBlocks": 0
+  },
+  "heapUsedMB": 38.39
+}

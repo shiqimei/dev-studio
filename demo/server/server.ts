@@ -4,8 +4,8 @@ import { createAcpConnection, createNewSession, resumeSession } from "./session.
 import type { AcpConnection } from "./types.js";
 
 export function startServer(port: number) {
-  const clients = new Set<{ send: (data: string) => void }>();
-  let currentSessionId: string | null = null;
+  interface ClientState { currentSessionId: string | null }
+  const clients = new Map<{ send: (data: string) => void }, ClientState>();
   const liveSessionIds = new Set<string>();
 
   // ── Turn state (server-side, survives client disconnect/reconnect) ──
@@ -40,7 +40,7 @@ export function startServer(port: number) {
 
   // Low-level: send raw string to all WS clients (no filtering, no instrumentation)
   function sendToAll(data: string) {
-    for (const ws of clients) {
+    for (const ws of clients.keys()) {
       try { ws.send(data); } catch {}
     }
   }
@@ -89,21 +89,28 @@ export function startServer(port: number) {
     return true;
   }
 
+  /** Send data to all clients viewing a specific session. */
+  function sendToSession(sessionId: string, data: string) {
+    for (const [ws, clientState] of clients) {
+      if (clientState.currentSessionId === sessionId) {
+        try { ws.send(data); } catch {}
+      }
+    }
+  }
+
   function broadcast(msg: object) {
     const m = msg as any;
     // Determine which session this message belongs to
-    const msgSessionId = m.sessionId || currentSessionId;
+    const msgSessionId = m.sessionId ?? null;
 
     // ── Accumulate turn stats + track activity from streaming messages ──
     // (do this before filtering so stats accumulate even for background sessions)
+    let activityChanged = false;
     if (msgSessionId && turnStates[msgSessionId]?.status === "in_progress") {
       const ts = turnStates[msgSessionId];
-      const isCurrentSession = msgSessionId === currentSessionId;
       if (m.type === "text" && m.text) {
         ts.approxTokens += Math.ceil(m.text.length / 4);
-        if (isCurrentSession && setActivity(ts, "responding")) {
-          sendToAll(JSON.stringify({ type: "turn_activity", activity: ts.activity }));
-        }
+        activityChanged = setActivity(ts, "responding");
       } else if (m.type === "thought" && m.text) {
         ts.approxTokens += Math.ceil(m.text.length / 4);
         const now = Date.now();
@@ -111,35 +118,22 @@ export function startServer(port: number) {
           ts.thinkingDurationMs += now - ts.thinkingLastChunkAt;
         }
         ts.thinkingLastChunkAt = now;
-        if (isCurrentSession && setActivity(ts, "thinking")) {
-          sendToAll(JSON.stringify({ type: "turn_activity", activity: ts.activity }));
-        }
+        activityChanged = setActivity(ts, "thinking");
       } else if (m.type === "tool_call") {
-        // New tool call started — derive activity from tool kind/name
         const toolName = m._meta?.claudeCode?.toolName ?? m.kind;
         const { activity, detail } = toolActivity(m.kind, toolName);
-        if (isCurrentSession && setActivity(ts, activity, detail)) {
-          sendToAll(JSON.stringify({ type: "turn_activity", activity: ts.activity, detail: ts.activityDetail }));
-        }
-        // Finalize thinking if it was active
+        activityChanged = setActivity(ts, activity, detail);
         if (ts.thinkingLastChunkAt) {
           ts.thinkingDurationMs += Date.now() - ts.thinkingLastChunkAt;
           ts.thinkingLastChunkAt = undefined;
         }
       } else if (m.type === "tool_call_update" && m.status === "completed") {
-        // Tool completed — revert to responding/brewing
-        if (isCurrentSession && setActivity(ts, "responding")) {
-          sendToAll(JSON.stringify({ type: "turn_activity", activity: ts.activity }));
-        }
+        activityChanged = setActivity(ts, "responding");
       } else if (m.type !== "thought" && ts.thinkingLastChunkAt) {
-        // Thinking ended — finalize the last thinking interval
         ts.thinkingDurationMs += Date.now() - ts.thinkingLastChunkAt;
         ts.thinkingLastChunkAt = undefined;
       }
     }
-
-    // Filter out session-specific updates that don't match the current session
-    if (m.sessionId && m.sessionId !== currentSessionId) return;
 
     // Emit proto entry for server-originated events (not ACP relays)
     const method = m.type && SERVER_EVENT_MAP[m.type];
@@ -147,10 +141,23 @@ export function startServer(port: number) {
       emitProto("recv", { method, params: m });
     }
 
-    sendToAll(JSON.stringify(msg));
+    // Send to clients — filter session-specific messages per client
+    const json = JSON.stringify(msg);
+    if (msgSessionId) {
+      sendToSession(msgSessionId, json);
+      // Send turn_activity update only when activity actually changed
+      if (activityChanged) {
+        const ts = turnStates[msgSessionId];
+        sendToSession(msgSessionId, JSON.stringify({ type: "turn_activity", activity: ts.activity, detail: ts.activityDetail }));
+      }
+    } else {
+      // Global message: send to all
+      sendToAll(json);
+    }
   }
 
   let acpConnection: AcpConnection | null = null;
+  let connectingPromise: Promise<void> | null = null;
 
   async function processPrompt(sessionId: string, text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>) {
     if (!acpConnection) return;
@@ -305,60 +312,44 @@ export function startServer(port: number) {
 
     websocket: {
       async open(ws) {
-        clients.add(ws);
+        const clientState: ClientState = { currentSessionId: null };
+        clients.set(ws, clientState);
         const t0 = performance.now();
 
-        if (!acpConnection) {
-          try {
+        if (!acpConnection && !connectingPromise) {
+          // First connection: spawn server. Use a promise mutex so concurrent
+          // WebSocket opens don't each spawn their own server process.
+          connectingPromise = (async () => {
             acpConnection = await createAcpConnection(broadcast);
             const t1 = performance.now();
             const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
             const t2 = performance.now();
-            currentSessionId = sessionId;
+            clientState.currentSessionId = sessionId;
             liveSessionIds.add(sessionId);
             await broadcastSessions();
             const t3 = performance.now();
-            broadcast({ type: "session_switched", sessionId: currentSessionId });
+            ws.send(JSON.stringify({ type: "session_switched", sessionId }));
             console.log(`[perf] open(first) createConn=${(t1 - t0).toFixed(0)}ms newSession=${(t2 - t1).toFixed(0)}ms broadcastSessions=${(t3 - t2).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms`);
+          })();
+          try {
+            await connectingPromise;
           } catch (err: any) {
             ws.send(JSON.stringify({ type: "error", text: err.message }));
+          } finally {
+            connectingPromise = null;
           }
+        } else if (connectingPromise) {
+          // Another connection arrived while the first is still initializing — wait for it.
+          try {
+            await connectingPromise;
+          } catch {}
+          // After mutex resolves, send current state to this new client
+          await broadcastSessions();
         } else {
           // Re-joining client: send current state
           await broadcastSessions();
           const t1 = performance.now();
-          if (currentSessionId) {
-            // Send session history so the reconnecting client can display content
-            try {
-              const subMatch = currentSessionId.match(/^(.+):subagent:(.+)$/);
-              const result = subMatch
-                ? await acpConnection.connection.extMethod("sessions/getSubagentHistory", { sessionId: subMatch[1], agentId: subMatch[2] })
-                : await acpConnection.connection.extMethod("sessions/getHistory", { sessionId: currentSessionId });
-              const t2 = performance.now();
-              ws.send(JSON.stringify({ type: "session_history", sessionId: currentSessionId, entries: result.entries }));
-              console.log(`[perf] open(rejoin) broadcastSessions=${(t1 - t0).toFixed(0)}ms getHistory=${(t2 - t1).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms`);
-            } catch (err: any) {
-              console.error("Failed to load session history for reconnecting client:", err.message);
-            }
-            broadcast({ type: "session_switched", sessionId: currentSessionId });
-
-            // Send current turn state so reconnecting client can restore status bar
-            const ts = turnStates[currentSessionId];
-            if (ts) {
-              if (ts.status === "in_progress") {
-                ws.send(JSON.stringify({ type: "turn_start", startedAt: ts.startedAt }));
-              } else if (ts.status === "completed" || ts.status === "error") {
-                ws.send(JSON.stringify({
-                  type: "turn_end",
-                  stopReason: ts.status === "error" ? "error" : "end_turn",
-                  durationMs: ts.durationMs,
-                  outputTokens: ts.outputTokens,
-                  thinkingDurationMs: ts.thinkingDurationMs,
-                  costUsd: ts.costUsd,
-                }));
-              }
-            }
-          }
+          console.log(`[perf] open(rejoin) broadcastSessions=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms`);
         }
       },
 
@@ -370,10 +361,13 @@ export function startServer(port: number) {
 
         if (!acpConnection) return;
 
+        const clientState = clients.get(ws);
+        if (!clientState) return;
+
         switch (msg.type) {
           case "prompt": {
-            if (!currentSessionId) return;
-            const targetSession = currentSessionId;
+            if (!clientState.currentSessionId) return;
+            const targetSession = clientState.currentSessionId;
             if (processingSessions.has(targetSession)) {
               // Enqueue the message for this specific session
               const queueId = msg.queueId || `sq-${++queueIdCounter}`;
@@ -386,12 +380,12 @@ export function startServer(port: number) {
           }
 
           case "cancel_queued": {
-            if (!currentSessionId) break;
-            const q = getQueue(currentSessionId);
+            if (!clientState.currentSessionId) break;
+            const q = getQueue(clientState.currentSessionId);
             const idx = q.findIndex((m) => m.id === msg.queueId);
             if (idx !== -1) {
               q.splice(idx, 1);
-              broadcast({ type: "queue_cancelled", queueId: msg.queueId, sessionId: currentSessionId });
+              broadcast({ type: "queue_cancelled", queueId: msg.queueId, sessionId: clientState.currentSessionId });
             }
             break;
           }
@@ -401,15 +395,15 @@ export function startServer(port: number) {
               const t0 = performance.now();
               const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
               const t1 = performance.now();
-              currentSessionId = sessionId;
+              clientState.currentSessionId = sessionId;
               liveSessionIds.add(sessionId);
-              // Send switch immediately — client adds a placeholder sidebar entry
-              broadcast({ type: "session_switched", sessionId: currentSessionId });
+              // Send switch only to the requesting client
+              ws.send(JSON.stringify({ type: "session_switched", sessionId }));
               console.log(`[perf] new_session createNewSession=${(t1 - t0).toFixed(0)}ms`);
               // Refresh session lists in parallel (non-blocking)
               broadcastSessions().catch(() => {});
             } catch (err: any) {
-              broadcast({ type: "error", text: err.message });
+              ws.send(JSON.stringify({ type: "error", text: err.message }));
             }
             break;
           }
@@ -422,13 +416,13 @@ export function startServer(port: number) {
               const result = await acpConnection.connection.extMethod("sessions/getHistory", { sessionId: msg.sessionId });
               const t1 = performance.now();
               const entryCount = (result.entries as unknown[])?.length ?? 0;
-              currentSessionId = msg.sessionId;
-              broadcast({ type: "session_history", sessionId: msg.sessionId, entries: result.entries });
+              clientState.currentSessionId = msg.sessionId;
+              ws.send(JSON.stringify({ type: "session_history", sessionId: msg.sessionId, entries: result.entries }));
               const t2 = performance.now();
-              broadcast({ type: "session_switched", sessionId: currentSessionId });
+              ws.send(JSON.stringify({ type: "session_switched", sessionId: msg.sessionId }));
               console.log(`[switch_session] ${msg.sessionId.slice(0, 8)} getHistory=${(t1 - t0).toFixed(0)}ms broadcast=${(t2 - t1).toFixed(0)}ms entries=${entryCount}`);
             } catch (err: any) {
-              broadcast({ type: "error", text: `Failed to load session: ${err.message}` });
+              ws.send(JSON.stringify({ type: "error", text: `Failed to load session: ${err.message}` }));
             }
             break;
           }
@@ -444,13 +438,13 @@ export function startServer(port: number) {
               });
               const t1 = performance.now();
               const entryCount = (result.entries as unknown[])?.length ?? 0;
-              currentSessionId = compositeId;
-              broadcast({ type: "session_history", sessionId: compositeId, entries: result.entries });
+              clientState.currentSessionId = compositeId;
+              ws.send(JSON.stringify({ type: "session_history", sessionId: compositeId, entries: result.entries }));
               const t2 = performance.now();
-              broadcast({ type: "session_switched", sessionId: compositeId });
+              ws.send(JSON.stringify({ type: "session_switched", sessionId: compositeId }));
               console.log(`[resume_subagent] ${compositeId.slice(0, 8)} getHistory=${(t1 - t0).toFixed(0)}ms broadcast=${(t2 - t1).toFixed(0)}ms entries=${entryCount}`);
             } catch (err: any) {
-              broadcast({ type: "error", text: `Failed to load subagent: ${err.message}` });
+              ws.send(JSON.stringify({ type: "error", text: `Failed to load subagent: ${err.message}` }));
             }
             break;
           }
@@ -477,16 +471,50 @@ export function startServer(port: number) {
               for (const id of deletedIds) {
                 liveSessionIds.delete(id);
                 clearSessionQueue(id);
-                if (currentSessionId === id) {
-                  currentSessionId = null;
+                // Clear currentSessionId for any client viewing a deleted session
+                for (const [, cs] of clients) {
+                  if (cs.currentSessionId === id) {
+                    cs.currentSessionId = null;
+                  }
                 }
               }
               await broadcastSessions();
             } else {
-              // Session not found in index — still refresh the list in case it was already gone
               await broadcastSessions();
             }
             console.log(`[perf] delete_session extMethod=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms deletedIds=${(deleteResult.deletedIds as string[])?.length ?? 0}`);
+            break;
+          }
+
+          case "get_commands": {
+            try {
+              const t0 = performance.now();
+              const result = await acpConnection.connection.extMethod("sessions/getAvailableCommands", {});
+              const t1 = performance.now();
+              ws.send(JSON.stringify({ type: "commands", commands: result.commands }));
+              console.log(`[perf] get_commands extMethod=${(t1 - t0).toFixed(0)}ms`);
+            } catch (err: any) {
+              console.error("Failed to get commands:", err.message);
+            }
+            break;
+          }
+
+          case "get_subagents": {
+            try {
+              const t0 = performance.now();
+              const result = await acpConnection.connection.extMethod("sessions/getSubagents", {
+                sessionId: msg.sessionId,
+              });
+              const t1 = performance.now();
+              ws.send(JSON.stringify({
+                type: "session_subagents",
+                sessionId: msg.sessionId,
+                children: result.children,
+              }));
+              console.log(`[perf] get_subagents ${msg.sessionId.slice(0, 8)} extMethod=${(t1 - t0).toFixed(0)}ms`);
+            } catch (err: any) {
+              console.error("Failed to get subagents:", err.message);
+            }
             break;
           }
 

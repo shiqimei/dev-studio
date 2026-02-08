@@ -53,10 +53,13 @@ function basename(path: string): string {
 }
 
 export function ChatInput() {
-  const { state, send, cancelQueued, searchFiles } = useWs();
+  const { state, send, cancelQueued, searchFiles, requestCommands } = useWs();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [files, setFiles] = useState<FileAttachment[]>([]);
+
+  // ── Lazy command loading ──
+  const commandsRequested = useRef(false);
 
   // ── Slash command autocomplete state ──
   const [slashOpen, setSlashOpen] = useState(false);
@@ -245,6 +248,13 @@ export function ChatInput() {
     checkAutocomplete();
   }, [checkAutocomplete]);
 
+  const onFocus = useCallback(() => {
+    if (!commandsRequested.current && state.commands.length === 0) {
+      commandsRequested.current = true;
+      requestCommands();
+    }
+  }, [state.commands.length, requestCommands]);
+
   const onPaste = useCallback(
     (e: React.ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -403,6 +413,7 @@ export function ChatInput() {
           onKeyDown={onKeyDown}
           onInput={onInput}
           onPaste={onPaste}
+          onFocus={onFocus}
           className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none min-h-[36px] max-h-[120px] overflow-hidden shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_2px_6px_rgba(0,0,0,0.4)] placeholder:text-dim disabled:opacity-50 disabled:cursor-not-allowed"
         />
         <button

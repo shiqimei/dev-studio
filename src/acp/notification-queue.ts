@@ -5,15 +5,19 @@
  * and sends them without blocking the message processing loop.
  * Critical notifications (results, errors) can still be awaited directly.
  *
- * Uses a simple drain pattern: enqueue() is non-blocking, flush() awaits
- * all pending sends before returning.
+ * Uses a counter-based tracking pattern: instead of maintaining an array of
+ * promises (which requires periodic compaction), we track the count of
+ * in-flight sends and resolve a single drain promise when it reaches zero.
  */
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk";
 import type { Logger } from "./types.js";
 import { perfStart } from "../utils/perf.js";
 
 export class NotificationQueue {
-  private pending: Promise<void>[] = [];
+  /** Number of in-flight (not yet settled) enqueued sends. */
+  private inflight = 0;
+  /** Resolve callback for the current flush() waiter, if any. */
+  private drainResolve: (() => void) | null = null;
 
   constructor(
     private client: AgentSideConnection,
@@ -26,18 +30,27 @@ export class NotificationQueue {
    */
   enqueue(notification: SessionNotification): void {
     const span = perfStart("notificationQueue.enqueue");
-    const p = this.client.sessionUpdate(notification).then(
-      () => { span.end(); },
+    this.inflight++;
+    this.client.sessionUpdate(notification).then(
+      () => {
+        span.end();
+        this.settle();
+      },
       (err) => {
         span.end();
         this.logger.error("[NotificationQueue] send failed:", err);
+        this.settle();
       },
-    ) as Promise<void>;
-    this.pending.push(p);
+    );
+  }
 
-    // Periodically compact settled promises to avoid unbounded growth
-    if (this.pending.length > 100) {
-      this.compact();
+  /** Decrement inflight counter and resolve drain waiter if empty. */
+  private settle(): void {
+    this.inflight--;
+    if (this.inflight === 0 && this.drainResolve) {
+      const resolve = this.drainResolve;
+      this.drainResolve = null;
+      resolve();
     }
   }
 
@@ -56,19 +69,9 @@ export class NotificationQueue {
    * Call this before returning from prompt() to ensure all updates are delivered.
    */
   async flush(): Promise<void> {
-    while (this.pending.length > 0) {
-      const batch = this.pending;
-      this.pending = [];
-      await Promise.all(batch);
-    }
-  }
-
-  /**
-   * Replace the pending array with a single promise that resolves
-   * when all current pending items settle. Keeps only 1 entry.
-   */
-  private compact(): void {
-    const all = Promise.all(this.pending).then(() => {}, () => {});
-    this.pending = [all];
+    if (this.inflight === 0) return;
+    return new Promise<void>((resolve) => {
+      this.drainResolve = resolve;
+    });
   }
 }

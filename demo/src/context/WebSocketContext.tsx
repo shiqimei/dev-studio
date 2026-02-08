@@ -109,6 +109,7 @@ const initialState: AppState = {
   sessionHistory: {},
   // Slash commands
   commands: [],
+  _recentlyDeletedIds: [],
 };
 
 // ── Reducer helpers ──
@@ -652,6 +653,22 @@ function reducer(state: AppState, action: Action): AppState {
     // ── Session management actions ────────────
 
     case "SESSIONS": {
+      // Merge incoming sessions with existing ones to prevent accidental loss
+      // due to race conditions (e.g., sessions/list reads a partially-written
+      // sessions-index.json during concurrent new session creation).
+      const incomingIds = new Set(action.sessions.map((s) => s.sessionId));
+      const recentlyDeleted = new Set(state._recentlyDeletedIds);
+      const merged = action.sessions.filter((s) => !recentlyDeleted.has(s.sessionId));
+      // Preserve existing sessions that are missing from the incoming list
+      // but were NOT recently deleted (they were probably missed due to a race condition)
+      if (state.diskSessionsLoaded) {
+        for (const existing of state.diskSessions) {
+          if (!incomingIds.has(existing.sessionId) && !recentlyDeleted.has(existing.sessionId)) {
+            merged.push(existing);
+          }
+        }
+      }
+
       // Seed liveTurnStatus from server-provided turn data on each session
       const lts = { ...state.liveTurnStatus };
       for (const s of action.sessions) {
@@ -670,7 +687,7 @@ function reducer(state: AppState, action: Action): AppState {
           delete lts[s.sessionId];
         }
       }
-      return { ...state, diskSessions: action.sessions, diskSessionsLoaded: true, liveTurnStatus: lts };
+      return { ...state, diskSessions: merged, diskSessionsLoaded: true, liveTurnStatus: lts, _recentlyDeletedIds: [] };
     }
 
     case "SESSION_HISTORY": {
@@ -758,6 +775,15 @@ function reducer(state: AppState, action: Action): AppState {
 
     case "COMMANDS":
       return { ...state, commands: action.commands };
+
+    case "SESSION_DELETED": {
+      const deletedSet = new Set(action.sessionIds);
+      return {
+        ...state,
+        diskSessions: state.diskSessions.filter((s) => !deletedSet.has(s.sessionId)),
+        _recentlyDeletedIds: [...(state._recentlyDeletedIds ?? []), ...action.sessionIds],
+      };
+    }
 
     case "SESSION_SUBAGENTS": {
       return {
@@ -1355,6 +1381,9 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       break;
     case "commands":
       dispatch({ type: "COMMANDS", commands: msg.commands ?? [] });
+      break;
+    case "session_deleted":
+      dispatch({ type: "SESSION_DELETED", sessionIds: msg.sessionIds ?? [msg.sessionId] });
       break;
     case "session_subagents":
       dispatch({ type: "SESSION_SUBAGENTS", sessionId: msg.sessionId, children: msg.children ?? [] });

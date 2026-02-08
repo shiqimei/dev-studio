@@ -58,8 +58,7 @@ export function ChatInput() {
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [files, setFiles] = useState<FileAttachment[]>([]);
 
-  // ── Lazy command loading ──
-  const commandsRequested = useRef(false);
+  // ── Lazy command loading (gate on connected + empty commands) ──
 
   // ── Slash command autocomplete state ──
   const [slashOpen, setSlashOpen] = useState(false);
@@ -256,11 +255,10 @@ export function ChatInput() {
   }, [checkAutocomplete]);
 
   const onFocus = useCallback(() => {
-    if (!commandsRequested.current && state.commands.length === 0) {
-      commandsRequested.current = true;
+    if (state.commands.length === 0 && state.connected) {
       requestCommands();
     }
-  }, [state.commands.length, requestCommands]);
+  }, [state.commands.length, state.connected, requestCommands]);
 
   const onPaste = useCallback(
     (e: React.ClipboardEvent) => {

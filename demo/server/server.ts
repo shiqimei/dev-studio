@@ -844,6 +844,9 @@ export function startServer(port: number) {
                   }
                 }
               }
+              // Notify all clients about the deletion immediately so the merge-based
+              // SESSIONS reducer won't re-add them from a stale broadcastSessions() result
+              sendToAll(JSON.stringify({ type: "session_deleted", sessionIds: deletedIds }));
               await broadcastSessions();
             } else {
               await broadcastSessions();
@@ -862,6 +865,7 @@ export function startServer(port: number) {
               ws.send(JSON.stringify({ type: "commands", commands: result.commands }));
             } catch (err: any) {
               log.error({ client: cid, err: err.message }, "ws: get_commands error");
+              ws.send(JSON.stringify({ type: "commands", commands: [] }));
             }
             break;
           }

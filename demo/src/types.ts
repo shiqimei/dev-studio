@@ -259,6 +259,8 @@ export interface AppState {
   sessionHistory: Record<string, SessionSnapshot>;
   // Slash commands
   commands: SlashCommand[];
+  /** Tracks recently deleted session IDs to prevent stale SESSIONS broadcasts from re-adding them. */
+  _recentlyDeletedIds: string[];
 }
 
 // ── Actions ─────────────────────────────────
@@ -295,4 +297,5 @@ export type Action =
   | { type: "QUEUE_DRAIN_START"; queueId: string }
   | { type: "QUEUE_CANCELLED"; queueId: string }
   | { type: "COMMANDS"; commands: SlashCommand[] }
-  | { type: "SESSION_SUBAGENTS"; sessionId: string; children: SubagentChild[] };
+  | { type: "SESSION_SUBAGENTS"; sessionId: string; children: SubagentChild[] }
+  | { type: "SESSION_DELETED"; sessionIds: string[] };

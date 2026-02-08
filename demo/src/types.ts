@@ -240,6 +240,8 @@ export interface AppState {
   textFilter: string;
   debugCollapsed: boolean;
   turnStatus: TurnStatus | null;
+  /** Per-session turn status cache (keyed by sessionId). */
+  liveTurnStatus: Record<string, TurnStatus>;
   startTime: number;
   // Session management
   diskSessions: DiskSession[];

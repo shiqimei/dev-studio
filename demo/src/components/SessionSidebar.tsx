@@ -169,10 +169,10 @@ function SessionItem({
         </span>
       </div>
       <div className="text-[10px] text-dim mt-0.5 flex items-center justify-between min-w-0">
-        <span className={`truncate flex items-center gap-1 min-w-0 ${isInProgress ? "sidebar-in-progress" : "opacity-60"}`}>
+        <span className={`truncate flex items-center gap-1 min-w-0 ${isInProgress && !isActive ? "sidebar-in-progress" : "opacity-60"}`}>
           {isInProgress && <SidebarSparkleActive />}
           {isLive && !isInProgress && <SidebarSparkleIdle />}
-          {isInProgress ? (
+          {isInProgress && !isActive ? (
             turnInfo ? (
               <SidebarInProgressLabel turnInfo={turnInfo} />
             ) : (
@@ -596,7 +596,7 @@ export function SessionSidebar() {
                     isActive={session.sessionId === activeSessionId}
                     isLive={liveSessionIds.has(session.sessionId)}
                     turnStatus={session.turnStatus}
-                    turnInfo={session.sessionId === state.currentSessionId ? state.turnStatus : undefined}
+                    turnInfo={session.sessionId === state.currentSessionId ? state.turnStatus : state.liveTurnStatus[session.sessionId]}
                     hasChildren={hasChildren}
                     onClick={() => {
                       if (session.sessionId !== activeSessionId)

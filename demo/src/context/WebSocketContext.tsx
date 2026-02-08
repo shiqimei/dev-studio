@@ -97,6 +97,7 @@ const initialState: AppState = {
   textFilter: "",
   debugCollapsed: false,
   turnStatus: null,
+  liveTurnStatus: {},
   startTime: Date.now(),
   // Session management
   diskSessions: [],
@@ -504,31 +505,40 @@ function reducer(state: AppState, action: Action): AppState {
       };
     }
 
-    case "TURN_START":
+    case "TURN_START": {
+      const ts: TurnStatus = {
+        status: "in_progress",
+        startedAt: action.startedAt,
+        approxTokens: 0,
+        thinkingDurationMs: 0,
+        activity: "brewing",
+      };
       return {
         ...state,
-        turnStatus: {
-          status: "in_progress",
-          startedAt: action.startedAt,
-          approxTokens: 0,
-          thinkingDurationMs: 0,
-          activity: "brewing",
-        },
+        turnStatus: ts,
+        liveTurnStatus: state.currentSessionId
+          ? { ...state.liveTurnStatus, [state.currentSessionId]: ts }
+          : state.liveTurnStatus,
       };
+    }
 
-    case "TURN_ACTIVITY":
+    case "TURN_ACTIVITY": {
       if (!state.turnStatus || state.turnStatus.status !== "in_progress") return state;
+      const ts: TurnStatus = {
+        ...state.turnStatus,
+        activity: action.activity,
+        activityDetail: action.detail,
+        ...(action.approxTokens != null && { approxTokens: action.approxTokens }),
+        ...(action.thinkingDurationMs != null && { thinkingDurationMs: action.thinkingDurationMs }),
+      };
       return {
         ...state,
-        turnStatus: {
-          ...state.turnStatus,
-          activity: action.activity,
-          activityDetail: action.detail,
-          // Server-authoritative stats
-          ...(action.approxTokens != null && { approxTokens: action.approxTokens }),
-          ...(action.thinkingDurationMs != null && { thinkingDurationMs: action.thinkingDurationMs }),
-        },
+        turnStatus: ts,
+        liveTurnStatus: state.currentSessionId
+          ? { ...state.liveTurnStatus, [state.currentSessionId]: ts }
+          : state.liveTurnStatus,
       };
+    }
 
     case "TURN_END": {
       const updatedTasks = { ...state.tasks };
@@ -573,6 +583,13 @@ function reducer(state: AppState, action: Action): AppState {
         tasks: updatedTasks,
         taskPanelOpen,
         turnStatus: completedStatus,
+        liveTurnStatus: state.currentSessionId
+          ? (() => {
+              const next = { ...state.liveTurnStatus };
+              delete next[state.currentSessionId!];
+              return next;
+            })()
+          : state.liveTurnStatus,
         messages: finalizeStreaming(state.messages, state.currentTurnId),
       };
     }

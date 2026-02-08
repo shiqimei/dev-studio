@@ -88,18 +88,22 @@ export function ChatInput() {
   }, [send, images, files]);
 
   // ── Detect slash commands and @mentions on input ──
+  const slashAnchorRef = useRef(-1);
   const checkAutocomplete = useCallback(() => {
     const el = inputRef.current;
     if (!el) return;
     const val = el.value;
     const cursor = el.selectionStart ?? val.length;
 
-    // Slash command: only at start of input
-    if (val.startsWith("/") && !val.includes(" ")) {
-      const query = val.slice(1).toLowerCase();
+    // Slash command: `/` preceded by whitespace or at start of input
+    const textBeforeCursor = val.slice(0, cursor);
+    const slashMatch = textBeforeCursor.match(/(^|[\s])\/([^\s]*)$/);
+    if (slashMatch) {
+      const query = slashMatch[2].toLowerCase();
       const filtered = state.commands.filter((c) =>
         c.name.toLowerCase().includes(query),
       );
+      slashAnchorRef.current = textBeforeCursor.lastIndexOf("/");
       setSlashFiltered(filtered);
       setSlashOpen(filtered.length > 0);
       setSlashIdx(0);
@@ -107,9 +111,9 @@ export function ChatInput() {
       return;
     }
     setSlashOpen(false);
+    slashAnchorRef.current = -1;
 
     // @mention: find `@` preceded by whitespace or at start
-    const textBeforeCursor = val.slice(0, cursor);
     const atMatch = textBeforeCursor.match(/(^|[\s])@([^\s]*)$/);
     if (atMatch) {
       const query = atMatch[2];
@@ -135,13 +139,24 @@ export function ChatInput() {
   }, []);
 
   const selectSlashCommand = useCallback((cmd: SlashCommand) => {
-    if (!inputRef.current) return;
-    inputRef.current.value = `/${cmd.name} `;
-    inputRef.current.focus();
+    const el = inputRef.current;
+    if (!el) return;
+    const val = el.value;
+    const cursor = el.selectionStart ?? val.length;
+    const anchor = slashAnchorRef.current;
+    if (anchor === -1) return;
+    const before = val.slice(0, anchor);
+    const after = val.slice(cursor);
+    const replacement = `/${cmd.name} `;
+    el.value = before + replacement + after;
+    const newCursor = before.length + replacement.length;
+    el.selectionStart = el.selectionEnd = newCursor;
+    el.focus();
     setSlashOpen(false);
+    slashAnchorRef.current = -1;
     // Trigger height recalc
-    inputRef.current.style.height = "auto";
-    inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 144) + "px";
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 144) + "px";
   }, []);
 
   const selectFile = useCallback((filePath: string) => {
@@ -180,7 +195,7 @@ export function ChatInput() {
           setSlashIdx((i) => Math.max(i - 1, 0));
           return;
         }
-        if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing)) {
           e.preventDefault();
           selectSlashCommand(slashFiltered[slashIdx]);
           return;
@@ -203,7 +218,7 @@ export function ChatInput() {
           setMentionIdx((i) => Math.max(i - 1, 0));
           return;
         }
-        if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing)) {
           e.preventDefault();
           selectFile(mentionResults[mentionIdx]);
           return;
@@ -222,7 +237,7 @@ export function ChatInput() {
         return;
       }
 
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault();
         handleSend();
       }

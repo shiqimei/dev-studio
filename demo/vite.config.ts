@@ -11,6 +11,14 @@ export default defineConfig({
       "/ws": {
         target: "ws://localhost:5689",
         ws: true,
+        // Suppress EPIPE errors from WebSocket proxy when clients disconnect
+        // (common with React StrictMode dev double-mount)
+        configure: (proxy) => {
+          proxy.on("error", (err) => {
+            if ((err as NodeJS.ErrnoException).code === "EPIPE") return;
+            console.error("[vite proxy]", err.message);
+          });
+        },
       },
     },
   },

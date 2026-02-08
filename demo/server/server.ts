@@ -2,13 +2,22 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { createAcpConnection, createNewSession, resumeSession } from "./session.js";
 import type { AcpConnection } from "./types.js";
+import { log, bootMs } from "./log.js";
 
 export function startServer(port: number) {
-  interface ClientState { currentSessionId: string | null }
+  // ── Client tracking ──
+  let nextClientId = 1;
+  interface ClientState { id: number; currentSessionId: string | null; connectedAt: number }
   const clients = new Map<{ send: (data: string) => void }, ClientState>();
   const liveSessionIds = new Set<string>();
   /** Default session for reconnecting clients (set when first session is created). */
   let defaultSessionId: string | null = null;
+
+  /** Short session ID for logs. */
+  function sid(sessionId: string | null | undefined): string {
+    if (!sessionId) return "(none)";
+    return sessionId.slice(0, 8);
+  }
 
   // ── Turn state (server-side, survives client disconnect/reconnect) ──
   type TurnActivity = "brewing" | "thinking" | "responding" | "reading" | "editing" | "running" | "searching" | "delegating" | "planning" | "compacting";
@@ -161,16 +170,36 @@ export function startServer(port: number) {
   let acpConnection: AcpConnection | null = null;
   let connectingPromise: Promise<void> | null = null;
 
+  // Promise that resolves when the first session is created (defaultSessionId is set).
+  // All WebSocket clients wait on this before sending session_switched.
+  let resolveFirstSession: (() => void) | null = null;
+  const firstSessionReady = new Promise<void>((r) => { resolveFirstSession = r; });
+
+  // Eagerly pre-warm the ACP connection at server startup so the first
+  // WebSocket client doesn't have to wait for agent spawn + initialize.
+  function prewarmAcpConnection(): Promise<void> {
+    if (acpConnection || connectingPromise) return connectingPromise ?? Promise.resolve();
+    const t0 = performance.now();
+    log.info({ boot: bootMs() }, "prewarm: starting ACP connection");
+    connectingPromise = (async () => {
+      acpConnection = await createAcpConnection(broadcast);
+      log.info({ durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "prewarm: ACP connection ready");
+    })();
+    return connectingPromise;
+  }
+
   async function processPrompt(sessionId: string, text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>) {
     if (!acpConnection) return;
     processingSessions.add(sessionId);
     const promptT0 = performance.now();
+    log.info({ session: sid(sessionId), textLen: text.length, images: images?.length ?? 0, files: files?.length ?? 0 }, "api: prompt started");
     try {
       // Lazily resume the ACP session if not already live
       if (!liveSessionIds.has(sessionId)) {
         const resumeT0 = performance.now();
+        log.info({ session: sid(sessionId) }, "api: resumeSession started");
         await resumeSession(acpConnection.connection, sessionId);
-        console.log(`[perf] processPrompt.resume ${sessionId.slice(0, 8)} ${(performance.now() - resumeT0).toFixed(0)}ms`);
+        log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - resumeT0) }, "api: resumeSession completed");
         liveSessionIds.add(sessionId);
         await broadcastSessions();
       }
@@ -201,11 +230,12 @@ export function startServer(port: number) {
       broadcast({ type: "turn_start", startedAt: turnStartedAt, sessionId });
 
       const acpPromptT0 = performance.now();
+      log.info({ session: sid(sessionId) }, "api: acp.prompt started");
       const result = await acpConnection.connection.prompt({
         sessionId,
         prompt,
       });
-      console.log(`[perf] processPrompt.acpPrompt ${sessionId.slice(0, 8)} ${(performance.now() - acpPromptT0).toFixed(0)}ms`);
+      log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - acpPromptT0), stopReason: result.stopReason }, "api: acp.prompt completed");
 
       // Extract stats from result metadata
       const meta = (result as any)._meta?.claudeCode;
@@ -235,8 +265,9 @@ export function startServer(port: number) {
       // Refresh session list to pick up title changes
       const sessionsT0 = performance.now();
       await broadcastSessions();
-      console.log(`[perf] processPrompt.total ${sessionId.slice(0, 8)} broadcastSessions=${(performance.now() - sessionsT0).toFixed(0)}ms total=${(performance.now() - promptT0).toFixed(0)}ms`);
+      log.info({ session: sid(sessionId), broadcastMs: Math.round(performance.now() - sessionsT0), totalMs: Math.round(performance.now() - promptT0) }, "api: prompt completed");
     } catch (err: any) {
+      log.error({ session: sid(sessionId), durationMs: Math.round(performance.now() - promptT0), err: err.message }, "api: prompt error");
       // Update turn state to error
       if (turnStates[sessionId]) {
         const ts = turnStates[sessionId];
@@ -256,6 +287,7 @@ export function startServer(port: number) {
     const q = getQueue(sessionId);
     if (q.length === 0) return;
     const next = q.shift()!;
+    log.info({ session: sid(sessionId), queueId: next.id, remaining: q.length }, "queue: draining");
     broadcast({ type: "queue_drain_start", queueId: next.id, sessionId });
     processPrompt(sessionId, next.text, next.images, next.files);
   }
@@ -268,13 +300,24 @@ export function startServer(port: number) {
   // Coalesce concurrent broadcastSessions calls — if one is already in flight,
   // callers share the same promise instead of issuing parallel requests.
   let broadcastSessionsPromise: Promise<void> | null = null;
+  let broadcastSessionsStartedAt = 0;
 
   async function broadcastSessions() {
     if (!acpConnection) return;
-    if (broadcastSessionsPromise) return broadcastSessionsPromise;
+    // If a previous call is in-flight but has been running for >15s, it's stuck — discard it.
+    if (broadcastSessionsPromise && Date.now() - broadcastSessionsStartedAt > 15_000) {
+      log.warn("api: broadcastSessions stale promise (>15s), discarding");
+      broadcastSessionsPromise = null;
+    }
+    if (broadcastSessionsPromise) {
+      log.debug("api: broadcastSessions coalesced (reusing in-flight request)");
+      return broadcastSessionsPromise;
+    }
 
+    broadcastSessionsStartedAt = Date.now();
     broadcastSessionsPromise = (async () => {
       const t0 = performance.now();
+      log.info("api: sessions/list started");
       try {
         const result = await acpConnection!.connection.extMethod("sessions/list", {});
         const t1 = performance.now();
@@ -290,10 +333,10 @@ export function startServer(port: number) {
           ...(s._meta?.teamName ? { teamName: s._meta.teamName } : {}),
           isLive: liveSessionIds.has(s.sessionId),
         }));
+        log.info({ durationMs: Math.round(t1 - t0), sessions: sessions.length, clients: clients.size }, "api: sessions/list completed");
         broadcast({ type: "sessions", sessions });
-        console.log(`[perf] broadcastSessions extMethod=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms count=${sessions.length}`);
       } catch (err: any) {
-        console.error("Failed to list sessions:", err.message);
+        log.error({ durationMs: Math.round(performance.now() - t0), err: err.message }, "api: sessions/list error");
       }
     })();
 
@@ -312,6 +355,7 @@ export function startServer(port: number) {
 
       if (url.pathname === "/ws") {
         if (server.upgrade(req)) return undefined;
+        log.error({ origin: req.headers.get("origin") ?? "unknown" }, "ws: WebSocket upgrade FAILED");
         return new Response("WebSocket upgrade failed", { status: 400 });
       }
 
@@ -328,54 +372,68 @@ export function startServer(port: number) {
 
     websocket: {
       async open(ws) {
-        const clientState: ClientState = { currentSessionId: null };
+        const clientId = nextClientId++;
+        const clientState: ClientState = { id: clientId, currentSessionId: null, connectedAt: performance.now() };
         clients.set(ws, clientState);
         const t0 = performance.now();
 
-        if (!acpConnection && !connectingPromise) {
-          // First connection: spawn server. Use a promise mutex so concurrent
-          // WebSocket opens don't each spawn their own server process.
-          connectingPromise = (async () => {
-            acpConnection = await createAcpConnection(broadcast);
-            const t1 = performance.now();
-            const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
-            const t2 = performance.now();
-            defaultSessionId = sessionId;
-            clientState.currentSessionId = sessionId;
-            liveSessionIds.add(sessionId);
-            await broadcastSessions();
-            const t3 = performance.now();
-            ws.send(JSON.stringify({ type: "session_switched", sessionId }));
-            console.log(`[perf] open(first) createConn=${(t1 - t0).toFixed(0)}ms newSession=${(t2 - t1).toFixed(0)}ms broadcastSessions=${(t3 - t2).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms`);
-          })();
-          try {
-            await connectingPromise;
-          } catch (err: any) {
-            ws.send(JSON.stringify({ type: "error", text: err.message }));
-          } finally {
-            connectingPromise = null;
+        const path = !acpConnection && !connectingPromise ? "first" : connectingPromise ? "waitMutex" : "rejoin";
+        log.info({ client: clientId, total: clients.size, path, acpReady: !!acpConnection, defaultSession: sid(defaultSessionId), boot: bootMs() }, "ws: open");
+
+        if (path === "first" || path === "waitMutex") {
+          // Wait for the pre-warmed ACP connection (or trigger it if somehow not started).
+          if (!connectingPromise && !acpConnection) prewarmAcpConnection();
+          if (connectingPromise) {
+            log.info({ client: clientId }, "ws: waiting for ACP connection");
+            try {
+              await connectingPromise;
+              log.info({ client: clientId, durationMs: Math.round(performance.now() - t0) }, "ws: ACP connection ready");
+            } catch (err: any) {
+              log.error({ client: clientId, err: err.message }, "ws: ACP connection failed");
+              try { ws.send(JSON.stringify({ type: "error", text: err.message })); } catch {}
+              return;
+            } finally {
+              connectingPromise = null;
+            }
           }
-        } else if (connectingPromise) {
-          // Another connection arrived while the first is still initializing — wait for it.
-          try {
-            await connectingPromise;
-          } catch {}
-          // After mutex resolves, send current state to this new client
-          await broadcastSessions();
-          if (defaultSessionId) {
-            clientState.currentSessionId = defaultSessionId;
-            ws.send(JSON.stringify({ type: "session_switched", sessionId: defaultSessionId }));
+
+          // Create new session (fast: no slash commands or subagent loading)
+          if (!defaultSessionId) {
+            try {
+              log.info({ client: clientId }, "ws: creating new session");
+              const sessT0 = performance.now();
+              const { sessionId } = await createNewSession(acpConnection!.connection, broadcast);
+              log.info({ client: clientId, session: sid(sessionId), durationMs: Math.round(performance.now() - sessT0) }, "ws: new session created");
+              defaultSessionId = sessionId;
+              liveSessionIds.add(sessionId);
+              resolveFirstSession?.();
+            } catch (err: any) {
+              log.error({ client: clientId, err: err.message }, "ws: newSession failed");
+              try { ws.send(JSON.stringify({ type: "error", text: err.message })); } catch {}
+              return;
+            }
           }
-          console.log(`[perf] open(waitMutex) total=${(performance.now() - t0).toFixed(0)}ms`);
+
+          clientState.currentSessionId = defaultSessionId;
+          ws.send(JSON.stringify({ type: "session_switched", sessionId: defaultSessionId }));
+          log.info({ client: clientId, session: sid(defaultSessionId), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
+
+          // Fire-and-forget: don't block the open handler waiting for session list
+          broadcastSessions().catch(() => {});
         } else {
-          // Re-joining client: send current state + default session
-          await broadcastSessions();
-          if (defaultSessionId) {
+          // Re-joining client: wait for first session if needed, then send immediately
+          try {
+            if (!defaultSessionId) {
+              log.info({ client: clientId }, "ws: waiting for first session");
+              await firstSessionReady;
+            }
             clientState.currentSessionId = defaultSessionId;
-            ws.send(JSON.stringify({ type: "session_switched", sessionId: defaultSessionId }));
+            ws.send(JSON.stringify({ type: "session_switched", sessionId: defaultSessionId! }));
+            log.info({ client: clientId, session: sid(defaultSessionId), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
+            broadcastSessions().catch((err) => log.error({ client: clientId, err: err.message }, "ws: broadcastSessions failed"));
+          } catch (err: any) {
+            log.error({ client: clientId, err: err.message }, "ws: open(rejoin) failed");
           }
-          const t1 = performance.now();
-          console.log(`[perf] open(rejoin) broadcastSessions=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms`);
         }
       },
 
@@ -385,19 +443,31 @@ export function startServer(port: number) {
           typeof raw === "string" ? raw : new TextDecoder().decode(raw),
         );
 
-        if (!acpConnection) return;
+        if (!acpConnection) {
+          log.warn({ msgType: msg.type }, "ws: message received but no ACP connection");
+          return;
+        }
 
         const clientState = clients.get(ws);
-        if (!clientState) return;
+        if (!clientState) {
+          log.warn({ msgType: msg.type }, "ws: message from unknown client");
+          return;
+        }
+        const cid = clientState.id;
 
         switch (msg.type) {
           case "prompt": {
-            if (!clientState.currentSessionId) return;
+            if (!clientState.currentSessionId) {
+              log.warn({ client: cid }, "ws: prompt but no currentSessionId");
+              return;
+            }
             const targetSession = clientState.currentSessionId;
+            log.info({ client: cid, session: sid(targetSession), textLen: msg.text?.length ?? 0, images: msg.images?.length ?? 0, files: msg.files?.length ?? 0 }, "ws: → prompt");
             if (processingSessions.has(targetSession)) {
               // Enqueue the message for this specific session
               const queueId = msg.queueId || `sq-${++queueIdCounter}`;
               getQueue(targetSession).push({ id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
+              log.info({ session: sid(targetSession), queueId, queueLen: getQueue(targetSession).length }, "queue: enqueued");
               broadcast({ type: "message_queued", queueId, sessionId: targetSession });
             } else {
               processPrompt(targetSession, msg.text, msg.images, msg.files);
@@ -411,25 +481,28 @@ export function startServer(port: number) {
             const idx = q.findIndex((m) => m.id === msg.queueId);
             if (idx !== -1) {
               q.splice(idx, 1);
+              log.info({ session: sid(clientState.currentSessionId), queueId: msg.queueId }, "queue: cancelled");
               broadcast({ type: "queue_cancelled", queueId: msg.queueId, sessionId: clientState.currentSessionId });
             }
             break;
           }
 
           case "new_session": {
+            log.info({ client: cid }, "ws: → new_session");
             try {
               const t0 = performance.now();
               const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
-              const t1 = performance.now();
+              log.info({ client: cid, session: sid(sessionId), durationMs: Math.round(performance.now() - t0) }, "api: newSession completed");
               defaultSessionId = sessionId;
               clientState.currentSessionId = sessionId;
               liveSessionIds.add(sessionId);
               // Send switch only to the requesting client
               ws.send(JSON.stringify({ type: "session_switched", sessionId }));
-              console.log(`[perf] new_session createNewSession=${(t1 - t0).toFixed(0)}ms`);
+              log.info({ client: cid, session: sid(sessionId) }, "ws: ← session_switched");
               // Refresh session lists in parallel (non-blocking)
               broadcastSessions().catch(() => {});
             } catch (err: any) {
+              log.error({ client: cid, err: err.message }, "ws: new_session error");
               ws.send(JSON.stringify({ type: "error", text: err.message }));
             }
             break;
@@ -437,18 +510,20 @@ export function startServer(port: number) {
 
           case "switch_session":
           case "resume_session": {
+            log.info({ client: cid, msgType: msg.type, session: sid(msg.sessionId) }, "ws: → switch/resume_session");
             const t0 = performance.now();
             emitProto("send", { method: "sessions/switch", params: { sessionId: msg.sessionId } });
             try {
+              log.info({ session: sid(msg.sessionId) }, "api: sessions/getHistory started");
               const result = await acpConnection.connection.extMethod("sessions/getHistory", { sessionId: msg.sessionId });
-              const t1 = performance.now();
               const entryCount = (result.entries as unknown[])?.length ?? 0;
+              log.info({ session: sid(msg.sessionId), durationMs: Math.round(performance.now() - t0), entries: entryCount }, "api: sessions/getHistory completed");
               clientState.currentSessionId = msg.sessionId;
               ws.send(JSON.stringify({ type: "session_history", sessionId: msg.sessionId, entries: result.entries }));
-              const t2 = performance.now();
               ws.send(JSON.stringify({ type: "session_switched", sessionId: msg.sessionId }));
-              console.log(`[switch_session] ${msg.sessionId.slice(0, 8)} getHistory=${(t1 - t0).toFixed(0)}ms broadcast=${(t2 - t1).toFixed(0)}ms entries=${entryCount}`);
+              log.info({ client: cid, session: sid(msg.sessionId), totalMs: Math.round(performance.now() - t0) }, "ws: ← session_switched");
             } catch (err: any) {
+              log.error({ client: cid, msgType: msg.type, err: err.message, durationMs: Math.round(performance.now() - t0) }, "ws: switch/resume error");
               ws.send(JSON.stringify({ type: "error", text: `Failed to load session: ${err.message}` }));
             }
             break;
@@ -456,21 +531,23 @@ export function startServer(port: number) {
 
           case "resume_subagent": {
             const compositeId = `${msg.parentSessionId}:subagent:${msg.agentId}`;
+            log.info({ client: cid, parent: sid(msg.parentSessionId), agentId: msg.agentId }, "ws: → resume_subagent");
             const t0 = performance.now();
             emitProto("send", { method: "sessions/switch", params: { sessionId: compositeId, subagent: true } });
             try {
+              log.info({ parent: sid(msg.parentSessionId), agentId: msg.agentId }, "api: sessions/getSubagentHistory started");
               const result = await acpConnection.connection.extMethod("sessions/getSubagentHistory", {
                 sessionId: msg.parentSessionId,
                 agentId: msg.agentId,
               });
-              const t1 = performance.now();
               const entryCount = (result.entries as unknown[])?.length ?? 0;
+              log.info({ durationMs: Math.round(performance.now() - t0), entries: entryCount }, "api: sessions/getSubagentHistory completed");
               clientState.currentSessionId = compositeId;
               ws.send(JSON.stringify({ type: "session_history", sessionId: compositeId, entries: result.entries }));
-              const t2 = performance.now();
               ws.send(JSON.stringify({ type: "session_switched", sessionId: compositeId }));
-              console.log(`[resume_subagent] ${compositeId.slice(0, 8)} getHistory=${(t1 - t0).toFixed(0)}ms broadcast=${(t2 - t1).toFixed(0)}ms entries=${entryCount}`);
+              log.info({ client: cid, session: sid(compositeId), totalMs: Math.round(performance.now() - t0) }, "ws: ← session_switched (subagent)");
             } catch (err: any) {
+              log.error({ client: cid, err: err.message, durationMs: Math.round(performance.now() - t0) }, "ws: resume_subagent error");
               ws.send(JSON.stringify({ type: "error", text: `Failed to load subagent: ${err.message}` }));
             }
             break;
@@ -478,23 +555,24 @@ export function startServer(port: number) {
 
           case "rename_session": {
             const { sessionId, title } = msg;
+            log.info({ client: cid, session: sid(sessionId), title }, "ws: → rename_session");
             const t0 = performance.now();
             const renameResult = await acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
-            const t1 = performance.now();
+            log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - t0), success: renameResult.success }, "api: sessions/rename completed");
             if (renameResult.success) {
               await broadcastSessions();
             }
-            console.log(`[perf] rename_session extMethod=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms`);
             break;
           }
 
           case "delete_session": {
+            log.info({ client: cid, session: sid(msg.sessionId) }, "ws: → delete_session");
             const t0 = performance.now();
             const deleteResult = await acpConnection.connection.extMethod("sessions/delete", { sessionId: msg.sessionId });
-            const t1 = performance.now();
+            const deletedIds = (deleteResult.deletedIds as string[]) ?? [msg.sessionId];
+            log.info({ session: sid(msg.sessionId), durationMs: Math.round(performance.now() - t0), success: deleteResult.success, deletedCount: deletedIds.length }, "api: sessions/delete completed");
             if (deleteResult.success) {
               // Clean up all deleted sessions (parent + any teammate children)
-              const deletedIds = (deleteResult.deletedIds as string[]) ?? [msg.sessionId];
               for (const id of deletedIds) {
                 liveSessionIds.delete(id);
                 clearSessionQueue(id);
@@ -509,47 +587,50 @@ export function startServer(port: number) {
             } else {
               await broadcastSessions();
             }
-            console.log(`[perf] delete_session extMethod=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms deletedIds=${(deleteResult.deletedIds as string[])?.length ?? 0}`);
+            log.info({ client: cid, totalMs: Math.round(performance.now() - t0) }, "ws: delete_session done");
             break;
           }
 
           case "get_commands": {
+            log.info({ client: cid }, "ws: → get_commands");
             try {
               const t0 = performance.now();
               const result = await acpConnection.connection.extMethod("sessions/getAvailableCommands", {});
-              const t1 = performance.now();
+              const cmdCount = (result.commands as unknown[])?.length ?? 0;
+              log.info({ durationMs: Math.round(performance.now() - t0), commands: cmdCount }, "api: sessions/getAvailableCommands completed");
               ws.send(JSON.stringify({ type: "commands", commands: result.commands }));
-              console.log(`[perf] get_commands extMethod=${(t1 - t0).toFixed(0)}ms`);
             } catch (err: any) {
-              console.error("Failed to get commands:", err.message);
+              log.error({ client: cid, err: err.message }, "ws: get_commands error");
             }
             break;
           }
 
           case "get_subagents": {
+            log.info({ client: cid, session: sid(msg.sessionId) }, "ws: → get_subagents");
             try {
               const t0 = performance.now();
               const result = await acpConnection.connection.extMethod("sessions/getSubagents", {
                 sessionId: msg.sessionId,
               });
-              const t1 = performance.now();
+              const childCount = (result.children as unknown[])?.length ?? 0;
+              log.info({ session: sid(msg.sessionId), durationMs: Math.round(performance.now() - t0), children: childCount }, "api: sessions/getSubagents completed");
               ws.send(JSON.stringify({
                 type: "session_subagents",
                 sessionId: msg.sessionId,
                 children: result.children,
               }));
-              console.log(`[perf] get_subagents ${msg.sessionId.slice(0, 8)} extMethod=${(t1 - t0).toFixed(0)}ms`);
             } catch (err: any) {
-              console.error("Failed to get subagents:", err.message);
+              log.error({ client: cid, session: sid(msg.sessionId), err: err.message }, "ws: get_subagents error");
             }
             break;
           }
 
           case "list_files": {
+            log.info({ client: cid, query: msg.query ?? "" }, "ws: → list_files");
             try {
               const t0 = performance.now();
               const raw = execSync("git ls-files", { encoding: "utf-8", cwd: process.cwd(), maxBuffer: 1024 * 1024 });
-              const t1 = performance.now();
+              const gitMs = Math.round(performance.now() - t0);
               const query = (msg.query ?? "").toLowerCase();
               let files = raw.split("\n").filter(Boolean);
               if (query) {
@@ -557,7 +638,7 @@ export function startServer(port: number) {
               }
               files = files.slice(0, 50);
               ws.send(JSON.stringify({ type: "file_list", files, query: msg.query ?? "" }));
-              console.log(`[perf] list_files git=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms results=${files.length}`);
+              log.info({ client: cid, gitMs, results: files.length, totalMs: Math.round(performance.now() - t0) }, "ws: ← file_list");
             } catch {
               ws.send(JSON.stringify({ type: "file_list", files: [], query: msg.query ?? "" }));
             }
@@ -565,21 +646,34 @@ export function startServer(port: number) {
           }
 
           case "list_sessions": {
+            log.info({ client: cid }, "ws: → list_sessions");
             await broadcastSessions();
             break;
           }
+
+          default:
+            log.warn({ client: cid, msgType: msg.type }, "ws: unknown message type");
         }
         const msgElapsed = performance.now() - msgT0;
         if (msgElapsed > 50) {
-          console.log(`[perf] ws.message(${msg.type}) ${msgElapsed.toFixed(0)}ms`);
+          log.warn({ client: cid, msgType: msg.type, durationMs: Math.round(msgElapsed) }, "ws: slow message handler");
         }
       },
 
       close(ws) {
+        const clientState = clients.get(ws);
+        const cid = clientState?.id ?? "?";
+        const connDurationMs = clientState ? Math.round(performance.now() - clientState.connectedAt) : 0;
         clients.delete(ws);
+        log.info({ client: cid, total: clients.size, session: sid(clientState?.currentSessionId), connDurationMs }, "ws: close");
         if (clients.size === 0) messageQueues.clear();
       },
     },
+  });
+
+  // Eagerly start the ACP connection so it's ready before the first client connects.
+  prewarmAcpConnection().catch((err) => {
+    log.error({ err: err.message }, "prewarm failed");
   });
 
   return server;

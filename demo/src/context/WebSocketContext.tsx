@@ -26,6 +26,11 @@ import type {
 import { classifyTool } from "../utils";
 import { jsonlToEntries, prettyToolName, extractAgentId } from "../jsonl-convert";
 
+/** High-resolution timestamp since page navigation start (ms). */
+function pageMs(): string {
+  return performance.now().toFixed(0) + "ms";
+}
+
 // ── Hash-based routing helpers ──
 
 /** Parse the URL hash into session/subagent references. */
@@ -633,8 +638,7 @@ function reducer(state: AppState, action: Action): AppState {
     case "SESSION_HISTORY": {
       const t0 = performance.now();
       const historyMessages = jsonlToEntries(action.entries);
-      const t1 = performance.now();
-      console.log(`[reducer] SESSION_HISTORY ${action.sessionId.slice(0, 8)} jsonlToEntries=${(t1 - t0).toFixed(0)}ms rawEntries=${action.entries.length} parsed=${historyMessages.length}`);
+      console.log(`[${pageMs()}] reducer SESSION_HISTORY ${action.sessionId.slice(0, 8)} parse=${(performance.now() - t0).toFixed(0)}ms raw=${action.entries.length} parsed=${historyMessages.length}`);
       return {
         ...state,
         sessionHistory: {
@@ -659,7 +663,7 @@ function reducer(state: AppState, action: Action): AppState {
       // same session — that would overwrite freshly loaded SESSION_HISTORY data
       // with potentially empty in-memory state, e.g. after page reload).
       const history = { ...state.sessionHistory };
-      console.log("[reducer] SESSION_SWITCHED from", state.currentSessionId, "to", action.sessionId, "historyHas:", !!history[action.sessionId], "historyMsgs:", history[action.sessionId]?.messages?.length ?? 0, "currentMsgs:", state.messages.length);
+      console.log(`[${pageMs()}] reducer SESSION_SWITCHED from=${state.currentSessionId?.slice(0, 8) ?? "null"} to=${action.sessionId.slice(0, 8)} historyMsgs=${history[action.sessionId]?.messages?.length ?? 0} currentMsgs=${state.messages.length}`);
       if (state.currentSessionId && state.currentSessionId !== action.sessionId) {
         history[state.currentSessionId] = {
           messages: state.messages,
@@ -823,7 +827,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
   const resumeSessionCb = useCallback((sessionId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    console.log(`[switch] requesting switch to ${sessionId.slice(0, 8)} at ${performance.now().toFixed(0)}ms`);
+    console.log(`[${pageMs()}] switch requesting ${sessionId.slice(0, 8)}`);
     (window as any).__switchStart = performance.now();
     dispatch({ type: "SESSION_SWITCH_PENDING", sessionId });
     wsRef.current.send(JSON.stringify({ type: "switch_session", sessionId }));
@@ -831,7 +835,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
   const resumeSubagentCb = useCallback((parentSessionId: string, agentId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    console.log(`[switch] requesting subagent switch at ${performance.now().toFixed(0)}ms`);
+    console.log(`[${pageMs()}] switch requesting subagent ${parentSessionId.slice(0, 8)}:${agentId}`);
     (window as any).__switchStart = performance.now();
     dispatch({ type: "SESSION_SWITCH_PENDING", sessionId: `${parentSessionId}:subagent:${agentId}` });
     wsRef.current.send(JSON.stringify({ type: "resume_subagent", parentSessionId, agentId }));
@@ -839,10 +843,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
   const deleteSessionCb = useCallback((sessionId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      console.warn("[deleteSession] WebSocket not connected");
+      console.warn(`[${pageMs()}] deleteSession: WS not connected`);
       return;
     }
-    console.log("[deleteSession] Sending delete_session for", sessionId);
+    console.log(`[${pageMs()}] deleteSession ${sessionId.slice(0, 8)}`);
     wsRef.current.send(JSON.stringify({ type: "delete_session", sessionId }));
   }, []);
 
@@ -877,31 +881,88 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let disposed = false;
     let reconnectTimer: ReturnType<typeof setTimeout>;
+    let connectTimeout: ReturnType<typeof setTimeout>;
+    let retryCount = 0;
 
     function connect() {
-      if (disposed) return;
+      const connectT0 = performance.now();
+      if (disposed) {
+        console.log(`[${pageMs()}] ws connect() called but disposed, skipping`);
+        return;
+      }
+
+      // Close any previous WebSocket to free the browser connection slot.
+      const prev = wsRef.current;
+      if (prev) {
+        const readyStates = ["CONNECTING", "OPEN", "CLOSING", "CLOSED"];
+        console.log(`[${pageMs()}] ws closing previous (readyState=${readyStates[prev.readyState]})`);
+        prev.onopen = null;
+        prev.onclose = null;
+        prev.onmessage = null;
+        prev.onerror = null;
+        if (prev.readyState === WebSocket.CONNECTING || prev.readyState === WebSocket.OPEN) {
+          prev.close();
+        }
+        wsRef.current = null;
+      }
+
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(proto + "//" + location.host + "/ws");
+      // In dev mode, bypass Vite's proxy and connect directly to the backend.
+      // Use 127.0.0.1 instead of localhost to skip IPv6 (::1) resolution fallback
+      // which adds hundreds of ms on some systems.
+      const wsHost = location.port === "5688" ? "127.0.0.1:5689" : location.host;
+      const wsUrl = `${proto}//${wsHost}/ws`;
+      console.log(`[${pageMs()}] ws new WebSocket(${wsUrl}) retry=${retryCount}`);
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
       historyRequestedFor.current.clear();
-      // Reset hash routing state so this connection can perform hash restore.
-      // Critical for React StrictMode: mount 1 may consume these refs then
-      // its WS gets closed; mount 2 needs fresh refs to retry the restore.
       pendingHashRestore.current = parseSessionHash();
       hashInitialized.current = false;
 
-      ws.onopen = () => dispatch({ type: "WS_CONNECTED" });
-      ws.onclose = () => {
-        dispatch({ type: "WS_DISCONNECTED" });
+      // Connection timeout: 1s safety net — real connects take <100ms on localhost.
+      clearTimeout(connectTimeout);
+      connectTimeout = setTimeout(() => {
+        if (ws.readyState === WebSocket.CONNECTING) {
+          console.warn(`[${pageMs()}] ws timeout (1s), retry=${retryCount}`);
+          ws.onopen = null;
+          ws.onclose = null;
+          ws.onmessage = null;
+          ws.onerror = null;
+          ws.close();
+          wsRef.current = null;
+          if (!disposed) {
+            retryCount++;
+            reconnectTimer = setTimeout(connect, 100);
+          }
+        }
+      }, 1000);
+
+      ws.onopen = () => {
+        clearTimeout(connectTimeout);
+        retryCount = 0;
+        console.log(`[${pageMs()}] ws OPEN (handshake=${(performance.now() - connectT0).toFixed(0)}ms)`);
+        if (!disposed) dispatch({ type: "WS_CONNECTED" });
+      };
+      ws.onclose = (ev) => {
+        clearTimeout(connectTimeout);
+        console.log(`[${pageMs()}] ws CLOSED code=${ev.code} disposed=${disposed}`);
         if (!disposed) {
-          reconnectTimer = setTimeout(connect, 2000);
+          dispatch({ type: "WS_DISCONNECTED" });
+          retryCount++;
+          reconnectTimer = setTimeout(connect, 100);
         }
       };
+      ws.onerror = () => {
+        console.error(`[${pageMs()}] ws ERROR`);
+      };
 
+      let firstMsgLogged = false;
       ws.onmessage = (ev) => {
+        if (!firstMsgLogged) {
+          firstMsgLogged = true;
+          console.log(`[${pageMs()}] ws first message (sinceConnect=${(performance.now() - connectT0).toFixed(0)}ms)`);
+        }
         const msg = JSON.parse(ev.data);
-        console.log("[WS RAW]", msg.type, JSON.parse(JSON.stringify(msg)));
-        // Intercept file_list responses before general dispatch
         if (msg.type === "file_list") {
           const cb = fileSearchCallbacks.current.get(msg.query ?? "");
           if (cb) {
@@ -914,11 +975,22 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       };
     }
 
+    console.log(`[${pageMs()}] ws useEffect mount`);
     connect();
     return () => {
+      console.log(`[${pageMs()}] ws useEffect cleanup`);
       disposed = true;
       clearTimeout(reconnectTimer);
-      wsRef.current?.close();
+      clearTimeout(connectTimeout);
+      const ws = wsRef.current;
+      if (ws) {
+        ws.onopen = null;
+        ws.onclose = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.close();
+        wsRef.current = null;
+      }
     };
   }, []);
 
@@ -1008,7 +1080,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       historyRequestedFor.current.add(sessionId);
-      console.log("[fallback] requesting history for", sessionId);
+      console.log(`[${pageMs()}] fallback requesting history for ${sessionId.slice(0, 8)}`);
       const sub = sessionId.match(/^(.+):subagent:(.+)$/);
       if (sub) {
         ws.send(JSON.stringify({ type: "resume_subagent", parentSessionId: sub[1], agentId: sub[2] }));
@@ -1114,15 +1186,14 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       break;
     case "session_history": {
       const entryCount = msg.entries?.length ?? 0;
-      const payloadSize = JSON.stringify(msg).length;
-      console.log(`[handleMsg] session_history received entries=${entryCount} payloadSize=${payloadSize}`);
+      console.log(`[${pageMs()}] handleMsg session_history entries=${entryCount} session=${msg.sessionId?.slice(0, 8)}`);
       dispatch({ type: "SESSION_HISTORY", sessionId: msg.sessionId, entries: msg.entries ?? [] });
       break;
     }
     case "session_switched":
       {
         const elapsed = (window as any).__switchStart ? (performance.now() - (window as any).__switchStart).toFixed(0) : "?";
-        console.log(`[handleMsg] session_switched ${msg.sessionId.slice(0, 8)} totalE2E=${elapsed}ms`);
+        console.log(`[${pageMs()}] handleMsg session_switched ${msg.sessionId.slice(0, 8)} switchE2E=${elapsed}ms`);
       }
       dispatch({ type: "SESSION_SWITCHED", sessionId: msg.sessionId });
       break;

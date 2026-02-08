@@ -25,6 +25,17 @@ export const DebugPanel = forwardRef<HTMLDivElement>((_props, ref) => {
     [state.protoEntries, state.dirFilter, textFilterLower],
   );
 
+  // Build a map from msgId → send timestamp so RCV entries can show method duration
+  const sendTimestamps = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const e of state.protoEntries) {
+      if (e.dir === "send" && e.msgId) {
+        map.set(e.msgId, e.ts);
+      }
+    }
+    return map;
+  }, [state.protoEntries]);
+
   const width = state.debugCollapsed ? "160px" : undefined;
 
   return (
@@ -55,7 +66,7 @@ export const DebugPanel = forwardRef<HTMLDivElement>((_props, ref) => {
           className="flex-1 overflow-y-auto py-1.5"
         >
           {filteredEntries.map((e) => (
-            <ProtoEntry key={e.id} entry={e} startTime={state.startTime} />
+            <ProtoEntry key={e.id} entry={e} startTime={state.startTime} sendTimestamps={sendTimestamps} />
           ))}
         </div>
       )}

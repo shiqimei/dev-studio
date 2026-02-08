@@ -1,5 +1,6 @@
 import { spawn, execSync } from "node:child_process";
 import path from "node:path";
+import { log, bootMs } from "./log.js";
 
 // Resolve system-installed claude binary at module load time
 let systemClaudePath = "";
@@ -85,6 +86,8 @@ export async function createAcpConnection(
 ): Promise<AcpConnection> {
   const projectRoot = path.resolve(import.meta.dir, "../..");
 
+  log.info({ boot: bootMs() }, "api: spawning agent process");
+  const spawnT0 = performance.now();
   const agentProcess = spawn("node", ["dist/index.js"], {
     cwd: projectRoot,
     stdio: ["pipe", "pipe", "inherit"],
@@ -99,8 +102,10 @@ export async function createAcpConnection(
         : {}),
     },
   });
+  log.info({ pid: agentProcess.pid, durationMs: Math.round(performance.now() - spawnT0), boot: bootMs() }, "api: agent process spawned");
 
-  agentProcess.on("error", (err) => console.error("Agent error:", err));
+  agentProcess.on("error", (err) => log.error({ err: err.message }, "api: agent process error"));
+  agentProcess.on("exit", (code, signal) => log.info({ code, signal }, "api: agent process exited"));
 
   const rawStream = ndJsonStream(
     nodeToWebWritable(agentProcess.stdin!),
@@ -117,20 +122,22 @@ export async function createAcpConnection(
     return new WebClient(agent, broadcast);
   }, stream);
 
-  const t0 = performance.now();
+  const initT0 = performance.now();
+  log.info({ boot: bootMs() }, "api: initialize started");
   const initResp = await connection.initialize({
     protocolVersion: 1,
     clientCapabilities: {
       fs: { readTextFile: true, writeTextFile: true },
     },
   });
-  console.log(`[perf] initialize=${(performance.now() - t0).toFixed(0)}ms`);
+  log.info({ durationMs: Math.round(performance.now() - initT0), agent: initResp.agentInfo.name, version: initResp.agentInfo.version, boot: bootMs() }, "api: initialize completed");
 
   broadcast({
     type: "system",
     text: `Connected to ${initResp.agentInfo.name} v${initResp.agentInfo.version}`,
   });
 
+  log.info({ totalMs: Math.round(performance.now() - spawnT0), boot: bootMs() }, "api: createAcpConnection complete");
   return { connection, agentProcess };
 }
 
@@ -143,11 +150,12 @@ export async function createNewSession(
 ): Promise<{ sessionId: string }> {
   const t0 = performance.now();
   const cwd = process.env.ACP_CWD || process.cwd();
+  log.info({ cwd, boot: bootMs() }, "api: newSession started");
   const session = await connection.newSession({
     cwd,
     mcpServers: [],
   });
-  console.log(`[perf] newSession=${(performance.now() - t0).toFixed(0)}ms`);
+  log.info({ durationMs: Math.round(performance.now() - t0), session: session.sessionId.slice(0, 8), models: session.models?.availableModels?.length ?? 0, modes: session.modes?.availableModes?.length ?? 0, boot: bootMs() }, "api: newSession completed");
 
   broadcast({
     type: "session_info",
@@ -168,12 +176,12 @@ export async function resumeSession(
 ): Promise<{ sessionId: string }> {
   const t0 = performance.now();
   const cwd = process.env.ACP_CWD || process.cwd();
+  log.info({ session: sessionId.slice(0, 8), cwd }, "api: resumeSession started");
   const response = await connection.unstable_resumeSession({
     sessionId,
     cwd,
     mcpServers: [],
   });
-  console.log(`[perf] resumeSession=${(performance.now() - t0).toFixed(0)}ms sid=${sessionId.slice(0, 8)}`);
+  log.info({ session: sessionId.slice(0, 8), durationMs: Math.round(performance.now() - t0) }, "api: resumeSession completed");
   return { sessionId: response.sessionId };
 }
-

@@ -5,11 +5,24 @@ import type { ProtoEntry as ProtoEntryType } from "../types";
 interface Props {
   entry: ProtoEntryType;
   startTime: number;
+  sendTimestamps?: Map<string, number>;
 }
 
-export function ProtoEntry({ entry, startTime }: Props) {
+export function ProtoEntry({ entry, startTime, sendTimestamps }: Props) {
   const [open, setOpen] = useState(false);
-  const elapsed = ((entry.ts - startTime) / 1000).toFixed(2) + "s";
+
+  // For RCV entries with a matching SND, show the method round-trip duration.
+  // For everything else, show cumulative time since session start.
+  let elapsed: string;
+  const sendTs = entry.dir === "recv" && entry.msgId ? sendTimestamps?.get(entry.msgId) : undefined;
+  if (sendTs != null) {
+    const durationMs = entry.ts - sendTs;
+    elapsed = durationMs < 1000
+      ? Math.round(durationMs) + "ms"
+      : (durationMs / 1000).toFixed(2) + "s";
+  } else {
+    elapsed = ((entry.ts - startTime) / 1000).toFixed(2) + "s";
+  }
 
   const highlighted = useMemo(() => {
     const json = JSON.stringify(entry.msg, null, 2);

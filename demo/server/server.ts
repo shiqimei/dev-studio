@@ -7,6 +7,8 @@ export function startServer(port: number) {
   interface ClientState { currentSessionId: string | null }
   const clients = new Map<{ send: (data: string) => void }, ClientState>();
   const liveSessionIds = new Set<string>();
+  /** Default session for reconnecting clients (set when first session is created). */
+  let defaultSessionId: string | null = null;
 
   // ── Turn state (server-side, survives client disconnect/reconnect) ──
   type TurnActivity = "brewing" | "thinking" | "responding" | "reading" | "editing" | "running" | "searching" | "delegating" | "planning" | "compacting";
@@ -338,6 +340,7 @@ export function startServer(port: number) {
             const t1 = performance.now();
             const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
             const t2 = performance.now();
+            defaultSessionId = sessionId;
             clientState.currentSessionId = sessionId;
             liveSessionIds.add(sessionId);
             await broadcastSessions();
@@ -359,9 +362,18 @@ export function startServer(port: number) {
           } catch {}
           // After mutex resolves, send current state to this new client
           await broadcastSessions();
+          if (defaultSessionId) {
+            clientState.currentSessionId = defaultSessionId;
+            ws.send(JSON.stringify({ type: "session_switched", sessionId: defaultSessionId }));
+          }
+          console.log(`[perf] open(waitMutex) total=${(performance.now() - t0).toFixed(0)}ms`);
         } else {
-          // Re-joining client: send current state
+          // Re-joining client: send current state + default session
           await broadcastSessions();
+          if (defaultSessionId) {
+            clientState.currentSessionId = defaultSessionId;
+            ws.send(JSON.stringify({ type: "session_switched", sessionId: defaultSessionId }));
+          }
           const t1 = performance.now();
           console.log(`[perf] open(rejoin) broadcastSessions=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms`);
         }
@@ -409,6 +421,7 @@ export function startServer(port: number) {
               const t0 = performance.now();
               const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
               const t1 = performance.now();
+              defaultSessionId = sessionId;
               clientState.currentSessionId = sessionId;
               liveSessionIds.add(sessionId);
               // Send switch only to the requesting client

@@ -982,9 +982,17 @@ export class ClaudeAcpAgent implements Agent {
           }
         }
 
-        const success = await deleteSessionFromDisk(projectDir, sessionId);
+        const diskSuccess = await deleteSessionFromDisk(projectDir, sessionId);
+
+        // Also clean up live in-memory session (may exist even if not yet on disk)
+        const liveSession = this.sessions[sessionId];
+        if (liveSession) {
+          try { this.close(sessionId); } catch {}
+        }
+
+        const success = diskSuccess || !!liveSession;
         if (success) deletedIds.push(sessionId);
-        console.error(`[extMethod] sessions/delete ${sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms deletedIds=${deletedIds.length}`);
+        console.error(`[extMethod] sessions/delete ${sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms deletedIds=${deletedIds.length} disk=${diskSuccess} live=${!!liveSession}`);
         return { success, deletedIds };
       }
 

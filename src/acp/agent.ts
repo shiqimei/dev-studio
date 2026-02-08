@@ -146,6 +146,8 @@ export class ClaudeAcpAgent implements Agent {
   private cachedCommands: Awaited<ReturnType<typeof getAvailableSlashCommands>> | null = null;
   /** Cached models (loaded on demand, shared across sessions) */
   private cachedModels: Awaited<ReturnType<typeof getAvailableModels>> | null = null;
+  /** Cached team leader mappings: sessionId → teamName (from JSONL scan, expensive) */
+  private teamLeaderCache: Map<string, string> | null = null;
   /** Shared SettingsManagers keyed by cwd — avoids duplicate file watchers */
   private settingsManagerCache = new Map<string, { manager: SettingsManager; refCount: number }>();
 
@@ -1503,29 +1505,34 @@ export class ClaudeAcpAgent implements Agent {
 
     // Fallback: for teams with teammates but no leader detected via first-line metadata,
     // scan non-team sessions for TeamCreate tool calls to identify the leader.
-    // Pre-scan all candidate sessions in parallel to avoid O(teams × sessions) sequential reads.
+    // This is expensive (~300-400ms for 50+ sessions) so results are cached.
     const teamsNeedingLeader = [...teamGroups.entries()].filter(
       ([, g]) => !g.leaderSessionId && g.teammates.length > 0,
     );
     if (teamsNeedingLeader.length > 0) {
-      const allTeammateIds = new Set(teamsNeedingLeader.flatMap(([, g]) => g.teammates));
-      const candidateSessions = entries.filter(
-        (e) => !allTeammateIds.has(e.sessionId) && !teamInfoMap.has(e.sessionId),
-      );
-      const scanSettled = await Promise.allSettled(
-        candidateSessions.map(async (e) => ({
-          sessionId: e.sessionId,
-          teamName: await findTeamCreateInSession(projectDir, e.sessionId),
-        })),
-      );
-      const scanResults = scanSettled
-        .filter((r): r is PromiseFulfilledResult<{ sessionId: string; teamName: string | null }> => r.status === "fulfilled")
-        .map((r) => r.value);
-      const sessionTeamMap = new Map(
-        scanResults.filter((r) => r.teamName !== null).map((r) => [r.sessionId, r.teamName!]),
-      );
+      const leaderSpan = perf.start("findTeamLeaders");
+      if (!this.teamLeaderCache) {
+        // First call: scan all candidate sessions and cache results
+        const allTeammateIds = new Set(teamsNeedingLeader.flatMap(([, g]) => g.teammates));
+        const candidateSessions = entries.filter(
+          (e) => !allTeammateIds.has(e.sessionId) && !teamInfoMap.has(e.sessionId),
+        );
+        const scanSettled = await Promise.allSettled(
+          candidateSessions.map(async (e) => ({
+            sessionId: e.sessionId,
+            teamName: await findTeamCreateInSession(projectDir, e.sessionId),
+          })),
+        );
+        this.teamLeaderCache = new Map();
+        for (const result of scanSettled) {
+          if (result.status === "fulfilled" && result.value.teamName) {
+            this.teamLeaderCache.set(result.value.sessionId, result.value.teamName);
+          }
+        }
+      }
+      // Apply cached leader mappings
       for (const [teamName, group] of teamsNeedingLeader) {
-        for (const [sessionId, foundTeam] of sessionTeamMap) {
+        for (const [sessionId, foundTeam] of this.teamLeaderCache) {
           if (foundTeam === teamName) {
             group.leaderSessionId = sessionId;
             teamInfoMap.set(sessionId, { teamName });
@@ -1533,6 +1540,7 @@ export class ClaudeAcpAgent implements Agent {
           }
         }
       }
+      leaderSpan.end({ teams: teamsNeedingLeader.length, cached: this.teamLeaderCache.size > 0 });
     }
 
     // Collect teammate sessionIds that should be hidden from top-level

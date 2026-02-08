@@ -263,28 +263,42 @@ export function startServer(port: number) {
     messageQueues.delete(sessionId);
   }
 
+  // Coalesce concurrent broadcastSessions calls — if one is already in flight,
+  // callers share the same promise instead of issuing parallel requests.
+  let broadcastSessionsPromise: Promise<void> | null = null;
+
   async function broadcastSessions() {
     if (!acpConnection) return;
-    const t0 = performance.now();
+    if (broadcastSessionsPromise) return broadcastSessionsPromise;
+
+    broadcastSessionsPromise = (async () => {
+      const t0 = performance.now();
+      try {
+        const result = await acpConnection!.connection.extMethod("sessions/list", {});
+        const t1 = performance.now();
+        const sessions = ((result as any).sessions ?? []).map((s: any) => ({
+          sessionId: s.sessionId,
+          title: s.title ?? null,
+          updatedAt: s.updatedAt ?? null,
+          created: s._meta?.created ?? null,
+          messageCount: s._meta?.messageCount ?? 0,
+          gitBranch: s._meta?.gitBranch ?? null,
+          projectPath: s._meta?.projectPath ?? null,
+          ...(s._meta?.children ? { children: s._meta.children } : {}),
+          ...(s._meta?.teamName ? { teamName: s._meta.teamName } : {}),
+          isLive: liveSessionIds.has(s.sessionId),
+        }));
+        broadcast({ type: "sessions", sessions });
+        console.log(`[perf] broadcastSessions extMethod=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms count=${sessions.length}`);
+      } catch (err: any) {
+        console.error("Failed to list sessions:", err.message);
+      }
+    })();
+
     try {
-      const result = await acpConnection.connection.extMethod("sessions/list", {});
-      const t1 = performance.now();
-      const sessions = ((result as any).sessions ?? []).map((s: any) => ({
-        sessionId: s.sessionId,
-        title: s.title ?? null,
-        updatedAt: s.updatedAt ?? null,
-        created: s._meta?.created ?? null,
-        messageCount: s._meta?.messageCount ?? 0,
-        gitBranch: s._meta?.gitBranch ?? null,
-        projectPath: s._meta?.projectPath ?? null,
-        ...(s._meta?.children ? { children: s._meta.children } : {}),
-        ...(s._meta?.teamName ? { teamName: s._meta.teamName } : {}),
-        isLive: liveSessionIds.has(s.sessionId),
-      }));
-      broadcast({ type: "sessions", sessions });
-      console.log(`[perf] broadcastSessions extMethod=${(t1 - t0).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms count=${sessions.length}`);
-    } catch (err: any) {
-      console.error("Failed to list sessions:", err.message);
+      await broadcastSessionsPromise;
+    } finally {
+      broadcastSessionsPromise = null;
     }
   }
 

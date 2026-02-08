@@ -24,13 +24,42 @@ import type {
   SlashCommand,
   FileBlock,
   PlanEntryItem,
+  TaskItemEntry,
+  SubagentChild,
+  SubagentType,
 } from "../types";
 import { classifyTool } from "../utils";
 import { jsonlToEntries, prettyToolName, extractAgentId } from "../jsonl-convert";
 
+/** Map raw subagent_type string to our SubagentType enum. */
+function normalizeSubagentType(raw: string): SubagentType {
+  switch (raw.toLowerCase()) {
+    case "explore": return "explore";
+    case "plan": return "plan";
+    case "bash": return "bash";
+    case "general-purpose": return "code";
+    default: return "agent";
+  }
+}
+
 /** High-resolution timestamp since page navigation start (ms). */
 function pageMs(): string {
   return performance.now().toFixed(0) + "ms";
+}
+
+// ── localStorage helpers for selected session persistence ──
+const SELECTED_SESSION_KEY = "acp:selectedSession";
+
+function saveSelectedSession(sessionId: string | null) {
+  if (sessionId) {
+    localStorage.setItem(SELECTED_SESSION_KEY, sessionId);
+  } else {
+    localStorage.removeItem(SELECTED_SESSION_KEY);
+  }
+}
+
+function loadSelectedSession(): string | null {
+  return localStorage.getItem(SELECTED_SESSION_KEY);
 }
 
 // ── Hash-based routing helpers ──
@@ -82,6 +111,7 @@ const emptySnapshot: SessionSnapshot = {
   turnStatus: null,
   queuedMessages: [],
   latestPlan: null,
+  latestTasks: null,
 };
 
 const initialState: AppState = {
@@ -115,7 +145,9 @@ const initialState: AppState = {
   // Slash commands
   commands: [],
   _recentlyDeletedIds: [],
+  tasksSidecarOpen: true,
   latestPlan: null,
+  latestTasks: null,
   unreadCompletedSessions: {},
 };
 
@@ -422,11 +454,22 @@ function reducer(state: AppState, action: Action): AppState {
             ? ("failed" as const)
             : undefined;
 
-      return {
-        ...state,
-        tasks: updatedTasks,
-        peekStatus: newPeek,
-        messages: state.messages.map((m) => {
+      // Detect Task tool getting its agentId — add to sidebar tree immediately
+      let newSubagentChild: SubagentChild | null = null;
+      if (state.currentSessionId && action.content && action.meta?.claudeCode?.toolName === "Task") {
+        const agentId = extractAgentId(action.content);
+        if (agentId) {
+          const rawType = String(action.meta?.claudeCode?.subagentType ?? "");
+          newSubagentChild = {
+            agentId,
+            taskPrompt: action.title || "Sub-agent",
+            timestamp: new Date().toISOString(),
+            agentType: normalizeSubagentType(rawType),
+          };
+        }
+      }
+
+      const updatedMessages = state.messages.map((m) => {
           if (m.type !== "message" || m.role !== "assistant") return m;
           const hasBlock = m.content.some(
             (b) => b.type === "tool_use" && b.id === action.toolCallId,
@@ -465,7 +508,22 @@ function reducer(state: AppState, action: Action): AppState {
               return updated;
             }),
           };
-        }),
+        });
+
+      return {
+        ...state,
+        tasks: updatedTasks,
+        peekStatus: newPeek,
+        messages: updatedMessages,
+        // Add optimistic subagent child to the current session's sidebar tree
+        ...(newSubagentChild && state.currentSessionId ? {
+          diskSessions: state.diskSessions.map((s) => {
+            if (s.sessionId !== state.currentSessionId) return s;
+            const exists = (s.children ?? []).some((c) => c.agentId === newSubagentChild!.agentId);
+            if (exists) return s;
+            return { ...s, children: [...(s.children ?? []), newSubagentChild!] };
+          }),
+        } : {}),
       };
     }
 
@@ -478,6 +536,12 @@ function reducer(state: AppState, action: Action): AppState {
         ],
         currentTurnId: null,
         latestPlan: action.entries,
+      };
+
+    case "TASKS":
+      return {
+        ...state,
+        latestTasks: action.tasks,
       };
 
     case "PERMISSION":
@@ -665,6 +729,9 @@ function reducer(state: AppState, action: Action): AppState {
       };
     }
 
+    case "TOGGLE_TASKS_SIDECAR":
+      return { ...state, tasksSidecarOpen: !state.tasksSidecarOpen };
+
     // ── Session management actions ────────────
 
     case "SESSIONS": {
@@ -713,9 +780,8 @@ function reducer(state: AppState, action: Action): AppState {
             unread[s.sessionId] = true;
           }
         } else if (lts[s.sessionId]?.status === "completed") {
-          // Already completed — keep stats. Clean up if server no longer reports turnStatus.
+          // Already completed — keep stats for sidebar display. Only clean unread state.
           if (!s.turnStatus) {
-            delete lts[s.sessionId];
             delete unread[s.sessionId];
           }
         } else {
@@ -741,6 +807,7 @@ function reducer(state: AppState, action: Action): AppState {
             turnStatus: null,
             queuedMessages: [],
             latestPlan: extractLatestPlan(historyMessages),
+            latestTasks: null,
           },
         },
       };
@@ -781,6 +848,7 @@ function reducer(state: AppState, action: Action): AppState {
         queuedMessages: restored.queuedMessages,
         peekStatus: {},
         latestPlan: restored.latestPlan,
+        latestTasks: restored.latestTasks,
         unreadCompletedSessions: readUnread,
       };
     }
@@ -910,8 +978,14 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const wsRef = useRef<WebSocket | null>(null);
 
   // ── Hash routing refs ──
-  /** The hash captured at mount time, before any WS events. */
-  const pendingHashRestore = useRef(parseSessionHash());
+  /** The hash captured at mount time, before any WS events.
+   *  Falls back to localStorage if no URL hash is present. */
+  const pendingHashRestore = useRef(
+    parseSessionHash() ?? (() => {
+      const saved = loadSelectedSession();
+      return saved ? { sessionId: saved } : null;
+    })(),
+  );
   /** True once the initial hash restore logic has been handled. */
   const hashInitialized = useRef(false);
   /** When true, the next hash sync will use replaceState instead of pushState. */
@@ -1070,7 +1144,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
       historyRequestedFor.current.clear();
-      pendingHashRestore.current = parseSessionHash();
+      pendingHashRestore.current = parseSessionHash() ?? (() => {
+        const saved = loadSelectedSession();
+        return saved ? { sessionId: saved } : null;
+      })();
       hashInitialized.current = false;
 
       // Connection timeout: 5s safety net (increased from 1s to handle slow reconnects).
@@ -1231,8 +1308,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       pendingHashRestore.current = null;
       hashInitialized.current = true;
 
-      if (restore && restore.sessionId !== state.currentSessionId) {
-        // Switch to the session from the URL hash
+      if (restore) {
+        // Always request the switch — even if currentSessionId already matches
+        // (e.g. during HMR, React Fast Refresh preserves state so the old
+        // sessionId survives, but the server created a new session on reconnect).
         skipNextPush.current = true;
         if (restore.agentId && restore.parentId) {
           resumeSubagentCb(restore.parentId, restore.agentId);
@@ -1246,6 +1325,9 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       history.replaceState(null, "", sessionIdToHash(state.currentSessionId));
       return;
     }
+
+    // Persist selected session to localStorage
+    saveSelectedSession(state.currentSessionId);
 
     // Phase 2: Normal hash sync
     const hash = sessionIdToHash(state.currentSessionId);
@@ -1360,6 +1442,9 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
     }
     case "plan":
       dispatch({ type: "PLAN", entries: msg.entries });
+      break;
+    case "tasks":
+      dispatch({ type: "TASKS", tasks: msg.tasks ?? [] });
       break;
     case "permission":
       dispatch({ type: "PERMISSION", title: msg.title });

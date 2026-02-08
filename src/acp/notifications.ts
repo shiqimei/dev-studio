@@ -286,7 +286,17 @@ export function toAcpNotifications(
           break;
         }
 
-        if (toolUse.name !== "TodoWrite") {
+        if (toolUse.name === "TodoWrite") {
+          // Emit plan notification now that the cache has full input
+          // (at content_block_start time, input was {} so the plan check failed)
+          const todoInput = toolUse.input as { todos?: ClaudePlanEntry[] } | undefined;
+          if (Array.isArray(todoInput?.todos)) {
+            update = {
+              sessionUpdate: "plan",
+              entries: planEntries(todoInput as { todos: ClaudePlanEntry[] }),
+            };
+          }
+        } else {
           const resultInputObj = toolUse.input as
             | Record<string, unknown>
             | undefined;
@@ -314,6 +324,11 @@ export function toAcpNotifications(
           const resultMeta: Record<string, unknown> = { toolName: toolUse.name };
           if (resultIsBackground) resultMeta.isBackground = true;
           if (parentToolUseId) resultMeta.parentToolUseId = parentToolUseId;
+          // Include subagentType for Task tools so the frontend can build the sidebar tree
+          if (toolUse.name === "Task") {
+            const taskInput = toolUse.input as Record<string, unknown> | undefined;
+            if (taskInput?.subagent_type) resultMeta.subagentType = taskInput.subagent_type;
+          }
           update = {
             _meta: { claudeCode: resultMeta } as ToolUpdateMeta,
             toolCallId: chunk.tool_use_id,

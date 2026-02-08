@@ -274,6 +274,26 @@ export function jsonlToEntries(rawEntries: unknown[]): ChatEntry[] {
             content,
           });
         }
+
+        // Extract plan entries from TodoWrite tool_use blocks for the sidecar
+        const rawContent = message.content as Array<Record<string, unknown>>;
+        if (Array.isArray(rawContent)) {
+          for (const block of rawContent) {
+            if (block?.type === "tool_use" && block.name === "TodoWrite") {
+              const input = block.input as Record<string, unknown> | undefined;
+              if (Array.isArray(input?.todos)) {
+                entries.push({
+                  type: "plan",
+                  id: uid(),
+                  entries: (input.todos as Array<{ content: string; status: string }>).map((t) => ({
+                    content: String(t.content ?? ""),
+                    status: (t.status as "pending" | "in_progress" | "completed") ?? "pending",
+                  })),
+                });
+              }
+            }
+          }
+        }
         break;
       }
 

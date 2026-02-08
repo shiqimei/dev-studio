@@ -111,14 +111,25 @@ export class WebClient implements Client {
         this.broadcast({ type: "mode", sessionId: params.sessionId, modeId: update.currentModeId });
         break;
 
-      case "session_info_update":
-        log.info({ session, title: (update as any).title }, "notify: session_info_update");
-        this.broadcast({
-          type: "session_title_update",
-          sessionId: params.sessionId,
-          title: (update as any).title,
-        });
+      case "session_info_update": {
+        const meta = (update as any)._meta?.claudeCode;
+        if (meta?.eventType === "task_state" && Array.isArray(meta.tasks)) {
+          log.info({ session, taskCount: meta.tasks.length }, "notify: session_info_update (task_state)");
+          this.broadcast({
+            type: "tasks",
+            sessionId: params.sessionId,
+            tasks: meta.tasks,
+          });
+        } else {
+          log.info({ session, title: (update as any).title }, "notify: session_info_update");
+          this.broadcast({
+            type: "session_title_update",
+            sessionId: params.sessionId,
+            title: (update as any).title,
+          });
+        }
         break;
+      }
 
       default:
         log.debug({ session, update: (update as any).sessionUpdate ?? "unknown" }, "notify: unhandled sessionUpdate");

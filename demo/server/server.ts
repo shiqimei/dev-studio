@@ -776,6 +776,13 @@ export function startServer(port: number) {
               sendSessionMeta(ws, msg.sessionId);
               sendTurnState(ws, msg.sessionId);
               sendQueueState(ws, msg.sessionId);
+              // Fetch tasks for the switched session (fire-and-forget)
+              acpConnection.connection.extMethod("tasks/list", { sessionId: msg.sessionId }).then((taskResult) => {
+                const tasks = (taskResult.tasks as unknown[]) ?? [];
+                if (tasks.length > 0) {
+                  ws.send(JSON.stringify({ type: "tasks", sessionId: msg.sessionId, tasks }));
+                }
+              }).catch(() => {});
               log.info({ client: cid, session: sid(msg.sessionId), totalMs: Math.round(performance.now() - t0) }, "ws: ← session_switched");
             } catch (err: any) {
               log.error({ client: cid, msgType: msg.type, err: err.message, durationMs: Math.round(performance.now() - t0) }, "ws: switch/resume error");

@@ -164,6 +164,16 @@ export interface DiskSession {
   turnActivityDetail?: string;
 }
 
+export interface TaskItemEntry {
+  id: string;
+  subject: string;
+  description?: string;
+  activeForm?: string;
+  status: "pending" | "in_progress" | "completed";
+  blocks: string[];
+  blockedBy: string[];
+}
+
 export interface SessionSnapshot {
   messages: ChatEntry[];
   tasks: Record<string, TaskInfo>;
@@ -172,6 +182,7 @@ export interface SessionSnapshot {
   turnStatus: TurnStatus | null;
   queuedMessages: string[];
   latestPlan: PlanEntryItem[] | null;
+  latestTasks: TaskItemEntry[] | null;
 }
 
 // ── Turn status ──────────────────────────────
@@ -267,8 +278,12 @@ export interface AppState {
   commands: SlashCommand[];
   /** Tracks recently deleted session IDs to prevent stale SESSIONS broadcasts from re-adding them. */
   _recentlyDeletedIds: string[];
+  /** Whether the Tasks sidecar panel is visible. */
+  tasksSidecarOpen: boolean;
   /** Latest plan/todo entries from the most recent TodoWrite call. */
   latestPlan: PlanEntryItem[] | null;
+  /** Latest task entries from the Tasks system (TaskCreate/TaskUpdate). */
+  latestTasks: TaskItemEntry[] | null;
   /** Sessions whose turn completed while the user was viewing a different session. */
   unreadCompletedSessions: Record<string, true>;
 }
@@ -286,6 +301,7 @@ export type Action =
   | { type: "TOOL_CALL"; toolCallId: string; kind: string; title: string; content: string; rawInput?: unknown; meta: any }
   | { type: "TOOL_CALL_UPDATE"; toolCallId: string; status: string; title?: string; kind?: string; content?: string; rawInput?: unknown; meta: any }
   | { type: "PLAN"; entries: PlanEntryItem[] }
+  | { type: "TASKS"; tasks: TaskItemEntry[] }
   | { type: "PERMISSION"; title: string }
   | { type: "SESSION_INFO"; sessionId: string; models: string[]; currentModel?: string | null; modes: { id: string }[] }
   | { type: "SYSTEM"; text: string }
@@ -298,6 +314,7 @@ export type Action =
   | { type: "SET_TEXT_FILTER"; filter: string }
   | { type: "TOGGLE_DEBUG_COLLAPSE" }
   | { type: "TOGGLE_TASK_PANEL" }
+  | { type: "TOGGLE_TASKS_SIDECAR" }
   | { type: "SESSIONS"; sessions: DiskSession[] }
   | { type: "SESSION_HISTORY"; sessionId: string; entries: unknown[] }
   | { type: "SESSION_SWITCH_PENDING"; sessionId: string }

@@ -36,7 +36,7 @@ function Layout() {
       <div className="flex-1 flex min-h-0 overflow-hidden">
         <SessionSidebar />
         <ChatPanel />
-        <TasksSidecar />
+        {state.tasksSidecarOpen && <TasksSidecar />}
         {!state.debugCollapsed && (
           <>
             <ResizeHandle

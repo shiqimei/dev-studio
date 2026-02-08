@@ -846,7 +846,7 @@ describe("toAcpNotifications", () => {
       expect(logger.error).toHaveBeenCalled();
     });
 
-    it("should not emit tool_call_update for TodoWrite result", () => {
+    it("should emit plan notification for TodoWrite result (not tool_call_update)", () => {
       const toolUseCache: ToolUseCache = {
         toolu_todo_res: {
           type: "tool_use",
@@ -872,7 +872,11 @@ describe("toAcpNotifications", () => {
         mockLogger,
       );
 
-      expect(notifications).toHaveLength(0);
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0].update).toMatchObject({
+        sessionUpdate: "plan",
+        entries: [{ content: "Task", status: "pending", priority: "medium" }],
+      });
     });
 
     it("should include toolName in metadata for tool result", () => {

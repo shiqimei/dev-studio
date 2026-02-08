@@ -12,6 +12,16 @@ function prettyModelName(modelId: string): string {
 export function Header() {
   const { state, dispatch } = useWs();
   const toggleDebug = useCallback(() => dispatch({ type: "TOGGLE_DEBUG_COLLAPSE" }), [dispatch]);
+  const toggleTasks = useCallback(() => dispatch({ type: "TOGGLE_TASKS_SIDECAR" }), [dispatch]);
+
+  const plan = state.latestPlan;
+  const tasks = state.latestTasks;
+  const planCompleted = plan?.filter((e) => e.status === "completed").length ?? 0;
+  const planTotal = plan?.length ?? 0;
+  const tasksCompleted = tasks?.filter((e) => e.status === "completed").length ?? 0;
+  const tasksTotal = tasks?.length ?? 0;
+  const completedCount = planCompleted + tasksCompleted;
+  const totalCount = planTotal + tasksTotal;
   const statusClass = state.connected ? "connected" : "error";
 
   // Find current session title
@@ -48,6 +58,15 @@ export function Header() {
             ? `reconnecting (${state.reconnectAttempt})...`
             : "connecting..."}
       </span>
+      {totalCount > 0 && (
+        <button
+          className={`debug-ctrl-btn text-[11px] px-2 py-0.5 shrink-0${state.tasksSidecarOpen ? " active" : ""}`}
+          onClick={toggleTasks}
+          title={state.tasksSidecarOpen ? "Hide tasks panel" : "Show tasks panel"}
+        >
+          Tasks {completedCount}/{totalCount} {state.tasksSidecarOpen ? "\u25B6" : "\u25C0"}
+        </button>
+      )}
       <button
         className="debug-ctrl-btn text-[11px] px-2 py-0.5 shrink-0"
         onClick={toggleDebug}

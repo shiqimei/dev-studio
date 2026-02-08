@@ -2,6 +2,24 @@ import { useRef, useCallback, useState, useEffect, useMemo } from "react";
 import { useWs } from "../context/WebSocketContext";
 import type { ImageAttachment, FileAttachment, SlashCommand, MessageEntry } from "../types";
 
+// ── localStorage helpers for session-scoped draft persistence ──
+const DRAFT_KEY_PREFIX = "chatInput:draft:";
+
+function saveDraft(sessionId: string | null, text: string) {
+  if (!sessionId) return;
+  const key = DRAFT_KEY_PREFIX + sessionId;
+  if (text) {
+    localStorage.setItem(key, text);
+  } else {
+    localStorage.removeItem(key);
+  }
+}
+
+function loadDraft(sessionId: string | null): string {
+  if (!sessionId) return "";
+  return localStorage.getItem(DRAFT_KEY_PREFIX + sessionId) ?? "";
+}
+
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -58,6 +76,38 @@ export function ChatInput() {
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [files, setFiles] = useState<FileAttachment[]>([]);
 
+  // ── Undo/redo history ──
+  const undoStack = useRef<string[]>([]);
+  const redoStack = useRef<string[]>([]);
+  const lastSnapshotRef = useRef("");
+
+  /** Push current value onto undo stack (call before changing the value). */
+  const pushUndo = useCallback(() => {
+    const val = inputRef.current?.value ?? "";
+    if (val !== lastSnapshotRef.current) {
+      undoStack.current.push(lastSnapshotRef.current);
+      redoStack.current = [];
+      lastSnapshotRef.current = val;
+    }
+  }, []);
+
+  // ── Restore draft from localStorage on session switch ──
+  // Skip when currentSessionId is null (initial mount before session is resolved)
+  // to avoid clearing the textarea and causing a flicker.
+  useEffect(() => {
+    if (!state.currentSessionId) return;
+    const el = inputRef.current;
+    if (!el) return;
+    const draft = loadDraft(state.currentSessionId);
+    el.value = draft;
+    lastSnapshotRef.current = draft;
+    undoStack.current = [];
+    redoStack.current = [];
+    // Recalc height
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 240) + "px";
+  }, [state.currentSessionId]);
+
   // ── Lazy command loading (gate on connected + empty commands) ──
 
   // ── Slash command autocomplete state ──
@@ -81,11 +131,15 @@ export function ChatInput() {
       inputRef.current.value = "";
       inputRef.current.style.height = "auto";
     }
+    saveDraft(state.currentSessionId, "");
+    lastSnapshotRef.current = "";
+    undoStack.current = [];
+    redoStack.current = [];
     setImages([]);
     setFiles([]);
     setSlashOpen(false);
     setMentionOpen(false);
-  }, [send, images, files]);
+  }, [send, images, files, state.currentSessionId]);
 
   // ── Detect slash commands and @mentions on input ──
   const slashAnchorRef = useRef(-1);
@@ -156,7 +210,7 @@ export function ChatInput() {
     slashAnchorRef.current = -1;
     // Trigger height recalc
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 144) + "px";
+    el.style.height = Math.min(el.scrollHeight, 240) + "px";
   }, []);
 
   const selectFile = useCallback((filePath: string) => {
@@ -230,6 +284,37 @@ export function ChatInput() {
         }
       }
 
+      // ── Undo / Redo ──
+      if (e.key === "z" && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        const el = inputRef.current;
+        if (!el || undoStack.current.length === 0) return;
+        redoStack.current.push(el.value);
+        const prev = undoStack.current.pop()!;
+        el.value = prev;
+        lastSnapshotRef.current = prev;
+        saveDraft(state.currentSessionId, prev);
+        el.style.height = "auto";
+        el.style.height = Math.min(el.scrollHeight, 240) + "px";
+        return;
+      }
+      if (
+        (e.key === "y" && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) ||
+        (e.key === "z" && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey)
+      ) {
+        e.preventDefault();
+        const el = inputRef.current;
+        if (!el || redoStack.current.length === 0) return;
+        undoStack.current.push(el.value);
+        const next = redoStack.current.pop()!;
+        el.value = next;
+        lastSnapshotRef.current = next;
+        saveDraft(state.currentSessionId, next);
+        el.style.height = "auto";
+        el.style.height = Math.min(el.scrollHeight, 240) + "px";
+        return;
+      }
+
       // ESC to interrupt when a turn is in progress
       if (e.key === "Escape" && state.busy) {
         e.preventDefault();
@@ -258,16 +343,18 @@ export function ChatInput() {
         });
       }
     },
-    [handleSend, state.busy, interrupt, slashOpen, slashFiltered, slashIdx, selectSlashCommand, mentionOpen, mentionResults, mentionIdx, selectFile],
+    [handleSend, state.busy, state.currentSessionId, interrupt, slashOpen, slashFiltered, slashIdx, selectSlashCommand, mentionOpen, mentionResults, mentionIdx, selectFile],
   );
 
   const onInput = useCallback(() => {
     const el = inputRef.current;
     if (!el) return;
+    pushUndo();
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 144) + "px";
+    el.style.height = Math.min(el.scrollHeight, 240) + "px";
+    saveDraft(state.currentSessionId, el.value);
     checkAutocomplete();
-  }, [checkAutocomplete]);
+  }, [checkAutocomplete, pushUndo, state.currentSessionId]);
 
   const onFocus = useCallback(() => {
     if (state.commands.length === 0 && state.connected) {
@@ -438,14 +525,14 @@ export function ChatInput() {
       <div className="flex gap-2">
         <textarea
           ref={inputRef}
-          rows={3}
+          rows={6}
           placeholder={state.busy ? "Press ESC to interrupt..." : images.length > 0 ? "Add a message or send image..." : files.length > 0 ? "Add a message or send files..." : "Send a message... (/ for commands, @ for files)"}
           disabled={disabled}
           onKeyDown={onKeyDown}
           onInput={onInput}
           onPaste={onPaste}
           onFocus={onFocus}
-          className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none max-h-[144px] overflow-auto shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_2px_6px_rgba(0,0,0,0.4)] placeholder:text-dim disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none max-h-[240px] overflow-auto shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_2px_6px_rgba(0,0,0,0.4)] placeholder:text-dim disabled:opacity-50 disabled:cursor-not-allowed"
         />
 
       </div>

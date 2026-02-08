@@ -739,19 +739,15 @@
 }
 
 .plan-entry .marker {
-  width: 14px;
-  height: 14px;
-  border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 9px;
   flex-shrink: 0;
 }
 
-.plan-entry .marker.pending { border: 1px solid var(--color-border); color: var(--color-dim); }
-.plan-entry .marker.in_progress { background: var(--color-yellow); color: var(--color-bg); }
-.plan-entry .marker.completed { background: var(--color-green); color: var(--color-bg); }
+.plan-entry .marker.pending { color: #525252; }
+.plan-entry .marker.in_progress { color: var(--color-yellow); }
+.plan-entry .marker.completed { color: var(--color-dim); }
 
 /* ── Tasks sidecar ────────────────────────── */
 
@@ -759,15 +755,49 @@
   width: 260px;
   flex-shrink: 0;
   border-left: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tasks-sidecar.split .tasks-sidecar-section {
+  flex: 1;
+  min-height: 0;
+}
+
+.tasks-sidecar-section {
   padding: 16px;
   overflow-y: auto;
+}
+
+.tasks-sidecar-section.full {
+  flex: 1;
+}
+
+.tasks-sidecar-divider {
+  height: 1px;
+  background: var(--color-border);
+  flex-shrink: 0;
+}
+
+.tasks-sidecar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
 }
 
 .tasks-sidecar-title {
   font-size: 13px;
   font-weight: 600;
   color: var(--color-text);
-  margin-bottom: 12px;
+}
+
+.tasks-sidecar-stats {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .tasks-sidecar-list {
@@ -789,34 +819,17 @@
   background: var(--color-accent-dim);
 }
 
-.tasks-sidecar-check {
-  width: 16px;
-  height: 16px;
-  border-radius: 3px;
+.tasks-sidecar-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
   flex-shrink: 0;
   margin-top: 1px;
 }
 
-.tasks-sidecar-check.pending {
-  border: 1.5px solid #404040;
-  color: transparent;
-}
-
-.tasks-sidecar-check.in_progress {
-  border: 1.5px solid var(--color-yellow);
-  color: transparent;
-  box-shadow: 0 0 0 1px var(--color-yellow) inset;
-}
-
-.tasks-sidecar-check.completed {
-  background: var(--color-green);
-  color: var(--color-bg);
-  border: 1.5px solid var(--color-green);
-}
+.tasks-sidecar-icon.pending { color: #525252; }
+.tasks-sidecar-icon.in_progress { color: var(--color-yellow); }
+.tasks-sidecar-icon.completed { color: var(--color-dim); }
 
 .tasks-sidecar-text {
   font-size: 12px;

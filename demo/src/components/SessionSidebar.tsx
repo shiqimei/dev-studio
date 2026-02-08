@@ -438,6 +438,24 @@ export function SessionSidebar() {
   // Use pending session id for optimistic active highlighting
   const activeSessionId = state.switchingToSessionId ?? state.currentSessionId;
 
+  // Auto-expand active session when it gets its first children (optimistic subagent insert)
+  const prevChildCountRef = useRef<Record<string, number>>({});
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const session = state.diskSessions.find((s) => s.sessionId === activeSessionId);
+    const count = session?.children?.length ?? 0;
+    const prev = prevChildCountRef.current[activeSessionId] ?? 0;
+    prevChildCountRef.current[activeSessionId] = count;
+
+    if (prev === 0 && count > 0 && !expandedSessions.has(activeSessionId)) {
+      setExpandedSessions((s) => {
+        const next = new Set(s);
+        next.add(activeSessionId);
+        return next;
+      });
+    }
+  }, [activeSessionId, state.diskSessions, expandedSessions]);
+
   // Auto-expand sidebar tree when navigating to a sub-agent or teammate session
   useEffect(() => {
     if (!activeSessionId) return;

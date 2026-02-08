@@ -1157,6 +1157,13 @@ export class ClaudeAcpAgent implements Agent {
           return { commands: this.cachedCommands, models: this.cachedModels };
         }
 
+        case "tasks/list": {
+          const sessionId = params.sessionId as string;
+          if (!sessionId) throw new Error("sessionId is required");
+          const tasks = await readSessionTasks(sessionId);
+          return { tasks };
+        }
+
         case "sessions/getSubagents": {
           const sessionId = params.sessionId as string;
           if (!sessionId) throw new Error("sessionId is required");

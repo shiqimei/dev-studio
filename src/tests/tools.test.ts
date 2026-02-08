@@ -286,7 +286,7 @@ describe("rawOutput in tool call updates", () => {
     });
   });
 
-  it("should not emit tool_call_update for TodoWrite (emits plan instead)", () => {
+  it("should emit plan notification for TodoWrite tool_result (not tool_call_update)", () => {
     const toolUseCache: ToolUseCache = {
       toolu_todo: {
         type: "tool_use",
@@ -312,7 +312,11 @@ describe("rawOutput in tool call updates", () => {
       mockLogger,
     );
 
-    // TodoWrite should not emit tool_call_update - it emits plan updates instead
-    expect(notifications).toHaveLength(0);
+    // TodoWrite should emit a plan notification (not tool_call_update)
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].update).toMatchObject({
+      sessionUpdate: "plan",
+      entries: [{ content: "Test task", status: "pending", priority: "medium" }],
+    });
   });
 });

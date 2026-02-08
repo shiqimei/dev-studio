@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 
 interface Props {
   text: string;
@@ -15,7 +15,7 @@ function hintText(text: string): string {
   return text.length > 120 ? text.slice(0, 120) + "..." : text;
 }
 
-export function ThoughtMessage({ text, isLatest }: Props) {
+export const ThoughtMessage = memo(function ThoughtMessage({ text, isLatest }: Props) {
   if (!text) return null;
   const [open, setOpen] = useState(isLatest);
 
@@ -33,4 +33,4 @@ export function ThoughtMessage({ text, isLatest }: Props) {
       {open && <div className="tool-content thought-content">{text}</div>}
     </div>
   );
-}
+});

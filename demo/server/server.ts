@@ -508,7 +508,14 @@ export function startServer(port: number) {
           ...(s._meta?.children ? { children: s._meta.children } : {}),
           ...(s._meta?.teamName ? { teamName: s._meta.teamName } : {}),
           isLive: liveSessionIds.has(s.sessionId),
-          ...(turnStates[s.sessionId] ? { turnStatus: turnStates[s.sessionId].status } : {}),
+          ...(turnStates[s.sessionId] ? {
+            turnStatus: turnStates[s.sessionId].status,
+            ...(turnStates[s.sessionId].status === "in_progress" ? {
+              turnStartedAt: turnStates[s.sessionId].startedAt,
+              turnActivity: turnStates[s.sessionId].activity,
+              turnActivityDetail: turnStates[s.sessionId].activityDetail,
+            } : {}),
+          } : {}),
         }));
         log.info({ durationMs: Math.round(t1 - t0), sessions: sessions.length, clients: clients.size }, "api: sessions/list completed");
         broadcast({ type: "sessions", sessions });

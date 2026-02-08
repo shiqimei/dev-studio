@@ -1,9 +1,19 @@
+import { useState, useEffect } from "react";
 import { useWs } from "../context/WebSocketContext";
 import { formatElapsed } from "../utils";
 
 export function TaskPanel() {
   const { state, send } = useWs();
   const bgTasks = Object.values(state.tasks).filter((t) => t.isBackground);
+  const hasRunning = bgTasks.some((t) => t.status === "running");
+
+  // Local timer to tick elapsed durations for running tasks (replaces global timer)
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!hasRunning || !state.taskPanelOpen) return;
+    const id = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [hasRunning, state.taskPanelOpen]);
 
   if (bgTasks.length === 0 || !state.taskPanelOpen) return null;
 

@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 interface Props {
   text: string;
   isError?: boolean;
@@ -18,7 +20,7 @@ function formatError(raw: string): string {
   return raw;
 }
 
-export function SystemMessage({ text, isError }: Props) {
+export const SystemMessage = memo(function SystemMessage({ text, isError }: Props) {
   if (isError) {
     return (
       <div className="msg error">
@@ -28,4 +30,4 @@ export function SystemMessage({ text, isError }: Props) {
     );
   }
   return <div className="msg system">{text}</div>;
-}
+});

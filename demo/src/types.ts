@@ -156,6 +156,12 @@ export interface DiskSession {
   isLive?: boolean;
   /** Server-side turn status for this session (only present for live sessions). */
   turnStatus?: "in_progress" | "completed" | "error";
+  /** Turn start timestamp (only present when turnStatus is "in_progress"). */
+  turnStartedAt?: number;
+  /** Current activity (only present when turnStatus is "in_progress"). */
+  turnActivity?: TurnActivity;
+  /** Activity detail (only present when turnStatus is "in_progress"). */
+  turnActivityDetail?: string;
 }
 
 export interface SessionSnapshot {
@@ -226,6 +232,8 @@ export type DirFilter = "all" | "send" | "recv";
 
 export interface AppState {
   connected: boolean;
+  /** Current reconnection attempt (0 = not reconnecting or first connect). */
+  reconnectAttempt: number;
   busy: boolean;
   queuedMessages: string[];
   messages: ChatEntry[];
@@ -258,6 +266,7 @@ export interface AppState {
 export type Action =
   | { type: "WS_CONNECTED" }
   | { type: "WS_DISCONNECTED" }
+  | { type: "WS_RECONNECTING"; attempt: number }
   | { type: "SET_BUSY"; busy: boolean }
   | { type: "SEND_MESSAGE"; text: string; images?: ImageAttachment[]; files?: FileAttachment[]; queueId?: string }
   | { type: "TEXT_CHUNK"; text: string }

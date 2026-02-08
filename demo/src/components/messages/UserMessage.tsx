@@ -1,5 +1,4 @@
-import { useState, useRef, useLayoutEffect, type ReactNode } from "react";
-import { useWs } from "../../context/WebSocketContext";
+import { useState, useRef, useLayoutEffect, memo, type ReactNode } from "react";
 import type { MessageEntry } from "../../types";
 import { TaskNotification } from "./TaskNotification";
 import { parseTaskResult } from "./ToolCall";
@@ -280,16 +279,16 @@ function hasXmlTags(text: string): boolean {
 interface Props {
   entry: MessageEntry;
   isLatest: boolean;
+  isQueued: boolean;
+  onCancelQueued: (queueId: string) => void;
 }
 
-export function UserMessage({ entry, isLatest }: Props) {
-  const { state, cancelQueued } = useWs();
+export const UserMessage = memo(function UserMessage({ entry, isLatest, isQueued, onCancelQueued }: Props) {
   const [preview, setPreview] = useState<string | null>(null);
   const [userExpanded, setUserExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const textRef = useRef<HTMLDivElement>(null);
   const expanded = userExpanded || isLatest;
-  const isQueued = !!(entry._queueId && state.queuedMessages.includes(entry._queueId));
 
   const images = entry.content.filter((b) => b.type === "image");
   const fileBlocks = entry.content.filter((b) => b.type === "file");
@@ -325,7 +324,7 @@ export function UserMessage({ entry, isLatest }: Props) {
           <button
             type="button"
             className="queued-cancel"
-            onClick={() => cancelQueued(entry._queueId!)}
+            onClick={() => onCancelQueued(entry._queueId!)}
           >
             x
           </button>
@@ -391,4 +390,4 @@ export function UserMessage({ entry, isLatest }: Props) {
       )}
     </div>
   );
-}
+});

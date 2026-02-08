@@ -1,14 +1,19 @@
-import { useWs } from "../context/WebSocketContext";
+import { useWsState, useWsActions } from "../context/WebSocketContext";
 import { useAutoScroll } from "../hooks/useAutoScroll";
 import { UserMessage } from "./messages/UserMessage";
 import { AssistantTurn } from "./messages/AssistantTurn";
 import { SystemMessage } from "./messages/SystemMessage";
 import { Plan } from "./messages/Plan";
 import { TurnStatusBar, CompletedBar } from "./TurnStatusBar";
+import type { MessageEntry } from "../types";
 
 export function MessageList() {
-  const { state } = useWs();
+  const state = useWsState();
+  const { cancelQueued, resumeSubagent } = useWsActions();
   const { ref, onScroll } = useAutoScroll<HTMLDivElement>(state.messages, state.turnStatus);
+
+  // Derive parent session ID once for all assistant turns
+  const parentSessionId = state.currentSessionId?.split(":subagent:")[0] ?? null;
 
   return (
     <div
@@ -17,15 +22,24 @@ export function MessageList() {
       className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-1"
     >
       {state.messages.map((entry, idx) => {
+        const isLatest = idx === state.messages.length - 1;
         switch (entry.type) {
           case "message":
             return entry.role === "user" ? (
-              <UserMessage key={entry.id} entry={entry} isLatest={idx === state.messages.length - 1} />
+              <UserMessage
+                key={entry.id}
+                entry={entry}
+                isLatest={isLatest}
+                isQueued={!!((entry as MessageEntry)._queueId && state.queuedMessages.includes((entry as MessageEntry)._queueId!))}
+                onCancelQueued={cancelQueued}
+              />
             ) : (
               <AssistantTurn
                 key={entry.id}
                 entry={entry}
-                isLatest={idx === state.messages.length - 1}
+                isLatest={isLatest}
+                parentSessionId={parentSessionId}
+                onResumeSubagent={resumeSubagent}
               />
             );
           case "system":
@@ -38,7 +52,7 @@ export function MessageList() {
             return null;
         }
       })}
-      <TurnStatusBar />
+      <TurnStatusBar status={state.turnStatus} />
     </div>
   );
 }

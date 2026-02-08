@@ -15,24 +15,8 @@ export function DebugHeader() {
     navigator.clipboard.writeText(text);
   }, [state.protoEntries]);
 
-  const toggleCollapse = useCallback(
-    () => dispatch({ type: "TOGGLE_DEBUG_COLLAPSE" }),
-    [dispatch],
-  );
-
   if (state.debugCollapsed) {
-    return (
-      <div className="px-3.5 py-2 border-b border-border flex items-center gap-2.5 shrink-0 overflow-hidden">
-        <span className="text-[11px] font-bold uppercase tracking-wide text-dim">
-          Protocol
-        </span>
-        <button
-          className="debug-ctrl-btn whitespace-nowrap ml-auto"
-          onClick={toggleCollapse}
-          dangerouslySetInnerHTML={{ __html: "&#9664;" }}
-        />
-      </div>
-    );
+    return null;
   }
 
   return (
@@ -66,11 +50,6 @@ export function DebugHeader() {
       <button className="debug-ctrl-btn whitespace-nowrap" onClick={copyAll}>
         Copy All
       </button>
-      <button
-        className="debug-ctrl-btn whitespace-nowrap ml-auto"
-        onClick={toggleCollapse}
-        dangerouslySetInnerHTML={{ __html: "&#9654;" }}
-      />
       <input
         type="text"
         placeholder="Filter method..."
@@ -78,7 +57,7 @@ export function DebugHeader() {
         onChange={(e) =>
           dispatch({ type: "SET_TEXT_FILTER", filter: e.target.value })
         }
-        className="bg-transparent border border-border rounded-md px-2 py-0.5 text-text font-mono text-[10px] outline-none w-[140px] focus:border-dim placeholder:text-dim"
+        className="bg-transparent border border-border rounded-md px-2 py-0.5 text-text font-mono text-[10px] outline-none w-[140px] focus:border-dim placeholder:text-dim ml-auto"
       />
     </div>
   );

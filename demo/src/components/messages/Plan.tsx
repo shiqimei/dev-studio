@@ -1,10 +1,11 @@
+import { memo } from "react";
 import type { PlanEntryItem } from "../../types";
 
 interface Props {
   entries: PlanEntryItem[];
 }
 
-export function Plan({ entries }: Props) {
+export const Plan = memo(function Plan({ entries }: Props) {
   return (
     <div className="plan">
       <div className="plan-title">Plan</div>
@@ -24,4 +25,4 @@ export function Plan({ entries }: Props) {
       })}
     </div>
   );
-}
+});

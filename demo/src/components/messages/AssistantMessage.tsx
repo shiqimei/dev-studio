@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Streamdown } from "streamdown";
 import { createCodePlugin, type CodeHighlighterPlugin } from "@streamdown/code";
 import { detectLanguage } from "../../lang-detect";
@@ -30,7 +31,7 @@ interface Props {
   done: boolean;
 }
 
-export function AssistantMessage({ text, done }: Props) {
+export const AssistantMessage = memo(function AssistantMessage({ text, done }: Props) {
   const clean = stripCliXml(text);
   if (!clean) return null;
   return (
@@ -40,4 +41,4 @@ export function AssistantMessage({ text, done }: Props) {
       </Streamdown>
     </div>
   );
-}
+});

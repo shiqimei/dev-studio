@@ -58,7 +58,7 @@ interface Props {
   isBackground?: boolean;
 }
 
-export function ToolCall({ kind, title, content, status, input, agentId, onNavigateToAgent, startTime, endTime, isBackground }: Props) {
+export const ToolCall = memo(function ToolCall({ kind, title, content, status, input, agentId, onNavigateToAgent, startTime, endTime, isBackground }: Props) {
   const overview = (!title && content) ? toolOverview(kind, content) : "";
   const rawDisplayTitle = title || overview || (content && content.length <= 100 ? content : "");
   const displayTitle = rawDisplayTitle ? stripKindPrefix(stripToolError(rawDisplayTitle).text, kind) : "";
@@ -124,7 +124,7 @@ export function ToolCall({ kind, title, content, status, input, agentId, onNavig
       )}
     </div>
   );
-}
+});
 
 // ── System reminder handling ────────────────
 

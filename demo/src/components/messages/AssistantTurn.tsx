@@ -1,5 +1,5 @@
+import { memo } from "react";
 import type { MessageEntry } from "../../types";
-import { useWs } from "../../context/WebSocketContext";
 import { AssistantMessage } from "./AssistantMessage";
 import { ThoughtMessage } from "./ThoughtMessage";
 import { ToolCall, parseTaskResult } from "./ToolCall";
@@ -8,13 +8,11 @@ import { TaskNotification } from "./TaskNotification";
 interface Props {
   entry: MessageEntry;
   isLatest: boolean;
+  parentSessionId: string | null;
+  onResumeSubagent: (parentSessionId: string, agentId: string) => void;
 }
 
-export function AssistantTurn({ entry, isLatest }: Props) {
-  const { state, resumeSubagent } = useWs();
-
-  // Extract the parent session UUID (strip composite subagent suffix)
-  const parentSessionId = state.currentSessionId?.split(":subagent:")[0] ?? null;
+export const AssistantTurn = memo(function AssistantTurn({ entry, isLatest, parentSessionId, onResumeSubagent }: Props) {
 
   return (
     <>
@@ -49,7 +47,7 @@ export function AssistantTurn({ entry, isLatest }: Props) {
                 agentId={block.agentId}
                 onNavigateToAgent={
                   block.agentId && parentSessionId
-                    ? () => resumeSubagent(parentSessionId!, block.agentId!)
+                    ? () => onResumeSubagent(parentSessionId!, block.agentId!)
                     : undefined
                 }
                 startTime={block.startTime}
@@ -63,4 +61,4 @@ export function AssistantTurn({ entry, isLatest }: Props) {
       })}
     </>
   );
-}
+});

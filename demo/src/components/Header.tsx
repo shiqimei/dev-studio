@@ -1,8 +1,10 @@
+import { useCallback } from "react";
 import { useWs } from "../context/WebSocketContext";
 import { stripCliXml } from "../strip-xml";
 
 export function Header() {
-  const { state } = useWs();
+  const { state, dispatch } = useWs();
+  const toggleDebug = useCallback(() => dispatch({ type: "TOGGLE_DEBUG_COLLAPSE" }), [dispatch]);
   const statusClass = state.connected ? "connected" : "error";
 
   // Find current session title
@@ -30,14 +32,24 @@ export function Header() {
       </svg>
       <h1 className="text-sm font-semibold text-text">Claude Code ACP</h1>
       {sessionLabel && (
-        <span className="text-xs text-dim">
+        <span className="flex-1 min-w-0 truncate text-xs text-dim">
           {sessionLabel}
         </span>
       )}
-      <span id="status" className={statusClass}>
-        {state.connected ? "" : "connecting..."}
-        {state.connected && "connected"}
+      <span id="status" className={`ml-auto ${statusClass}`}>
+        {state.connected
+          ? "connected"
+          : state.reconnectAttempt > 0
+            ? `reconnecting (${state.reconnectAttempt})...`
+            : "connecting..."}
       </span>
+      <button
+        className="debug-ctrl-btn text-[11px] px-2 py-0.5"
+        onClick={toggleDebug}
+        title={state.debugCollapsed ? "Show protocol debug panel" : "Hide protocol debug panel"}
+      >
+        {state.debugCollapsed ? "Protocol \u25C0" : "Protocol \u25B6"}
+      </button>
     </header>
   );
 }

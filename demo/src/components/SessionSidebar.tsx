@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, memo } from "react";
 import { useWs } from "../context/WebSocketContext";
 import type { DiskSession, SubagentChild, SubagentType, TurnStatus, TurnActivity } from "../types";
 
@@ -116,7 +116,7 @@ function relativeTime(iso: string | null): string {
   return `${days}d ago`;
 }
 
-function SessionItem({
+const SessionItem = memo(function SessionItem({
   session,
   isActive,
   isLive,
@@ -169,7 +169,7 @@ function SessionItem({
         </span>
       </div>
       <div className="text-[10px] text-dim mt-0.5 flex items-center justify-between min-w-0">
-        <span className={`truncate flex items-center gap-1 min-w-0 ${isInProgress && !isActive ? "sidebar-in-progress" : "opacity-60"}`}>
+        <span className={`truncate flex items-center gap-1 min-w-0 ${isInProgress ? "sidebar-in-progress" : "opacity-60"}`}>
           {isInProgress && <SidebarSparkleActive />}
           {isLive && !isInProgress && <SidebarSparkleIdle />}
           {isInProgress && !isActive ? (
@@ -193,7 +193,15 @@ function SessionItem({
       </div>
     </button>
   );
-}
+}, (prev, next) => {
+  // Custom comparator: ignore onClick/onMore (always new inline references)
+  return prev.session === next.session
+    && prev.isActive === next.isActive
+    && prev.isLive === next.isLive
+    && prev.turnStatus === next.turnStatus
+    && prev.turnInfo === next.turnInfo
+    && prev.hasChildren === next.hasChildren;
+});
 
 const AGENT_TYPE_STYLES: Record<SubagentType, { label: string; className: string }> = {
   code:    { label: "Code",    className: "subagent-badge code" },
@@ -203,7 +211,7 @@ const AGENT_TYPE_STYLES: Record<SubagentType, { label: string; className: string
   agent:   { label: "Agent",   className: "subagent-badge agent" },
 };
 
-function SubagentItem({
+const SubagentItem = memo(function SubagentItem({
   child,
   parentSessionId,
   isActive,
@@ -264,7 +272,14 @@ function SubagentItem({
       )}
     </div>
   );
-}
+}, (prev, next) => {
+  return prev.child === next.child
+    && prev.isActive === next.isActive
+    && prev.depth === next.depth
+    && prev.hasChildren === next.hasChildren
+    && prev.isExpanded === next.isExpanded
+    && prev.isTeammate === next.isTeammate;
+});
 
 function SessionContextMenu({
   sessionId,

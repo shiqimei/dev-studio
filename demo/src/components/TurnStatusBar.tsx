@@ -1,5 +1,4 @@
-import { useState, useEffect } from "react";
-import { useWs } from "../context/WebSocketContext";
+import { useState, useEffect, memo } from "react";
 import type { TurnStatus, TurnActivity } from "../types";
 
 
@@ -85,15 +84,12 @@ export function CompletedBar({ status }: { status: TurnStatus }) {
   );
 }
 
-export function TurnStatusBar() {
-  const { state } = useWs();
-  const { turnStatus } = state;
+export const TurnStatusBar = memo(function TurnStatusBar({ status }: { status: TurnStatus | null }) {
+  if (!status) return null;
 
-  if (!turnStatus) return null;
-
-  if (turnStatus.status === "in_progress") {
-    return <InProgressBar status={turnStatus} />;
+  if (status.status === "in_progress") {
+    return <InProgressBar status={status} />;
   }
 
-  return <CompletedBar status={turnStatus} />;
-}
+  return <CompletedBar status={status} />;
+});

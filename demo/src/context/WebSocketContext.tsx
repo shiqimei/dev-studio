@@ -5,6 +5,7 @@ import {
   useRef,
   useEffect,
   useCallback,
+  useMemo,
   type ReactNode,
 } from "react";
 import type {
@@ -83,6 +84,7 @@ const emptySnapshot: SessionSnapshot = {
 
 const initialState: AppState = {
   connected: false,
+  reconnectAttempt: 0,
   busy: false,
   queuedMessages: [],
   messages: [],
@@ -95,7 +97,7 @@ const initialState: AppState = {
   protoEntries: [],
   dirFilter: "all",
   textFilter: "",
-  debugCollapsed: false,
+  debugCollapsed: true,
   turnStatus: null,
   liveTurnStatus: {},
   startTime: Date.now(),
@@ -186,10 +188,13 @@ function ensureAssistantTurn(
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "WS_CONNECTED":
-      return { ...state, connected: true, busy: false, startTime: Date.now() };
+      return { ...state, connected: true, reconnectAttempt: 0, busy: false, startTime: Date.now() };
 
     case "WS_DISCONNECTED":
       return { ...state, connected: false, busy: false, queuedMessages: [] };
+
+    case "WS_RECONNECTING":
+      return { ...state, reconnectAttempt: action.attempt };
 
     case "SET_BUSY":
       return { ...state, busy: action.busy };
@@ -646,8 +651,27 @@ function reducer(state: AppState, action: Action): AppState {
 
     // ── Session management actions ────────────
 
-    case "SESSIONS":
-      return { ...state, diskSessions: action.sessions, diskSessionsLoaded: true };
+    case "SESSIONS": {
+      // Seed liveTurnStatus from server-provided turn data on each session
+      const lts = { ...state.liveTurnStatus };
+      for (const s of action.sessions) {
+        if (s.turnStatus === "in_progress" && s.turnStartedAt) {
+          // Don't overwrite real-time updates for the current session
+          if (s.sessionId !== state.currentSessionId || !lts[s.sessionId]) {
+            lts[s.sessionId] = {
+              status: "in_progress",
+              startedAt: s.turnStartedAt,
+              activity: s.turnActivity ?? "brewing",
+              activityDetail: s.turnActivityDetail,
+            };
+          }
+        } else {
+          // Session no longer in progress — clean up stale entry
+          delete lts[s.sessionId];
+        }
+      }
+      return { ...state, diskSessions: action.sessions, diskSessionsLoaded: true, liveTurnStatus: lts };
+    }
 
     case "SESSION_HISTORY": {
       const t0 = performance.now();
@@ -752,6 +776,24 @@ function reducer(state: AppState, action: Action): AppState {
   }
 }
 
+// ── Split contexts: Actions (stable) + State (changes frequently) ──
+// Components that only need actions won't re-render when state changes.
+
+export interface WsActions {
+  dispatch: React.Dispatch<Action>;
+  send: (text: string, images?: ImageAttachment[], files?: FileAttachment[]) => void;
+  interrupt: () => void;
+  newSession: () => void;
+  resumeSession: (sessionId: string) => void;
+  resumeSubagent: (parentSessionId: string, agentId: string) => void;
+  deleteSession: (sessionId: string) => void;
+  renameSession: (sessionId: string, title: string) => void;
+  cancelQueued: (queueId: string) => void;
+  searchFiles: (query: string, callback: (files: string[]) => void) => void;
+  requestCommands: () => void;
+  requestSubagents: (sessionId: string) => void;
+}
+
 interface WsContextValue {
   state: AppState;
   dispatch: React.Dispatch<Action>;
@@ -768,12 +810,26 @@ interface WsContextValue {
   requestSubagents: (sessionId: string) => void;
 }
 
-const WsContext = createContext<WsContextValue | null>(null);
+const WsActionsContext = createContext<WsActions | null>(null);
+const WsStateContext = createContext<AppState>(initialState);
 
-export function useWs(): WsContextValue {
-  const ctx = useContext(WsContext);
-  if (!ctx) throw new Error("useWs must be used within WebSocketProvider");
+/** Access stable action callbacks — never re-renders from state changes. */
+export function useWsActions(): WsActions {
+  const ctx = useContext(WsActionsContext);
+  if (!ctx) throw new Error("useWsActions must be used within WebSocketProvider");
   return ctx;
+}
+
+/** Access full app state — re-renders on every state change. */
+export function useWsState(): AppState {
+  return useContext(WsStateContext);
+}
+
+/** Combined hook (backward compat) — subscribes to both contexts. */
+export function useWs(): WsContextValue {
+  const actions = useWsActions();
+  const state = useWsState();
+  return { state, ...actions };
 }
 
 export function WebSocketProvider({ children }: { children: ReactNode }) {
@@ -877,10 +933,42 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     let connectTimeout: ReturnType<typeof setTimeout>;
     let retryCount = 0;
 
+    /**
+     * Exponential backoff with jitter, capped at 15 seconds.
+     * Formula: min(base * 2^attempt * (1 + random * 0.3), maxDelay)
+     * Attempt 0: ~200ms, 1: ~400ms, 2: ~800ms, 3: ~1.6s, 4: ~3.2s, 5: ~6.4s, 6: ~12.8s, 7+: 15s
+     */
+    function backoffDelay(attempt: number): number {
+      const base = 200;
+      const max = 15_000;
+      const exponential = base * Math.pow(2, attempt);
+      const jitter = 1 + Math.random() * 0.3; // 1.0–1.3x multiplier
+      return Math.min(exponential * jitter, max);
+    }
+
+    /** Schedule a reconnect with exponential backoff. */
+    function scheduleReconnect() {
+      if (disposed) return;
+      const delay = backoffDelay(retryCount);
+      console.log(
+        `[${pageMs()}] ws scheduling reconnect #${retryCount} in ${delay.toFixed(0)}ms`,
+      );
+      dispatch({ type: "WS_RECONNECTING", attempt: retryCount });
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, delay);
+    }
+
     function connect() {
       const connectT0 = performance.now();
       if (disposed) {
         console.log(`[${pageMs()}] ws connect() called but disposed, skipping`);
+        return;
+      }
+
+      // If the browser reports offline, skip the attempt — the `online` event will retry.
+      if (!navigator.onLine) {
+        console.log(`[${pageMs()}] ws connect() skipped: browser offline`);
+        dispatch({ type: "WS_RECONNECTING", attempt: retryCount });
         return;
       }
 
@@ -912,11 +1000,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       pendingHashRestore.current = parseSessionHash();
       hashInitialized.current = false;
 
-      // Connection timeout: 1s safety net — real connects take <100ms on localhost.
+      // Connection timeout: 5s safety net (increased from 1s to handle slow reconnects).
       clearTimeout(connectTimeout);
       connectTimeout = setTimeout(() => {
         if (ws.readyState === WebSocket.CONNECTING) {
-          console.warn(`[${pageMs()}] ws timeout (1s), retry=${retryCount}`);
+          console.warn(`[${pageMs()}] ws timeout (5s), retry=${retryCount}`);
           ws.onopen = null;
           ws.onclose = null;
           ws.onmessage = null;
@@ -925,10 +1013,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           wsRef.current = null;
           if (!disposed) {
             retryCount++;
-            reconnectTimer = setTimeout(connect, 100);
+            scheduleReconnect();
           }
         }
-      }, 1000);
+      }, 5000);
 
       ws.onopen = () => {
         clearTimeout(connectTimeout);
@@ -942,7 +1030,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         if (!disposed) {
           dispatch({ type: "WS_DISCONNECTED" });
           retryCount++;
-          reconnectTimer = setTimeout(connect, 100);
+          scheduleReconnect();
         }
       };
       ws.onerror = () => {
@@ -968,6 +1056,44 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       };
     }
 
+    // ── Network state listeners ──
+    // Immediately retry when the browser comes back online (resets backoff).
+    function onOnline() {
+      console.log(`[${pageMs()}] network: online`);
+      if (disposed) return;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        clearTimeout(reconnectTimer);
+        retryCount = 0; // Reset backoff — network just recovered
+        connect();
+      }
+    }
+
+    function onOffline() {
+      console.log(`[${pageMs()}] network: offline`);
+      // Don't proactively close — the WebSocket may still work on LAN.
+      // The onclose handler will fire if the connection actually drops.
+    }
+
+    // ── Visibility change listener ──
+    // When the tab becomes visible after being hidden, check if the WS is still
+    // alive. Stale connections (laptop sleep, NAT timeout) may not fire onclose
+    // until the next write, so this catches them early.
+    function onVisibilityChange() {
+      if (document.visibilityState !== "visible" || disposed) return;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        console.log(`[${pageMs()}] visibility: tab visible, ws not connected, reconnecting`);
+        clearTimeout(reconnectTimer);
+        retryCount = 0; // Fresh start after tab switch
+        connect();
+      }
+    }
+
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
     console.log(`[${pageMs()}] ws useEffect mount`);
     connect();
     return () => {
@@ -975,6 +1101,9 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       disposed = true;
       clearTimeout(reconnectTimer);
       clearTimeout(connectTimeout);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       const ws = wsRef.current;
       if (ws) {
         ws.onopen = null;
@@ -987,16 +1116,25 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Tick running tasks every second
-  useEffect(() => {
-    const id = setInterval(() => {
-      const hasRunning = Object.values(state.tasks).some(
-        (t) => t.isBackground && t.status === "running",
-      );
-      if (hasRunning) dispatch({ type: "SET_BUSY", busy: state.busy });
-    }, 1000);
-    return () => clearInterval(id);
-  }, [state.tasks, state.busy]);
+  // ── Memoize actions context (stable — callbacks never change) ──
+  const actions = useMemo<WsActions>(
+    () => ({
+      dispatch,
+      send,
+      interrupt,
+      newSession,
+      resumeSession: resumeSessionCb,
+      resumeSubagent: resumeSubagentCb,
+      deleteSession: deleteSessionCb,
+      renameSession: renameSessionCb,
+      cancelQueued,
+      searchFiles,
+      requestCommands,
+      requestSubagents,
+    }),
+    // All deps are useCallback([]) or useReducer dispatch — stable references
+    [dispatch, send, interrupt, newSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents],
+  );
 
   // ── Hash-based URL routing ──
 
@@ -1086,9 +1224,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   }, [state.currentSessionId, state.connected, state.messages.length]);
 
   return (
-    <WsContext.Provider value={{ state, dispatch, send, interrupt, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb, deleteSession: deleteSessionCb, renameSession: renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents }}>
-      {children}
-    </WsContext.Provider>
+    <WsActionsContext.Provider value={actions}>
+      <WsStateContext.Provider value={state}>
+        {children}
+      </WsStateContext.Provider>
+    </WsActionsContext.Provider>
   );
 }
 

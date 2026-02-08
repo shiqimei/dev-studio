@@ -42,11 +42,26 @@ export function startServer(port: number) {
   const processingSessions = new Set<string>();
   let queueIdCounter = 0;
 
+  // ── Per-session state (survives client disconnect/reconnect) ──
+  // Stores metadata that new clients need on connect but that only arrives once.
+  interface SessionMeta {
+    sessionInfo?: { sessionId: string; models: string[]; modes: { id: string; name?: string }[] };
+    systemMessages: string[];  // System text messages (e.g. "Connected to...", init metadata)
+    commands?: { name: string; description: string; inputHint?: string }[];
+  }
+  const sessionMetas = new Map<string, SessionMeta>();
+
+  function getSessionMeta(sessionId: string): SessionMeta {
+    let meta = sessionMetas.get(sessionId);
+    if (!meta) { meta = { systemMessages: [] }; sessionMetas.set(sessionId, meta); }
+    return meta;
+  }
+
   // ── Turn content buffer (per-session) ──
   // Accumulates streaming messages for the in-progress turn so that clients
   // joining mid-turn can replay all content they missed (tmux-style attach).
   const turnContentBuffers = new Map<string, object[]>();
-  const BUFFERABLE_TYPES = new Set(["text", "thought", "tool_call", "tool_call_update", "plan", "permission", "session_info", "system", "error"]);
+  const BUFFERABLE_TYPES = new Set(["text", "thought", "tool_call", "tool_call_update", "plan", "permission", "error"]);
 
   function getQueue(sessionId: string | null): QueuedMessage[] {
     if (!sessionId) return [];
@@ -115,18 +130,35 @@ export function startServer(port: number) {
     }
   }
 
-  /** Send in-progress turn state + buffered content to a single client (tmux-style attach). */
-  function sendTurnStateIfActive(ws: { send(data: string): void }, sessionId: string) {
+  /** Send per-session metadata state to a single client (session_info, system messages, commands). */
+  function sendSessionMeta(ws: { send(data: string): void }, sessionId: string) {
+    const meta = sessionMetas.get(sessionId);
+    if (!meta) return;
+    if (meta.sessionInfo) {
+      ws.send(JSON.stringify(meta.sessionInfo));
+    }
+    for (const text of meta.systemMessages) {
+      ws.send(JSON.stringify({ type: "system", sessionId, text }));
+    }
+    if (meta.commands) {
+      ws.send(JSON.stringify({ type: "commands", sessionId, commands: meta.commands }));
+    }
+  }
+
+  /** Send in-progress turn state + buffered content to a single client (tmux-style attach).
+   *  Completed turns are handled via augmentHistoryWithTurnStats (inline in history). */
+  function sendTurnState(ws: { send(data: string): void }, sessionId: string) {
     const ts = turnStates[sessionId];
     if (!ts || ts.status !== "in_progress") return;
-    ws.send(JSON.stringify({ type: "turn_start", startedAt: ts.startedAt, sessionId }));
 
-    // Replay all buffered turn content (user message + streaming chunks)
+    // Replay buffered streaming chunks FIRST (text, thoughts, tool calls)
     const buf = turnContentBuffers.get(sessionId);
     if (buf && buf.length > 0) {
       ws.send(JSON.stringify({ type: "turn_content_replay", sessionId, messages: buf }));
     }
 
+    // Send turn state AFTER replay so TURN_START isn't reset by replayed SEND_MESSAGE
+    ws.send(JSON.stringify({ type: "turn_start", startedAt: ts.startedAt, sessionId }));
     ws.send(JSON.stringify({
       type: "turn_activity",
       activity: ts.activity,
@@ -143,6 +175,84 @@ export function startServer(port: number) {
     for (const item of q) {
       ws.send(JSON.stringify({ type: "message_queued", queueId: item.id, sessionId }));
     }
+  }
+
+  /** Augment history entries: append turn_duration for every completed turn that lacks one. */
+  function augmentHistoryWithTurnStats(sessionId: string, entries: unknown[]): unknown[] {
+    if (entries.length === 0) return entries;
+
+    const result: unknown[] = [];
+    let turnStartTs: string | null = null; // timestamp of the user message starting current turn
+    let turnTextChars = 0; // accumulated text chars in current turn (for approx token count)
+
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i] as Record<string, unknown>;
+      result.push(e);
+
+      // Track turn starts (non-meta user entries)
+      if (e.type === "user" && !e.isMeta) {
+        turnStartTs = (e.timestamp as string) ?? null;
+        turnTextChars = 0;
+      }
+
+      // Accumulate text chars from assistant content blocks
+      if (e.type === "assistant") {
+        const msg = e.message as Record<string, unknown> | undefined;
+        const content = msg?.content as Array<Record<string, unknown>> | undefined;
+        if (content) {
+          for (const block of content) {
+            if ((block.type === "text" || block.type === "thinking") && typeof block.text === "string") {
+              turnTextChars += block.text.length;
+            }
+          }
+        }
+      }
+
+      // Already has a turn_duration → reset turn tracking
+      if (e.type === "system" && e.subtype === "turn_duration") {
+        turnStartTs = null;
+        turnTextChars = 0;
+        continue;
+      }
+
+      // At end of entries or next entry starts a new turn → inject duration for current turn
+      const next = entries[i + 1] as Record<string, unknown> | undefined;
+      const isEndOfTurn = !next || (next.type === "user" && !next.isMeta);
+      const nextIsDuration = next?.type === "system" && next?.subtype === "turn_duration";
+
+      if (isEndOfTurn && !nextIsDuration && turnStartTs && e.type === "assistant") {
+        const approxTokens = Math.ceil(turnTextChars / 4);
+        // Check turnStates for server-known stats first
+        const ts = turnStates[sessionId];
+        if (ts?.status === "completed" && ts.durationMs && !next) {
+          // Last turn — use server stats if available
+          result.push({
+            type: "system",
+            subtype: "turn_duration",
+            durationMs: ts.durationMs,
+            outputTokens: ts.outputTokens ?? approxTokens,
+            thinkingDurationMs: ts.thinkingDurationMs,
+            costUsd: ts.costUsd,
+          });
+        } else if (turnStartTs && e.timestamp) {
+          // Compute approximate duration and tokens from content
+          const start = new Date(turnStartTs).getTime();
+          const end = new Date(e.timestamp as string).getTime();
+          const durationMs = end - start;
+          if (durationMs > 0) {
+            result.push({
+              type: "system",
+              subtype: "turn_duration",
+              durationMs,
+              ...(approxTokens > 0 && { outputTokens: approxTokens }),
+            });
+          }
+        }
+        turnStartTs = null;
+      }
+    }
+
+    return result;
   }
 
   function broadcast(msg: object) {
@@ -186,6 +296,18 @@ export function startServer(port: number) {
     const method = m.type && SERVER_EVENT_MAP[m.type];
     if (method) {
       emitProto("recv", { method, params: m });
+    }
+
+    // ── Capture per-session state (survives turn boundaries) ──
+    if (msgSessionId) {
+      if (m.type === "session_info") {
+        getSessionMeta(msgSessionId).sessionInfo = { type: "session_info", sessionId: msgSessionId, models: m.models, modes: m.modes } as any;
+      } else if (m.type === "system" && m.text) {
+        const meta = getSessionMeta(msgSessionId);
+        if (!meta.systemMessages.includes(m.text)) meta.systemMessages.push(m.text);
+      } else if (m.type === "commands") {
+        getSessionMeta(msgSessionId).commands = m.commands;
+      }
     }
 
     // Buffer content messages for late-joining clients (mid-turn replay)
@@ -275,10 +397,8 @@ export function startServer(port: number) {
         thinkingDurationMs: 0,
         activity: "brewing",
       };
-      // Seed the buffer with the user message so mid-turn joins see the prompt
-      turnContentBuffers.set(sessionId, [
-        { type: "user_message", sessionId, text, images, files },
-      ]);
+      // Start an empty buffer — user message is already in session history (JSONL)
+      turnContentBuffers.set(sessionId, []);
       broadcast({ type: "turn_start", startedAt: turnStartedAt, sessionId });
 
       const acpPromptT0 = performance.now();
@@ -484,14 +604,16 @@ export function startServer(port: number) {
           const targetSession = defaultSessionId!;
           clientState.currentSessionId = targetSession;
 
-          // tmux-style: send history before session_switched so the reducer has data ready
+          // tmux-style: send all state then activate the session
           try {
             const histResult = await acpConnection!.connection.extMethod("sessions/getHistory", { sessionId: targetSession });
-            ws.send(JSON.stringify({ type: "session_history", sessionId: targetSession, entries: histResult.entries }));
+            ws.send(JSON.stringify({ type: "session_history", sessionId: targetSession, entries: augmentHistoryWithTurnStats(targetSession, histResult.entries as unknown[]) }));
           } catch {}
 
           ws.send(JSON.stringify({ type: "session_switched", sessionId: targetSession }));
-          sendTurnStateIfActive(ws, targetSession);
+          // Send state AFTER session_switched so messages land in the active session
+          sendSessionMeta(ws, targetSession);
+          sendTurnState(ws, targetSession);
           sendQueueState(ws, targetSession);
           log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
 
@@ -507,14 +629,16 @@ export function startServer(port: number) {
             const targetSession = defaultSessionId!;
             clientState.currentSessionId = targetSession;
 
-            // tmux-style: send history before session_switched so the reducer has data ready
+            // tmux-style: send all state then activate the session
             try {
               const histResult = await acpConnection!.connection.extMethod("sessions/getHistory", { sessionId: targetSession });
-              ws.send(JSON.stringify({ type: "session_history", sessionId: targetSession, entries: histResult.entries }));
+              ws.send(JSON.stringify({ type: "session_history", sessionId: targetSession, entries: augmentHistoryWithTurnStats(targetSession, histResult.entries as unknown[]) }));
             } catch {}
 
             ws.send(JSON.stringify({ type: "session_switched", sessionId: targetSession }));
-            sendTurnStateIfActive(ws, targetSession);
+            // Send state AFTER session_switched so messages land in the active session
+            sendSessionMeta(ws, targetSession);
+            sendTurnState(ws, targetSession);
             sendQueueState(ws, targetSession);
             log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
             broadcastSessions().catch((err) => log.error({ client: clientId, err: err.message }, "ws: broadcastSessions failed"));
@@ -579,6 +703,20 @@ export function startServer(port: number) {
             break;
           }
 
+          case "interrupt": {
+            if (!clientState.currentSessionId) break;
+            const intSession = clientState.currentSessionId;
+            if (!processingSessions.has(intSession)) break;
+            log.info({ client: cid, session: sid(intSession) }, "ws: → interrupt");
+            try {
+              await acpConnection.connection.cancel({ sessionId: intSession });
+              log.info({ client: cid, session: sid(intSession) }, "ws: interrupt sent");
+            } catch (err: any) {
+              log.error({ client: cid, session: sid(intSession), err: err.message }, "ws: interrupt error");
+            }
+            break;
+          }
+
           case "cancel_queued": {
             if (!clientState.currentSessionId) break;
             const q = getQueue(clientState.currentSessionId);
@@ -623,9 +761,10 @@ export function startServer(port: number) {
               const entryCount = (result.entries as unknown[])?.length ?? 0;
               log.info({ session: sid(msg.sessionId), durationMs: Math.round(performance.now() - t0), entries: entryCount }, "api: sessions/getHistory completed");
               clientState.currentSessionId = msg.sessionId;
-              ws.send(JSON.stringify({ type: "session_history", sessionId: msg.sessionId, entries: result.entries }));
+              ws.send(JSON.stringify({ type: "session_history", sessionId: msg.sessionId, entries: augmentHistoryWithTurnStats(msg.sessionId, result.entries as unknown[]) }));
               ws.send(JSON.stringify({ type: "session_switched", sessionId: msg.sessionId }));
-              sendTurnStateIfActive(ws, msg.sessionId);
+              sendSessionMeta(ws, msg.sessionId);
+              sendTurnState(ws, msg.sessionId);
               sendQueueState(ws, msg.sessionId);
               log.info({ client: cid, session: sid(msg.sessionId), totalMs: Math.round(performance.now() - t0) }, "ws: ← session_switched");
             } catch (err: any) {
@@ -649,9 +788,10 @@ export function startServer(port: number) {
               const entryCount = (result.entries as unknown[])?.length ?? 0;
               log.info({ durationMs: Math.round(performance.now() - t0), entries: entryCount }, "api: sessions/getSubagentHistory completed");
               clientState.currentSessionId = compositeId;
-              ws.send(JSON.stringify({ type: "session_history", sessionId: compositeId, entries: result.entries }));
+              ws.send(JSON.stringify({ type: "session_history", sessionId: compositeId, entries: augmentHistoryWithTurnStats(compositeId, result.entries as unknown[]) }));
               ws.send(JSON.stringify({ type: "session_switched", sessionId: compositeId }));
-              sendTurnStateIfActive(ws, compositeId);
+              sendSessionMeta(ws, compositeId);
+              sendTurnState(ws, compositeId);
               sendQueueState(ws, compositeId);
               log.info({ client: cid, session: sid(compositeId), totalMs: Math.round(performance.now() - t0) }, "ws: ← session_switched (subagent)");
             } catch (err: any) {
@@ -686,6 +826,7 @@ export function startServer(port: number) {
                 clearSessionQueue(id);
                 turnContentBuffers.delete(id);
                 delete turnStates[id];
+                sessionMetas.delete(id);
                 // Clear currentSessionId for any client viewing a deleted session
                 for (const [, cs] of clients) {
                   if (cs.currentSessionId === id) {

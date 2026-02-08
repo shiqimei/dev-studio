@@ -53,7 +53,7 @@ function basename(path: string): string {
 }
 
 export function ChatInput() {
-  const { state, send, cancelQueued, searchFiles, requestCommands } = useWs();
+  const { state, send, interrupt, cancelQueued, searchFiles, requestCommands } = useWs();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [files, setFiles] = useState<FileAttachment[]>([]);
@@ -142,7 +142,7 @@ export function ChatInput() {
     setSlashOpen(false);
     // Trigger height recalc
     inputRef.current.style.height = "auto";
-    inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px";
+    inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 144) + "px";
   }, []);
 
   const selectFile = useCallback((filePath: string) => {
@@ -216,6 +216,13 @@ export function ChatInput() {
         }
       }
 
+      // ESC to interrupt when a turn is in progress
+      if (e.key === "Escape" && state.busy) {
+        e.preventDefault();
+        interrupt();
+        return;
+      }
+
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleSend();
@@ -237,14 +244,14 @@ export function ChatInput() {
         });
       }
     },
-    [handleSend, slashOpen, slashFiltered, slashIdx, selectSlashCommand, mentionOpen, mentionResults, mentionIdx, selectFile],
+    [handleSend, state.busy, interrupt, slashOpen, slashFiltered, slashIdx, selectSlashCommand, mentionOpen, mentionResults, mentionIdx, selectFile],
   );
 
   const onInput = useCallback(() => {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 120) + "px";
+    el.style.height = Math.min(el.scrollHeight, 144) + "px";
     checkAutocomplete();
   }, [checkAutocomplete]);
 
@@ -279,6 +286,17 @@ export function ChatInput() {
   const removeFile = useCallback((index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   }, []);
+
+  // Auto-focus input on window focus and session switch
+  useEffect(() => {
+    const onWindowFocus = () => inputRef.current?.focus();
+    window.addEventListener("focus", onWindowFocus);
+    return () => window.removeEventListener("focus", onWindowFocus);
+  }, []);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, [state.currentSessionId]);
 
   // Scroll active dropdown item into view
   useEffect(() => {
@@ -407,22 +425,16 @@ export function ChatInput() {
       <div className="flex gap-2">
         <textarea
           ref={inputRef}
-          rows={1}
-          placeholder={images.length > 0 ? "Add a message or send image..." : files.length > 0 ? "Add a message or send files..." : "Send a message... (/ for commands, @ for files)"}
+          rows={3}
+          placeholder={state.busy ? "Press ESC to interrupt..." : images.length > 0 ? "Add a message or send image..." : files.length > 0 ? "Add a message or send files..." : "Send a message... (/ for commands, @ for files)"}
           disabled={disabled}
           onKeyDown={onKeyDown}
           onInput={onInput}
           onPaste={onPaste}
           onFocus={onFocus}
-          className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none min-h-[36px] max-h-[120px] overflow-hidden shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_2px_6px_rgba(0,0,0,0.4)] placeholder:text-dim disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none max-h-[144px] overflow-auto shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_2px_6px_rgba(0,0,0,0.4)] placeholder:text-dim disabled:opacity-50 disabled:cursor-not-allowed"
         />
-        <button
-          disabled={disabled}
-          onClick={handleSend}
-          className="bg-text text-bg border-none rounded-md h-9 px-4 py-2 font-mono text-sm font-medium cursor-pointer self-end hover:opacity-90 disabled:opacity-50 disabled:pointer-events-none"
-        >
-          {state.busy ? "Queue" : "Send"}
-        </button>
+
       </div>
     </div>
   );

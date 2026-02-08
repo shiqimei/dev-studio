@@ -69,7 +69,7 @@ function InProgressBar({ status }: { status: TurnStatus }) {
   );
 }
 
-function CompletedBar({ status }: { status: TurnStatus }) {
+export function CompletedBar({ status }: { status: TurnStatus }) {
   const duration = status.durationMs ?? 0;
   const tokens = status.outputTokens ?? status.approxTokens;
   const thinkingMs = status.thinkingDurationMs ?? 0;

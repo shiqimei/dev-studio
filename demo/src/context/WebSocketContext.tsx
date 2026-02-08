@@ -471,6 +471,8 @@ function reducer(state: AppState, action: Action): AppState {
       };
 
     case "SYSTEM": {
+      // Hide hook and system init metadata — not useful in the chat UI
+      if (/^\[Hook |^\[System initialized:/.test(action.text)) return state;
       // Deduplicate: skip if the same system text was already shown in this session
       const isDupe = state.messages.some(
         (m) => m.type === "system" && m.text === action.text,
@@ -721,6 +723,7 @@ interface WsContextValue {
   state: AppState;
   dispatch: React.Dispatch<Action>;
   send: (text: string, images?: ImageAttachment[], files?: FileAttachment[]) => void;
+  interrupt: () => void;
   newSession: () => void;
   resumeSession: (sessionId: string) => void;
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
@@ -770,6 +773,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         ...(files?.length ? { files } : {}),
       }),
     );
+  }, []);
+
+  const interrupt = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "interrupt" }));
   }, []);
 
   const newSession = useCallback(() => {
@@ -1045,7 +1053,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   }, [state.currentSessionId, state.connected, state.messages.length]);
 
   return (
-    <WsContext.Provider value={{ state, dispatch, send, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb, deleteSession: deleteSessionCb, renameSession: renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents }}>
+    <WsContext.Provider value={{ state, dispatch, send, interrupt, newSession, resumeSession: resumeSessionCb, resumeSubagent: resumeSubagentCb, deleteSession: deleteSessionCb, renameSession: renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents }}>
       {children}
     </WsContext.Provider>
   );

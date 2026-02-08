@@ -280,14 +280,23 @@ export function jsonlToEntries(rawEntries: unknown[]): ChatEntry[] {
       case "system": {
         const subtype = String(entry.subtype ?? "");
         // Skip system entries that aren't useful for the chat view
-        if (subtype === "compact_boundary" || subtype === "files_persisted") break;
+        if (subtype === "compact_boundary" || subtype === "files_persisted" || subtype === "init" || subtype === "stop_hook_summary") break;
 
         let text: string;
-        if (subtype === "init") {
-          text = `Session initialized (${String(entry.session_id ?? "").slice(0, 8)}...)`;
-        } else if (subtype === "turn_duration") {
+        if (subtype === "turn_duration") {
           const ms = Number((entry as any).durationMs ?? 0);
-          text = ms > 0 ? `Duration: ${formatDuration(ms)}` : "";
+          if (ms > 0) {
+            const e = entry as any;
+            entries.push({
+              type: "turn_completed",
+              id: uid(),
+              durationMs: ms,
+              ...(e.outputTokens != null && { outputTokens: e.outputTokens }),
+              ...(e.thinkingDurationMs != null && { thinkingDurationMs: e.thinkingDurationMs }),
+              ...(e.costUsd != null && { costUsd: e.costUsd }),
+            });
+          }
+          break;
         } else if (subtype === "api_error") {
           const attempt = (entry as any).retryAttempt ?? "?";
           text = `API error (retry ${attempt})`;

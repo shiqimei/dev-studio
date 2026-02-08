@@ -4,7 +4,7 @@ import { UserMessage } from "./messages/UserMessage";
 import { AssistantTurn } from "./messages/AssistantTurn";
 import { SystemMessage } from "./messages/SystemMessage";
 import { Plan } from "./messages/Plan";
-import { TurnStatusBar } from "./TurnStatusBar";
+import { TurnStatusBar, CompletedBar } from "./TurnStatusBar";
 
 export function MessageList() {
   const { state } = useWs();
@@ -32,6 +32,8 @@ export function MessageList() {
             return <SystemMessage key={entry.id} text={entry.text} isError={entry.isError} />;
           case "plan":
             return <Plan key={entry.id} entries={entry.entries} />;
+          case "turn_completed":
+            return <CompletedBar key={entry.id} status={{ status: "completed", startedAt: 0, durationMs: entry.durationMs, outputTokens: entry.outputTokens, thinkingDurationMs: entry.thinkingDurationMs, costUsd: entry.costUsd }} />;
           case "permission":
             return null;
         }

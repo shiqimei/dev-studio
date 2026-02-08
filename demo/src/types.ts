@@ -106,11 +106,21 @@ export interface PermissionEntry {
   title: string;
 }
 
+export interface TurnCompletedEntry {
+  type: "turn_completed";
+  id: string;
+  durationMs: number;
+  outputTokens?: number;
+  thinkingDurationMs?: number;
+  costUsd?: number;
+}
+
 export type ChatEntry =
   | MessageEntry
   | SystemEntry
   | PlanEntry
-  | PermissionEntry;
+  | PermissionEntry
+  | TurnCompletedEntry;
 
 // ── Sessions ────────────────────────────────
 

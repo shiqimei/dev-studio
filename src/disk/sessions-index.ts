@@ -61,6 +61,35 @@ export async function renameSessionOnDisk(projectDir: string, sessionId: string,
   }
 }
 
+/**
+ * Add or update a session entry in sessions-index.json.
+ * Creates the index file if it doesn't exist.
+ * This is needed because the CLI only updates the index on query completion,
+ * but ACP sessions are long-running and never "complete" in the traditional sense.
+ */
+export async function upsertSessionInIndex(
+  projectDir: string,
+  entry: Partial<SessionIndexEntry> & { sessionId: string },
+): Promise<void> {
+  const indexPath = getSessionsIndexPath(projectDir);
+  let index: SessionsIndex;
+  try {
+    const raw = await fs.promises.readFile(indexPath, "utf-8");
+    index = JSON.parse(raw) as SessionsIndex;
+  } catch {
+    index = { version: 1, entries: [] } as any;
+  }
+  const existing = index.entries.find((e) => e.sessionId === entry.sessionId);
+  if (existing) {
+    // Merge fields into existing entry
+    Object.assign(existing, entry);
+  } else {
+    index.entries.push(entry as SessionIndexEntry);
+  }
+  await fs.promises.mkdir(projectDir, { recursive: true });
+  await fs.promises.writeFile(indexPath, JSON.stringify(index, null, 2));
+}
+
 export async function deleteSessionFromDisk(projectDir: string, sessionId: string): Promise<boolean> {
   const indexPath = getSessionsIndexPath(projectDir);
 

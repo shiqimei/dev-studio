@@ -71,7 +71,7 @@ export {
   getPluginsPath,
   getSkillsDir,
 } from "./disk/paths.js";
-export { readSessionsIndex, readSessionsIndexSync } from "./disk/sessions-index.js";
+export { readSessionsIndex, readSessionsIndexSync, upsertSessionInIndex } from "./disk/sessions-index.js";
 export { readSessionHistory, readSessionHistoryFull } from "./disk/session-history.js";
 export type { JsonlEntry } from "./disk/types.js";
 export { readStatsCache } from "./disk/stats.js";

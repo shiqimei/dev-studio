@@ -72,7 +72,7 @@ import { readSessionTasks } from "../disk/tasks.js";
 import { listCommandNames } from "../disk/commands.js";
 import { listPluginNames } from "../disk/plugins.js";
 import { listSkillNames } from "../disk/skills.js";
-import { readSessionsIndex, renameSessionOnDisk, deleteSessionFromDisk } from "../disk/sessions-index.js";
+import { readSessionsIndex, renameSessionOnDisk, deleteSessionFromDisk, upsertSessionInIndex } from "../disk/sessions-index.js";
 import { readSessionHistoryFull, readSubagentHistoryFull } from "../disk/session-history.js";
 import { readSubagents, buildSubagentTree, readSessionTeamInfo, findTeamCreateInSession } from "../disk/subagents.js";
 import type { ManagedSession } from "../sdk/types.js";
@@ -387,6 +387,13 @@ export class ClaudeAcpAgent implements Agent {
         }).catch((err) => {
           this.logger.error("[claude-code-acp] session_info_update failed:", err);
         });
+        // Persist title to disk index
+        const projectDir = getProjectDir(session.cwd);
+        upsertSessionInIndex(projectDir, {
+          sessionId: params.sessionId,
+          firstPrompt: session.title,
+          modified: new Date().toISOString(),
+        }).catch((err) => this.logger.error("[upsertSessionInIndex] title failed:", err));
       }
     }
     session.updatedAt = new Date().toISOString();
@@ -938,13 +945,17 @@ export class ClaudeAcpAgent implements Agent {
         if (!sessionId || !title) throw new Error("sessionId and title are required");
         const projectDir = getProjectDir(params.cwd as string | undefined);
         const diskSuccess = await renameSessionOnDisk(projectDir, sessionId, title);
+        if (!diskSuccess) {
+          // Entry not in index yet — upsert it so rename persists
+          await upsertSessionInIndex(projectDir, { sessionId, firstPrompt: title, modified: new Date().toISOString() });
+        }
         // Also update in-memory session title (live sessions may not be on disk yet)
         const liveSession = this.sessions[sessionId];
         if (liveSession) {
           liveSession.title = title;
         }
         console.error(`[extMethod] sessions/rename ${sessionId.slice(0, 8)} ${(performance.now() - t0).toFixed(0)}ms`);
-        return { success: diskSuccess || !!liveSession };
+        return { success: true };
       }
 
       case "sessions/delete": {
@@ -1261,6 +1272,7 @@ export class ClaudeAcpAgent implements Agent {
       this.logger,
     );
 
+    const now = new Date().toISOString();
     this.sessions[sessionId] = {
       query: q,
       router,
@@ -1270,8 +1282,19 @@ export class ClaudeAcpAgent implements Agent {
       settingsManager,
       title: null,
       cwd: params.cwd,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
     };
+
+    // Persist session to disk index so it survives process restarts.
+    // The CLI creates JSONL files but doesn't update sessions-index.json
+    // for long-running SDK sessions that never complete.
+    const projectDir = getProjectDir(params.cwd);
+    upsertSessionInIndex(projectDir, {
+      sessionId,
+      created: now,
+      modified: now,
+      projectPath: params.cwd,
+    }).catch((err) => this.logger.error("[upsertSessionInIndex] create failed:", err));
 
     perf.summary();
 

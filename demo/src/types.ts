@@ -251,7 +251,7 @@ export type Action =
   | { type: "SESSION_INFO"; sessionId: string; models: string[]; modes: { id: string }[] }
   | { type: "SYSTEM"; text: string }
   | { type: "TURN_START"; startedAt: number }
-  | { type: "TURN_ACTIVITY"; activity: TurnActivity; detail?: string }
+  | { type: "TURN_ACTIVITY"; activity: TurnActivity; detail?: string; approxTokens?: number; thinkingDurationMs?: number }
   | { type: "TURN_END"; durationMs?: number; outputTokens?: number; thinkingDurationMs?: number; costUsd?: number }
   | { type: "ERROR"; text: string }
   | { type: "PROTOCOL"; dir: "send" | "recv"; ts: number; msg: unknown }

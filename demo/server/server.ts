@@ -42,6 +42,12 @@ export function startServer(port: number) {
   const processingSessions = new Set<string>();
   let queueIdCounter = 0;
 
+  // ── Turn content buffer (per-session) ──
+  // Accumulates streaming messages for the in-progress turn so that clients
+  // joining mid-turn can replay all content they missed (tmux-style attach).
+  const turnContentBuffers = new Map<string, object[]>();
+  const BUFFERABLE_TYPES = new Set(["text", "thought", "tool_call", "tool_call_update", "plan", "permission", "session_info", "system", "error"]);
+
   function getQueue(sessionId: string | null): QueuedMessage[] {
     if (!sessionId) return [];
     let q = messageQueues.get(sessionId);
@@ -109,6 +115,36 @@ export function startServer(port: number) {
     }
   }
 
+  /** Send in-progress turn state + buffered content to a single client (tmux-style attach). */
+  function sendTurnStateIfActive(ws: { send(data: string): void }, sessionId: string) {
+    const ts = turnStates[sessionId];
+    if (!ts || ts.status !== "in_progress") return;
+    ws.send(JSON.stringify({ type: "turn_start", startedAt: ts.startedAt, sessionId }));
+
+    // Replay all buffered turn content (user message + streaming chunks)
+    const buf = turnContentBuffers.get(sessionId);
+    if (buf && buf.length > 0) {
+      ws.send(JSON.stringify({ type: "turn_content_replay", sessionId, messages: buf }));
+    }
+
+    ws.send(JSON.stringify({
+      type: "turn_activity",
+      activity: ts.activity,
+      detail: ts.activityDetail,
+      approxTokens: ts.approxTokens,
+      thinkingDurationMs: ts.thinkingDurationMs,
+    }));
+  }
+
+  /** Send queued messages to a single client (tmux-style reconnect). */
+  function sendQueueState(ws: { send(data: string): void }, sessionId: string) {
+    const q = messageQueues.get(sessionId);
+    if (!q || q.length === 0) return;
+    for (const item of q) {
+      ws.send(JSON.stringify({ type: "message_queued", queueId: item.id, sessionId }));
+    }
+  }
+
   function broadcast(msg: object) {
     const m = msg as any;
     // Determine which session this message belongs to
@@ -152,6 +188,12 @@ export function startServer(port: number) {
       emitProto("recv", { method, params: m });
     }
 
+    // Buffer content messages for late-joining clients (mid-turn replay)
+    if (msgSessionId && turnStates[msgSessionId]?.status === "in_progress" && BUFFERABLE_TYPES.has(m.type)) {
+      const buf = turnContentBuffers.get(msgSessionId);
+      if (buf) buf.push(msg);
+    }
+
     // Send to clients — filter session-specific messages per client
     const json = JSON.stringify(msg);
     if (msgSessionId) {
@@ -159,7 +201,13 @@ export function startServer(port: number) {
       // Send turn_activity update only when activity actually changed
       if (activityChanged) {
         const ts = turnStates[msgSessionId];
-        sendToSession(msgSessionId, JSON.stringify({ type: "turn_activity", activity: ts.activity, detail: ts.activityDetail }));
+        sendToSession(msgSessionId, JSON.stringify({
+          type: "turn_activity",
+          activity: ts.activity,
+          detail: ts.activityDetail,
+          approxTokens: ts.approxTokens,
+          thinkingDurationMs: ts.thinkingDurationMs,
+        }));
       }
     } else {
       // Global message: send to all
@@ -218,7 +266,7 @@ export function startServer(port: number) {
       }
       if (prompt.length === 0) { processingSessions.delete(sessionId); drainQueue(sessionId); return; }
 
-      // Initialize turn state and broadcast turn_start
+      // Initialize turn state and content buffer; broadcast turn_start
       const turnStartedAt = Date.now();
       turnStates[sessionId] = {
         status: "in_progress",
@@ -227,6 +275,10 @@ export function startServer(port: number) {
         thinkingDurationMs: 0,
         activity: "brewing",
       };
+      // Seed the buffer with the user message so mid-turn joins see the prompt
+      turnContentBuffers.set(sessionId, [
+        { type: "user_message", sessionId, text, images, files },
+      ]);
       broadcast({ type: "turn_start", startedAt: turnStartedAt, sessionId });
 
       const acpPromptT0 = performance.now();
@@ -253,6 +305,7 @@ export function startServer(port: number) {
         turnState.costUsd = meta?.total_cost_usd;
       }
 
+      turnContentBuffers.delete(sessionId);
       broadcast({
         type: "turn_end",
         sessionId,
@@ -275,6 +328,7 @@ export function startServer(port: number) {
         ts.endedAt = Date.now();
         ts.durationMs = Date.now() - ts.startedAt;
       }
+      turnContentBuffers.delete(sessionId);
       broadcast({ type: "error", text: err.message, sessionId });
       broadcast({ type: "turn_end", stopReason: "error", sessionId });
     } finally {
@@ -397,26 +451,49 @@ export function startServer(port: number) {
             }
           }
 
-          // Create new session (fast: no slash commands or subagent loading)
+          // tmux-style: ask the ACP server for existing sessions — reuse an
+          // empty one instead of creating a duplicate on every reconnect.
           if (!defaultSessionId) {
             try {
-              log.info({ client: clientId }, "ws: creating new session");
-              const sessT0 = performance.now();
-              const { sessionId } = await createNewSession(acpConnection!.connection, broadcast);
-              log.info({ client: clientId, session: sid(sessionId), durationMs: Math.round(performance.now() - sessT0) }, "ws: new session created");
-              defaultSessionId = sessionId;
-              liveSessionIds.add(sessionId);
+              const listT0 = performance.now();
+              const result = await acpConnection!.connection.extMethod("sessions/list", {});
+              const sessions = ((result as any).sessions ?? []) as any[];
+              log.info({ client: clientId, durationMs: Math.round(performance.now() - listT0), count: sessions.length }, "ws: queried existing sessions");
+
+              const emptySession = sessions.find((s: any) => (s._meta?.messageCount ?? 0) === 0);
+
+              if (emptySession) {
+                defaultSessionId = emptySession.sessionId;
+                log.info({ client: clientId, session: sid(defaultSessionId) }, "ws: reusing empty session");
+              } else {
+                log.info({ client: clientId }, "ws: no empty session, creating new");
+                const sessT0 = performance.now();
+                const { sessionId } = await createNewSession(acpConnection!.connection, broadcast);
+                log.info({ client: clientId, session: sid(sessionId), durationMs: Math.round(performance.now() - sessT0) }, "ws: new session created");
+                defaultSessionId = sessionId;
+                liveSessionIds.add(sessionId);
+              }
               resolveFirstSession?.();
             } catch (err: any) {
-              log.error({ client: clientId, err: err.message }, "ws: newSession failed");
+              log.error({ client: clientId, err: err.message }, "ws: session setup failed");
               try { ws.send(JSON.stringify({ type: "error", text: err.message })); } catch {}
               return;
             }
           }
 
-          clientState.currentSessionId = defaultSessionId;
-          ws.send(JSON.stringify({ type: "session_switched", sessionId: defaultSessionId }));
-          log.info({ client: clientId, session: sid(defaultSessionId), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
+          const targetSession = defaultSessionId!;
+          clientState.currentSessionId = targetSession;
+
+          // tmux-style: send history before session_switched so the reducer has data ready
+          try {
+            const histResult = await acpConnection!.connection.extMethod("sessions/getHistory", { sessionId: targetSession });
+            ws.send(JSON.stringify({ type: "session_history", sessionId: targetSession, entries: histResult.entries }));
+          } catch {}
+
+          ws.send(JSON.stringify({ type: "session_switched", sessionId: targetSession }));
+          sendTurnStateIfActive(ws, targetSession);
+          sendQueueState(ws, targetSession);
+          log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
 
           // Fire-and-forget: don't block the open handler waiting for session list
           broadcastSessions().catch(() => {});
@@ -427,9 +504,19 @@ export function startServer(port: number) {
               log.info({ client: clientId }, "ws: waiting for first session");
               await firstSessionReady;
             }
-            clientState.currentSessionId = defaultSessionId;
-            ws.send(JSON.stringify({ type: "session_switched", sessionId: defaultSessionId! }));
-            log.info({ client: clientId, session: sid(defaultSessionId), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
+            const targetSession = defaultSessionId!;
+            clientState.currentSessionId = targetSession;
+
+            // tmux-style: send history before session_switched so the reducer has data ready
+            try {
+              const histResult = await acpConnection!.connection.extMethod("sessions/getHistory", { sessionId: targetSession });
+              ws.send(JSON.stringify({ type: "session_history", sessionId: targetSession, entries: histResult.entries }));
+            } catch {}
+
+            ws.send(JSON.stringify({ type: "session_switched", sessionId: targetSession }));
+            sendTurnStateIfActive(ws, targetSession);
+            sendQueueState(ws, targetSession);
+            log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
             broadcastSessions().catch((err) => log.error({ client: clientId, err: err.message }, "ws: broadcastSessions failed"));
           } catch (err: any) {
             log.error({ client: clientId, err: err.message }, "ws: open(rejoin) failed");
@@ -463,6 +550,23 @@ export function startServer(port: number) {
             }
             const targetSession = clientState.currentSessionId;
             log.info({ client: cid, session: sid(targetSession), textLen: msg.text?.length ?? 0, images: msg.images?.length ?? 0, files: msg.files?.length ?? 0 }, "ws: → prompt");
+
+            // Broadcast user message to all OTHER clients viewing this session
+            // (the sender already has it locally via SEND_MESSAGE dispatch)
+            const userMsgJson = JSON.stringify({
+              type: "user_message",
+              sessionId: targetSession,
+              text: msg.text,
+              images: msg.images,
+              files: msg.files,
+              queueId: msg.queueId,
+            });
+            for (const [otherWs, otherState] of clients) {
+              if (otherWs !== ws && otherState.currentSessionId === targetSession) {
+                try { otherWs.send(userMsgJson); } catch {}
+              }
+            }
+
             if (processingSessions.has(targetSession)) {
               // Enqueue the message for this specific session
               const queueId = msg.queueId || `sq-${++queueIdCounter}`;
@@ -521,6 +625,8 @@ export function startServer(port: number) {
               clientState.currentSessionId = msg.sessionId;
               ws.send(JSON.stringify({ type: "session_history", sessionId: msg.sessionId, entries: result.entries }));
               ws.send(JSON.stringify({ type: "session_switched", sessionId: msg.sessionId }));
+              sendTurnStateIfActive(ws, msg.sessionId);
+              sendQueueState(ws, msg.sessionId);
               log.info({ client: cid, session: sid(msg.sessionId), totalMs: Math.round(performance.now() - t0) }, "ws: ← session_switched");
             } catch (err: any) {
               log.error({ client: cid, msgType: msg.type, err: err.message, durationMs: Math.round(performance.now() - t0) }, "ws: switch/resume error");
@@ -545,6 +651,8 @@ export function startServer(port: number) {
               clientState.currentSessionId = compositeId;
               ws.send(JSON.stringify({ type: "session_history", sessionId: compositeId, entries: result.entries }));
               ws.send(JSON.stringify({ type: "session_switched", sessionId: compositeId }));
+              sendTurnStateIfActive(ws, compositeId);
+              sendQueueState(ws, compositeId);
               log.info({ client: cid, session: sid(compositeId), totalMs: Math.round(performance.now() - t0) }, "ws: ← session_switched (subagent)");
             } catch (err: any) {
               log.error({ client: cid, err: err.message, durationMs: Math.round(performance.now() - t0) }, "ws: resume_subagent error");
@@ -576,6 +684,8 @@ export function startServer(port: number) {
               for (const id of deletedIds) {
                 liveSessionIds.delete(id);
                 clearSessionQueue(id);
+                turnContentBuffers.delete(id);
+                delete turnStates[id];
                 // Clear currentSessionId for any client viewing a deleted session
                 for (const [, cs] of clients) {
                   if (cs.currentSessionId === id) {

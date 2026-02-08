@@ -229,17 +229,11 @@ function reducer(state: AppState, action: Action): AppState {
       const turn = getCurrentTurn(msgs, turnId)!;
       const lastBlock = turn.content[turn.content.length - 1];
 
-      // Accumulate approximate token count in turnStatus
-      const textTurnStatus = state.turnStatus?.status === "in_progress"
-        ? { ...state.turnStatus, approxTokens: (state.turnStatus.approxTokens ?? 0) + Math.ceil(action.text.length / 4) }
-        : state.turnStatus;
-
       if (lastBlock?.type === "text" && lastBlock._streaming) {
         // Append to existing streaming text block
         return {
           ...state,
           currentTurnId: turnId,
-          turnStatus: textTurnStatus,
           messages: updateTurnContent(msgs, turnId, (content) =>
             content.map((b, i) =>
               i === content.length - 1 && b.type === "text"
@@ -254,7 +248,6 @@ function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         currentTurnId: turnId,
-        turnStatus: textTurnStatus,
         messages: updateTurnContent(msgs, turnId, (content) => [
           ...content.map((b) => {
             const c = completePendingTools(b);
@@ -272,27 +265,11 @@ function reducer(state: AppState, action: Action): AppState {
       const turn = getCurrentTurn(msgs, turnId)!;
       const lastBlock = turn.content[turn.content.length - 1];
 
-      // Accumulate thinking duration and token count in turnStatus
-      let thoughtTurnStatus = state.turnStatus;
-      if (thoughtTurnStatus?.status === "in_progress") {
-        const isNewThinkingBlock = !(lastBlock?.type === "thinking" && lastBlock._streaming);
-        thoughtTurnStatus = {
-          ...thoughtTurnStatus,
-          approxTokens: (thoughtTurnStatus.approxTokens ?? 0) + Math.ceil(action.text.length / 4),
-          // Track thinking start time — we'll compute duration at TURN_END from server stats
-          // but also keep a client-side approximation
-          thinkingDurationMs: isNewThinkingBlock
-            ? (thoughtTurnStatus.thinkingDurationMs ?? 0)
-            : (thoughtTurnStatus.thinkingDurationMs ?? 0),
-        };
-      }
-
       if (lastBlock?.type === "thinking" && lastBlock._streaming) {
         // Append to existing streaming thinking block
         return {
           ...state,
           currentTurnId: turnId,
-          turnStatus: thoughtTurnStatus,
           messages: updateTurnContent(msgs, turnId, (content) =>
             content.map((b, i) =>
               i === content.length - 1 && b.type === "thinking"
@@ -307,7 +284,6 @@ function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         currentTurnId: turnId,
-        turnStatus: thoughtTurnStatus,
         messages: updateTurnContent(msgs, turnId, (content) => [
           ...content.map((b) => {
             const c = completePendingTools(b);
@@ -530,6 +506,9 @@ function reducer(state: AppState, action: Action): AppState {
           ...state.turnStatus,
           activity: action.activity,
           activityDetail: action.detail,
+          // Server-authoritative stats
+          ...(action.approxTokens != null && { approxTokens: action.approxTokens }),
+          ...(action.thinkingDurationMs != null && { thinkingDurationMs: action.thinkingDurationMs }),
         },
       };
 
@@ -659,49 +638,22 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, switchingToSessionId: action.sessionId };
 
     case "SESSION_SWITCHED": {
-      // Save current session state to history (but not when "switching" to the
-      // same session — that would overwrite freshly loaded SESSION_HISTORY data
-      // with potentially empty in-memory state, e.g. after page reload).
-      const history = { ...state.sessionHistory };
-      console.log(`[${pageMs()}] reducer SESSION_SWITCHED from=${state.currentSessionId?.slice(0, 8) ?? "null"} to=${action.sessionId.slice(0, 8)} historyMsgs=${history[action.sessionId]?.messages?.length ?? 0} currentMsgs=${state.messages.length}`);
-      if (state.currentSessionId && state.currentSessionId !== action.sessionId) {
-        history[state.currentSessionId] = {
-          messages: state.messages,
-          tasks: state.tasks,
-          currentTurnId: state.currentTurnId,
-          turnToolCallIds: state.turnToolCallIds,
-          turnStatus: state.turnStatus,
-          queuedMessages: state.queuedMessages,
-        };
-      }
+      // Use freshly received history (SESSION_HISTORY arrived just before this)
+      // No save-on-switch: server is authoritative, stale client cache would cause issues
+      const cleanHistory = { ...state.sessionHistory };
+      console.log(`[${pageMs()}] reducer SESSION_SWITCHED from=${state.currentSessionId?.slice(0, 8) ?? "null"} to=${action.sessionId.slice(0, 8)} historyMsgs=${cleanHistory[action.sessionId]?.messages?.length ?? 0} currentMsgs=${state.messages.length}`);
 
-      // Restore target session state from history or use empty defaults
-      const restored = history[action.sessionId] ?? emptySnapshot;
+      // Restore target session state from freshly received history or use empty defaults
+      const restored = cleanHistory[action.sessionId] ?? emptySnapshot;
 
-      // Ensure the new session appears in diskSessions (it may not have a
-      // JSONL file yet if it was just created)
-      let diskSessions = state.diskSessions;
-      if (!diskSessions.some((s) => s.sessionId === action.sessionId)) {
-        diskSessions = [
-          {
-            sessionId: action.sessionId,
-            title: null,
-            updatedAt: new Date().toISOString(),
-            created: new Date().toISOString(),
-            messageCount: 0,
-            gitBranch: null,
-            projectPath: null,
-          },
-          ...diskSessions,
-        ];
-      }
+      // Clear consumed entry to prevent stale reuse on future switches
+      delete cleanHistory[action.sessionId];
 
       return {
         ...state,
         currentSessionId: action.sessionId,
         switchingToSessionId: null,
-        sessionHistory: history,
-        diskSessions,
+        sessionHistory: cleanHistory,
         messages: restored.messages,
         tasks: restored.tasks,
         // protoEntries are global debug traffic — keep them across session switches
@@ -1165,8 +1117,14 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
     case "turn_start":
       dispatch({ type: "TURN_START", startedAt: msg.startedAt ?? Date.now() });
       break;
+    case "turn_content_replay":
+      // Replay buffered turn content for mid-turn joins (tmux-style attach)
+      for (const m of msg.messages ?? []) {
+        handleMsg(m, dispatch);
+      }
+      break;
     case "turn_activity":
-      dispatch({ type: "TURN_ACTIVITY", activity: msg.activity, detail: msg.detail });
+      dispatch({ type: "TURN_ACTIVITY", activity: msg.activity, detail: msg.detail, approxTokens: msg.approxTokens, thinkingDurationMs: msg.thinkingDurationMs });
       break;
     case "turn_end":
       dispatch({
@@ -1199,6 +1157,10 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       break;
     case "session_title_update":
       dispatch({ type: "SESSION_TITLE_UPDATE", sessionId: msg.sessionId, title: msg.title });
+      break;
+    // User message from another client viewing the same session
+    case "user_message":
+      dispatch({ type: "SEND_MESSAGE", text: msg.text, images: msg.images, files: msg.files, queueId: msg.queueId });
       break;
     // Queue messages
     case "message_queued":

@@ -85,11 +85,7 @@ export function CompletedBar({ status }: { status: TurnStatus }) {
 }
 
 export const TurnStatusBar = memo(function TurnStatusBar({ status }: { status: TurnStatus | null }) {
-  if (!status) return null;
+  if (!status || status.status !== "in_progress") return null;
 
-  if (status.status === "in_progress") {
-    return <InProgressBar status={status} />;
-  }
-
-  return <CompletedBar status={status} />;
+  return <InProgressBar status={status} />;
 });

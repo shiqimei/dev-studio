@@ -239,6 +239,15 @@ function extractLatestPlan(messages: ChatEntry[]): PlanEntryItem[] | null {
   return null;
 }
 
+/** Find the index of the last non-meta user message (turn boundary). Returns -1 if none. */
+function findLastUserMessageIndex(messages: ChatEntry[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.type === "message" && m.role === "user") return i;
+  }
+  return -1;
+}
+
 /** Ensure an assistant turn exists, creating one if needed. Returns [messages, turnId]. */
 function ensureAssistantTurn(
   messages: ChatEntry[],
@@ -672,7 +681,7 @@ function reducer(state: AppState, action: Action): AppState {
         taskPanelOpen = true;
       }
 
-      // Build completed turn status from server-provided stats
+      // Build completed turn status for liveTurnStatus (sidebar display)
       const completedStatus: TurnStatus | null = action.durationMs != null
         ? {
             status: "completed",
@@ -688,6 +697,32 @@ function reducer(state: AppState, action: Action): AppState {
           ? { ...state.turnStatus, status: "completed", endedAt: Date.now(), durationMs: Date.now() - state.turnStatus.startedAt }
           : null;
 
+      // Add a turn_completed entry to messages (the single source of truth for
+      // completed bars). Remove any existing turn_completed entries from the
+      // current turn group to avoid duplicates from partial history loads during
+      // mid-turn reconnects.
+      const durationMs = completedStatus?.durationMs ?? (state.turnStatus ? Date.now() - state.turnStatus.startedAt : 0);
+      let finalizedMessages = finalizeStreaming(state.messages, state.currentTurnId);
+      // Strip stale turn_completed entries from the current turn group (after
+      // the last user message) — these come from partial history on reconnect.
+      const lastUserIdx = findLastUserMessageIndex(finalizedMessages);
+      finalizedMessages = finalizedMessages.filter(
+        (m, i) => !(m.type === "turn_completed" && i > lastUserIdx),
+      );
+      if (durationMs > 0) {
+        finalizedMessages = [
+          ...finalizedMessages,
+          {
+            type: "turn_completed" as const,
+            id: uid(),
+            durationMs,
+            ...(completedStatus?.outputTokens != null && { outputTokens: completedStatus.outputTokens }),
+            ...(completedStatus?.thinkingDurationMs != null && { thinkingDurationMs: completedStatus.thinkingDurationMs }),
+            ...(completedStatus?.costUsd != null && { costUsd: completedStatus.costUsd }),
+          },
+        ];
+      }
+
       return {
         ...state,
         // Stay busy if there are queued messages (server will auto-drain next)
@@ -696,11 +731,13 @@ function reducer(state: AppState, action: Action): AppState {
         turnToolCallIds: [],
         tasks: updatedTasks,
         taskPanelOpen,
-        turnStatus: completedStatus,
+        // Clear turnStatus — CompletedBar now comes from the turn_completed entry
+        // in messages. TurnStatusBar only shows during in_progress.
+        turnStatus: null,
         liveTurnStatus: state.currentSessionId && completedStatus
           ? { ...state.liveTurnStatus, [state.currentSessionId]: completedStatus }
           : state.liveTurnStatus,
-        messages: finalizeStreaming(state.messages, state.currentTurnId),
+        messages: finalizedMessages,
       };
     }
 

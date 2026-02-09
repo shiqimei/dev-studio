@@ -172,7 +172,6 @@ function CollapsedTurnGroup({
           ))}
         </div>
       )}
-      {completedStatus && <CompletedBar status={completedStatus} />}
       {!expanded && resultBlocks.map((block, i) => {
         if (block.type !== "text") return null;
         return (
@@ -183,6 +182,7 @@ function CollapsedTurnGroup({
           />
         );
       })}
+      {completedStatus && <CompletedBar status={completedStatus} />}
     </>
   );
 }

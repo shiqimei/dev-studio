@@ -532,6 +532,43 @@
   padding: 4px 0;
 }
 
+/* ── Compact conversation divider ─────────── */
+
+.compact-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+}
+
+.compact-divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+
+.compact-divider-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.compact-divider-detail {
+  color: var(--color-faint);
+  font-size: 10px;
+  margin-left: 2px;
+}
+
+.compact-divider-detail::before {
+  content: "·";
+  margin-right: 4px;
+}
+
 .msg.error {
   color: #f87171;
   font-size: 12px;

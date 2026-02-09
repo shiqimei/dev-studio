@@ -162,6 +162,7 @@
 [data-theme="dawn"] .sidebar-collapsed { background: #F9F9F3; }
 [data-theme="dawn"] .session-context-menu,
 [data-theme="dawn"] .theme-popover { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04); }
+[data-theme="dawn"] .autocomplete-dropdown { box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.04); }
 
 /* ── Theme: GitHub Light ── */
 
@@ -202,6 +203,7 @@
 [data-theme="github-light"] .msg.assistant [data-streamdown="inline-code"] { color: #0550ae; }
 [data-theme="github-light"] .session-context-menu,
 [data-theme="github-light"] .theme-popover { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04); }
+[data-theme="github-light"] .autocomplete-dropdown { box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.04); }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -2295,7 +2297,8 @@ a, [data-streamdown="link"] { cursor: pointer; }
   position: absolute;
   bottom: 100%;
   left: 20px;
-  right: 20px;
+  max-width: 480px;
+  width: calc(100% - 40px);
   max-height: 240px;
   overflow-y: auto;
   background: var(--color-surface);
@@ -2303,7 +2306,7 @@ a, [data-streamdown="link"] { cursor: pointer; }
   border-radius: 8px;
   padding: 4px;
   margin-bottom: 4px;
-  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
   z-index: 20;
 }
 

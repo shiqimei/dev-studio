@@ -6,46 +6,17 @@
  */
 
 import { app, BrowserWindow, Menu, nativeImage } from "electron";
-import { execFileSync } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
-import { copyFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createConnection } from "node:net";
 import path from "node:path";
 import { createServer, type ViteDevServer } from "vite";
 
-const ROOT = path.resolve(import.meta.dirname, "../..");
+// Works from both app/main.ts (bun) and app/dist/main.js (electron)
+const ROOT = import.meta.dirname.endsWith(path.sep + "dist")
+  ? path.resolve(import.meta.dirname, "../..")
+  : path.resolve(import.meta.dirname, "..");
 
-// Patch Electron's Info.plist and icon before the app is fully ready.
-// The plist name takes effect on next launch; the dock icon is set at runtime below.
-(() => {
-  const plist = path.join(
-    ROOT,
-    "node_modules/electron/dist/Electron.app/Contents/Info.plist",
-  );
-  if (existsSync(plist)) {
-    try {
-      execFileSync("plutil", ["-replace", "CFBundleName", "-string", "Claude Code ACP", plist]);
-      execFileSync("plutil", [
-        "-replace",
-        "CFBundleDisplayName",
-        "-string",
-        "Claude Code ACP",
-        plist,
-      ]);
-    } catch { /* ignore on non-macOS or if plutil unavailable */ }
-  }
-
-  const srcIcon = path.join(ROOT, "app/icon.icns");
-  const dstIcon = path.join(
-    ROOT,
-    "node_modules/electron/dist/Electron.app/Contents/Resources/electron.icns",
-  );
-  if (existsSync(srcIcon)) {
-    try {
-      copyFileSync(srcIcon, dstIcon);
-    } catch { /* ignore */ }
-  }
-})();
 const BACKEND_PORT = 5689;
 const VITE_PORT = 5688;
 
@@ -134,18 +105,18 @@ async function cleanup() {
 
 app.setName("Claude Code ACP");
 
-// Set dock icon at runtime (works immediately for the current process)
-if (process.platform === "darwin" && app.dock) {
-  const iconPath = path.join(ROOT, "app/icon.icns");
-  if (existsSync(iconPath)) {
-    app.dock.setIcon(nativeImage.createFromPath(iconPath));
-  }
-}
-
 app.whenReady().then(async () => {
   try {
     const isMac = process.platform === "darwin";
     const appName = "Claude Code ACP";
+
+    // Set dock icon at runtime (works immediately for the current process)
+    if (isMac && app.dock) {
+      const iconPng = path.join(ROOT, "app/icon.png");
+      if (existsSync(iconPng)) {
+        app.dock.setIcon(nativeImage.createFromPath(iconPng));
+      }
+    }
 
     const template: Electron.MenuItemConstructorOptions[] = [
       ...(isMac

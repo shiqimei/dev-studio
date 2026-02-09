@@ -1359,6 +1359,14 @@
   display: none;
 }
 
+/* ── Chat content centering ───────────────── */
+
+.chat-content {
+  max-width: 768px;
+  width: 100%;
+  margin: 0 auto;
+}
+
 /* ── Chat scroll (overlay scrollbar) ──────── */
 
 .chat-scroll-wrap {
@@ -1377,6 +1385,52 @@
 
 .chat-scroll-list::-webkit-scrollbar {
   display: none;
+}
+
+/* ── Scroll to bottom button ─────────────── */
+
+.scroll-to-bottom {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-bg) 80%, transparent);
+  border: 0.5px solid var(--color-border);
+  border-radius: 9999px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  z-index: 15;
+}
+
+.scroll-to-bottom.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0);
+}
+
+.scroll-to-bottom:hover {
+  background: color-mix(in srgb, var(--color-bg) 100%, transparent);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+}
+
+.scroll-to-bottom:active {
+  transform: translateX(-50%) translateY(1px);
+}
+
+.scroll-to-bottom svg {
+  flex-shrink: 0;
 }
 
 /* ── Overlay scroll thumb (shared) ───────── */

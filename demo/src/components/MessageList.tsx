@@ -11,7 +11,7 @@ import type { MessageEntry } from "../types";
 export function MessageList() {
   const state = useWsState();
   const { resumeSubagent } = useWsActions();
-  const { ref, onScroll, scrollToBottom } = useAutoScroll<HTMLDivElement>(state.messages, state.turnStatus);
+  const { ref, onScroll, scrollToBottom, isAtBottom } = useAutoScroll<HTMLDivElement>(state.messages, state.turnStatus);
 
   // Force scroll to bottom when the user sends a message, even if they had scrolled up
   const lastMsg = state.messages[state.messages.length - 1];
@@ -55,8 +55,9 @@ export function MessageList() {
     <div
       ref={ref}
       onScroll={handleScroll}
-      className="chat-scroll-list px-5 py-4 flex flex-col gap-1"
+      className="chat-scroll-list px-5 py-4"
     >
+      <div className="chat-content flex flex-col gap-1">
       {state.messages.map((entry, idx) => {
         const isLatest = idx === state.messages.length - 1;
         switch (entry.type) {
@@ -87,8 +88,18 @@ export function MessageList() {
         }
       })}
       <TurnStatusBar status={state.turnStatus} />
+      </div>
     </div>
     <div ref={scrollThumbRef} className="sidebar-scroll-thumb" />
+    <button
+      className={`scroll-to-bottom ${isAtBottom ? "" : "visible"}`}
+      onClick={scrollToBottom}
+      aria-label="Scroll to bottom"
+    >
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10 3C10.2761 3.00006 10.5 3.2239 10.5 3.5V15.293L14.6465 11.1465C14.8418 10.9514 15.1583 10.9513 15.3536 11.1465C15.5487 11.3417 15.5486 11.6583 15.3536 11.8535L10.3535 16.8535C10.2598 16.9473 10.1326 17 10 17C9.90062 17 9.8042 16.9703 9.72268 16.916L9.64651 16.8535L4.6465 11.8535C4.45138 11.6582 4.45128 11.3417 4.6465 11.1465C4.84172 10.9513 5.15827 10.9514 5.35353 11.1465L9.50003 15.293V3.5C9.50003 3.22386 9.72389 3 10 3Z" />
+      </svg>
+    </button>
     </div>
   );
 }

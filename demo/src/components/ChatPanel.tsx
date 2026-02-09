@@ -24,7 +24,9 @@ export function ChatPanel() {
   return (
     <div className="flex-1 flex flex-col min-w-0">
       <div className="chat-title-header">
-        <h1 className="text-sm font-medium text-text truncate">{sessionTitle ?? "\u00a0"}</h1>
+        <div className="chat-content">
+          <h1 className="text-sm font-medium text-text truncate">{sessionTitle ?? "\u00a0"}</h1>
+        </div>
       </div>
       <MessageList />
       <ChatInput />

@@ -430,6 +430,7 @@ export function ChatInput() {
 
   return (
     <div className="border-t border-border px-5 py-3 shrink-0 relative">
+      <div className="chat-content">
       {/* Pinned queued messages */}
       {queuedEntries.length > 0 && (
         <div className="queued-pin-area">
@@ -533,6 +534,7 @@ export function ChatInput() {
           className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none max-h-[240px] overflow-auto chat-input-shadow placeholder:text-dim"
         />
 
+      </div>
       </div>
     </div>
   );

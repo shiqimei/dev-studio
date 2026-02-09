@@ -61,7 +61,7 @@ export function startServer(port: number) {
   // Accumulates streaming messages for the in-progress turn so that clients
   // joining mid-turn can replay all content they missed (tmux-style attach).
   const turnContentBuffers = new Map<string, object[]>();
-  const BUFFERABLE_TYPES = new Set(["text", "thought", "tool_call", "tool_call_update", "plan", "permission", "error"]);
+  const BUFFERABLE_TYPES = new Set(["text", "thought", "tool_call", "tool_call_update", "plan", "permission_request", "permission_resolved", "error"]);
 
   function getQueue(sessionId: string | null): QueuedMessage[] {
     if (!sessionId) return [];
@@ -224,7 +224,12 @@ export function startServer(port: number) {
         const approxTokens = Math.ceil(turnTextChars / 4);
         // Check turnStates for server-known stats first
         const ts = turnStates[sessionId];
-        if (ts?.status === "completed" && ts.durationMs && !next) {
+
+        // Skip injecting turn_duration for the last entry if the turn is still in_progress
+        // (the live TurnStatusBar handles that case; injecting here causes a false completed bar)
+        if (!next && ts?.status === "in_progress") {
+          turnStartTs = null;
+        } else if (ts?.status === "completed" && ts.durationMs && !next) {
           // Last turn — use server stats if available
           result.push({
             type: "system",
@@ -263,6 +268,23 @@ export function startServer(port: number) {
     // ── Accumulate turn stats + track activity from streaming messages ──
     // (do this before filtering so stats accumulate even for background sessions)
     let activityChanged = false;
+
+    // Handle set_activity: update turn state only, don't forward to clients
+    if (m.type === "set_activity" && msgSessionId && turnStates[msgSessionId]?.status === "in_progress") {
+      activityChanged = setActivity(turnStates[msgSessionId], m.activity, m.detail);
+      if (activityChanged) {
+        const ts = turnStates[msgSessionId];
+        sendToSession(msgSessionId, JSON.stringify({
+          type: "turn_activity",
+          activity: ts.activity,
+          detail: ts.activityDetail,
+          approxTokens: ts.approxTokens,
+          thinkingDurationMs: ts.thinkingDurationMs,
+        }));
+      }
+      return;
+    }
+
     if (msgSessionId && turnStates[msgSessionId]?.status === "in_progress") {
       const ts = turnStates[msgSessionId];
       if (m.type === "text" && m.text) {
@@ -719,11 +741,19 @@ export function startServer(port: number) {
             if (!processingSessions.has(intSession)) break;
             log.info({ client: cid, session: sid(intSession) }, "ws: → interrupt");
             try {
+              acpConnection.webClient.cancelPermissions(intSession);
               await acpConnection.connection.cancel({ sessionId: intSession });
               log.info({ client: cid, session: sid(intSession) }, "ws: interrupt sent");
             } catch (err: any) {
               log.error({ client: cid, session: sid(intSession), err: err.message }, "ws: interrupt error");
             }
+            break;
+          }
+
+          case "permission_response": {
+            if (!acpConnection) break;
+            log.info({ client: cid, requestId: msg.requestId, optionId: msg.optionId }, "ws: → permission_response");
+            acpConnection.webClient.resolvePermission(msg.requestId, msg.optionId, msg.optionName || msg.optionId);
             break;
           }
 

@@ -170,7 +170,7 @@ const initialState: AppState = {
   // Slash commands
   commands: [],
   _recentlyDeletedIds: [],
-  tasksSidecarOpen: true,
+
   latestPlan: null,
   latestTasks: null,
   unreadCompletedSessions: {},
@@ -578,14 +578,36 @@ function reducer(state: AppState, action: Action): AppState {
         latestTasks: action.tasks,
       };
 
-    case "PERMISSION":
+    case "PERMISSION_REQUEST":
       return {
         ...state,
         messages: [
-          ...finalizeStreaming(state.messages, state.currentTurnId),
-          { type: "permission", id: uid(), title: action.title },
+          ...state.messages,
+          {
+            type: "permission",
+            id: uid(),
+            title: action.title,
+            requestId: action.requestId,
+            toolCallId: action.toolCallId,
+            options: action.options,
+            status: "pending" as const,
+          },
         ],
-        currentTurnId: null,
+      };
+
+    case "PERMISSION_RESOLVED":
+      return {
+        ...state,
+        messages: state.messages.map((m) =>
+          m.type === "permission" && (m as any).requestId === action.requestId
+            ? {
+                ...m,
+                status: "resolved" as const,
+                selectedOptionId: action.optionId,
+                selectedOptionName: action.optionName,
+              }
+            : m,
+        ),
       };
 
     case "SESSION_INFO":
@@ -610,8 +632,9 @@ function reducer(state: AppState, action: Action): AppState {
       };
 
     case "SYSTEM": {
-      // Hide hook and system init metadata — not useful in the chat UI
-      if (/^\[Hook |^\[System initialized:/.test(action.text)) return state;
+      // Hide hook, system init, and compacting metadata — not useful in the chat UI
+      // (compacting status is already shown via the TurnStatusBar activity)
+      if (/^\[Hook |^\[System initialized:|^\[Compacting conversation context|^\[Local command error\]/.test(action.text)) return state;
       // Deduplicate: skip if the same system text was already shown in this session
       const isDupe = state.messages.some(
         (m) => m.type === "system" && m.text === action.text,
@@ -791,8 +814,7 @@ function reducer(state: AppState, action: Action): AppState {
       };
     }
 
-    case "TOGGLE_TASKS_SIDECAR":
-      return { ...state, tasksSidecarOpen: !state.tasksSidecarOpen };
+
 
     // ── Session management actions ────────────
 
@@ -1048,6 +1070,7 @@ export interface WsActions {
   searchFiles: (query: string, callback: (files: string[]) => void) => void;
   requestCommands: () => void;
   requestSubagents: (sessionId: string) => void;
+  respondToPermission: (requestId: string, optionId: string, optionName: string) => void;
 }
 
 interface WsContextValue {
@@ -1064,6 +1087,7 @@ interface WsContextValue {
   searchFiles: (query: string, callback: (files: string[]) => void) => void;
   requestCommands: () => void;
   requestSubagents: (sessionId: string) => void;
+  respondToPermission: (requestId: string, optionId: string, optionName: string) => void;
 }
 
 const WsActionsContext = createContext<WsActions | null>(null);
@@ -1179,6 +1203,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const requestSubagents = useCallback((sessionId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify({ type: "get_subagents", sessionId }));
+  }, []);
+
+  const respondToPermission = useCallback((requestId: string, optionId: string, optionName: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "permission_response", requestId, optionId, optionName }));
   }, []);
 
   const fileSearchCallbacks = useRef<Map<string, (files: string[]) => void>>(new Map());
@@ -1403,9 +1432,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       searchFiles,
       requestCommands,
       requestSubagents,
+      respondToPermission,
     }),
     // All deps are useCallback([]) or useReducer dispatch — stable references
-    [dispatch, send, interrupt, newSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents],
+    [dispatch, send, interrupt, newSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents, respondToPermission],
   );
 
   // ── Hash-based URL routing ──
@@ -1561,8 +1591,22 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
     case "tasks":
       dispatch({ type: "TASKS", tasks: msg.tasks ?? [] });
       break;
-    case "permission":
-      dispatch({ type: "PERMISSION", title: msg.title });
+    case "permission_request":
+      dispatch({
+        type: "PERMISSION_REQUEST",
+        requestId: msg.requestId,
+        title: msg.title,
+        toolCallId: msg.toolCallId,
+        options: msg.options ?? [],
+      });
+      break;
+    case "permission_resolved":
+      dispatch({
+        type: "PERMISSION_RESOLVED",
+        requestId: msg.requestId,
+        optionId: msg.optionId,
+        optionName: msg.optionName ?? msg.optionId,
+      });
       break;
     case "session_info":
       dispatch({

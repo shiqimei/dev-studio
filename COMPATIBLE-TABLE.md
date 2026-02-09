@@ -69,7 +69,7 @@ Every tool defined in `sdk-tools.d.ts` with input schemas.
 | 12 | `WebSearch` | No | Native (Claude Code) | [✓] | Runs inside Claude Code process |
 | 13 | `TodoWrite` | No | `plan` notification | [✓] | Plan mode entries with status tracking |
 | 14 | `ExitPlanMode` | No | Permission flow | [✓] | `canUseTool` callback |
-| 15 | `AskUserQuestion` | No | N/A | [-] | Intentionally disabled; needs ACP-native UI mapping |
+| 15 | `AskUserQuestion` | No | Permission flow | [✓] | Questions shown via `requestPermission`; answers returned to model |
 | 16 | `Config` | No | Native (Claude Code) | [✓] | Config read/write inside Claude Code |
 | 17 | `ListMcpResources` | No | Native (Claude Code) | [✓] | MCP resource listing |
 | 18 | `ReadMcpResource` | No | Native (Claude Code) | [✓] | MCP resource reading |
@@ -144,7 +144,7 @@ Every field in `Options` (v1 API) and `SDKSessionOptions` (v2 API).
 |---|--------|--------|-------|
 | 13 | `tools` | [✓] | Preset `claude_code` |
 | 14 | `allowedTools` | [✓] | Based on client capabilities |
-| 15 | `disallowedTools` | [✓] | Disabled tools + AskUserQuestion |
+| 15 | `disallowedTools` | [✓] | Disabled tools based on client capabilities |
 | 16 | `canUseTool` | [✓] | Permission callback for plan/edit flows |
 | 17 | `permissionMode` | [✓] | default, acceptEdits, plan, dontAsk, bypassPermissions |
 | 18 | `allowDangerouslySkipPermissions` | [✓] | True if non-root |
@@ -419,7 +419,7 @@ Every notification type sent from ACP agent to client via `sessionUpdate()`.
 | Section | Total | [✓] | [~] | [ ] | [-] |
 |---------|-------|-----|-----|-----|-----|
 | SDK Message Types | 20 | 20 | 0 | 0 | 0 |
-| SDK Tools | 19 | 18 | 0 | 0 | 1 |
+| SDK Tools | 19 | 19 | 0 | 0 | 0 |
 | Query API Methods | 21 | 19 | 0 | 0 | 2 |
 | Session Options | 41 | 41 | 0 | 0 | 0 |
 | Hook Events | 13 | 13 | 0 | 0 | 0 |
@@ -430,4 +430,4 @@ Every notification type sent from ACP agent to client via `sessionUpdate()`.
 | Background Task Features | 11 | 11 | 0 | 0 | 0 |
 | Sub-Agent Features | 8 | 8 | 0 | 0 | 0 |
 | ACP Notification Types | 8 | 8 | 0 | 0 | 0 |
-| **Totals** | **191** | **189** | **0** | **0** | **2** |
+| **Totals** | **191** | **190** | **0** | **0** | **1** |

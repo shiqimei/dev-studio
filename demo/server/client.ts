@@ -18,13 +18,57 @@ function sid(sessionId: string | null | undefined): string {
   return sessionId.slice(0, 8);
 }
 
+interface PendingPermission {
+  resolve: (response: RequestPermissionResponse) => void;
+  sessionId: string;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class WebClient implements Client {
   agent: Agent;
   broadcast: BroadcastFn;
+  private pendingPermissions = new Map<string, PendingPermission>();
+  private nextPermId = 0;
 
   constructor(agent: Agent, broadcast: BroadcastFn) {
     this.agent = agent;
     this.broadcast = broadcast;
+  }
+
+  /** Resolve a pending permission request (called when user clicks a button in the UI). */
+  resolvePermission(requestId: string, optionId: string, optionName: string) {
+    const pending = this.pendingPermissions.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingPermissions.delete(requestId);
+    log.info({ requestId, optionId }, "permission: resolved");
+    this.broadcast({
+      type: "permission_resolved",
+      sessionId: pending.sessionId,
+      requestId,
+      optionId,
+      optionName,
+    });
+    pending.resolve({ outcome: { outcome: "selected", optionId } });
+  }
+
+  /** Cancel all pending permissions for a session (e.g. on interrupt). */
+  cancelPermissions(sessionId: string) {
+    for (const [requestId, pending] of this.pendingPermissions) {
+      if (pending.sessionId === sessionId) {
+        clearTimeout(pending.timer);
+        this.pendingPermissions.delete(requestId);
+        log.info({ requestId, sessionId: sid(sessionId) }, "permission: cancelled");
+        this.broadcast({
+          type: "permission_resolved",
+          sessionId,
+          requestId,
+          optionId: "cancelled",
+          optionName: "Cancelled",
+        });
+        pending.resolve({ outcome: { outcome: "cancelled" } });
+      }
+    }
   }
 
   async sessionUpdate(params: SessionNotification): Promise<void> {
@@ -38,6 +82,9 @@ export class WebClient implements Client {
           if (eventType) {
             log.debug({ session, eventType, textLen: update.content.text.length }, "notify: agent_message_chunk (system)");
             this.broadcast({ type: "system", sessionId: params.sessionId, text: update.content.text });
+          } else if (update.content.text === "[Compacting conversation context...]") {
+            // Show as turn activity instead of chat text
+            this.broadcast({ type: "set_activity", sessionId: params.sessionId, activity: "compacting" });
           } else {
             this.broadcast({ type: "text", sessionId: params.sessionId, text: update.content.text });
           }
@@ -140,15 +187,54 @@ export class WebClient implements Client {
   async requestPermission(
     params: RequestPermissionRequest,
   ): Promise<RequestPermissionResponse> {
-    log.info({ tool: params.toolCall.title }, "notify: requestPermission → auto-allow");
-    this.broadcast({
-      type: "permission",
-      sessionId: params.sessionId,
-      title: params.toolCall.title,
-      decision: "auto-allow",
+    const requestId = `perm-${++this.nextPermId}`;
+
+    // Detect interactive permission requests:
+    // - ExitPlanMode: options contain "plan" or "acceptEdits" optionIds
+    // - AskUserQuestion: options contain "q0_opt" prefixed optionIds
+    // Standard tool permissions use "allow_always" / "allow" / "reject".
+    const isInteractive = params.options.some(
+      (o) => o.optionId === "plan" || o.optionId === "acceptEdits" || o.optionId.startsWith("q"),
+    );
+
+    if (!isInteractive) {
+      // Auto-approve standard tool permissions (allow_once)
+      const allowOption = params.options.find((o) => o.kind === "allow_once") ?? params.options[0];
+      log.info({ requestId, tool: params.toolCall.title, optionId: allowOption.optionId }, "permission: auto-approved");
+      return { outcome: { outcome: "selected", optionId: allowOption.optionId } };
+    }
+
+    log.info({ requestId, tool: params.toolCall.title, options: params.options.length }, "permission: interactive request");
+
+    return new Promise<RequestPermissionResponse>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingPermissions.delete(requestId);
+        log.warn({ requestId }, "permission: timed out (5min)");
+        this.broadcast({
+          type: "permission_resolved",
+          sessionId: params.sessionId,
+          requestId,
+          optionId: "cancelled",
+          optionName: "Timed out",
+        });
+        resolve({ outcome: { outcome: "cancelled" } });
+      }, 5 * 60 * 1000);
+
+      this.pendingPermissions.set(requestId, {
+        resolve,
+        sessionId: params.sessionId,
+        timer,
+      });
+
+      this.broadcast({
+        type: "permission_request",
+        sessionId: params.sessionId,
+        requestId,
+        title: params.toolCall.title,
+        toolCallId: params.toolCall.toolCallId,
+        options: params.options,
+      });
     });
-    const option = params.options.find((o) => o.kind === "allow_once");
-    return { outcome: { outcome: "selected", optionId: option!.optionId } };
   }
 
   async readTextFile(

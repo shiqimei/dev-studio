@@ -354,9 +354,15 @@ export function jsonlToEntries(rawEntries: unknown[]): ChatEntry[] {
           // Skip stop hook summaries — they're internal
           text = "";
         } else if (subtype === "status") {
-          text = String((entry as any).status ?? "");
+          const statusText = String((entry as any).status ?? "");
+          // Skip compacting status — shown via TurnStatusBar activity, not as a chat message
+          if (/^\[Compacting conversation context/.test(statusText)) break;
+          text = statusText;
         } else if (subtype === "local_command") {
-          text = formatLocalCommand(String((entry as any).content ?? ""));
+          const lcContent = String((entry as any).content ?? "");
+          // Skip local command errors — not useful in chat UI
+          if (/^\[Local command error\]/.test(lcContent)) break;
+          text = formatLocalCommand(lcContent);
         } else {
           text = `[${subtype}]`;
         }

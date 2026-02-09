@@ -14,26 +14,27 @@ function Layout() {
   const debugPanelRef = useRef<HTMLDivElement>(null);
 
   return (
-    <>
-      <Header />
-      <TaskBar />
-      <TaskPanel />
-      <div className="flex-1 flex min-h-0 overflow-hidden">
-        <SessionSidebar />
-        <ChatPanel />
-        {state.tasksSidecarOpen && <TasksSidecar />}
-        {!state.debugCollapsed && (
-          <>
-            <ResizeHandle
-              debugPanelRef={debugPanelRef}
-              collapsed={false}
-            />
-            <DebugPanel ref={debugPanelRef} />
-          </>
-        )}
+    <div className="flex-1 flex min-h-0 overflow-hidden">
+      <SessionSidebar />
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+        <Header />
+        <TaskBar />
+        <TaskPanel />
+        <div className="flex-1 flex min-h-0 overflow-hidden">
+          <ChatPanel />
+          <TasksSidecar />
+          {!state.debugCollapsed && (
+            <>
+              <ResizeHandle
+                debugPanelRef={debugPanelRef}
+                collapsed={false}
+              />
+              <DebugPanel ref={debugPanelRef} />
+            </>
+          )}
+        </div>
       </div>
-
-    </>
+    </div>
   );
 }
 

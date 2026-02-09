@@ -47,20 +47,6 @@ export const SystemMessage = memo(function SystemMessage({ text, isError }: Prop
     );
   }
 
-  // Compact conversation status
-  if (text === "[Compacting conversation context...]") {
-    return (
-      <div className="compact-divider">
-        <div className="compact-divider-line" />
-        <span className="compact-divider-label">
-          <CompactIcon />
-          Compacting context...
-        </span>
-        <div className="compact-divider-line" />
-      </div>
-    );
-  }
-
   // Compact boundary marker
   const boundary = parseCompactBoundary(text);
   if (boundary) {

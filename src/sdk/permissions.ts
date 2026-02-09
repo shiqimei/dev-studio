@@ -31,6 +31,55 @@ export function createCanUseTool(
       };
     }
 
+    if (toolName === "AskUserQuestion") {
+      const input = toolInput as {
+        questions: Array<{
+          question: string;
+          header: string;
+          options: Array<{ label: string; description: string }>;
+          multiSelect: boolean;
+        }>;
+      };
+
+      // Ask each question sequentially via requestPermission
+      const answers: string[] = [];
+      for (let qi = 0; qi < (input.questions?.length ?? 0); qi++) {
+        const q = input.questions[qi];
+        const options = q.options.map((opt, i) => ({
+          kind: "allow_once" as const,
+          name: opt.label,
+          optionId: `q${qi}_opt${i}`,
+        }));
+
+        const response = await client.requestPermission({
+          options,
+          sessionId,
+          toolCall: {
+            toolCallId: toolUseID,
+            rawInput: toolInput,
+            title: q.question,
+          },
+        });
+
+        if (signal.aborted || response.outcome?.outcome === "cancelled") {
+          throw new Error("Tool use aborted");
+        }
+
+        if (response.outcome?.outcome === "selected") {
+          const optIdx = parseInt(response.outcome.optionId.replace(`q${qi}_opt`, ""), 10);
+          const selected = q.options[optIdx];
+          answers.push(`${q.header}: ${selected?.label ?? response.outcome.optionId}`);
+        }
+      }
+
+      // Return answers as a denial message — the model will see the user's choices
+      // and continue working with them. No interrupt so the model keeps running.
+      return {
+        behavior: "deny",
+        message: `User answered:\n${answers.join("\n")}`,
+      };
+    }
+
     if (toolName === "ExitPlanMode") {
       const response = await client.requestPermission({
         options: [

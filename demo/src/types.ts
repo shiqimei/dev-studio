@@ -104,10 +104,22 @@ export interface PlanEntry {
   entries: PlanEntryItem[];
 }
 
+export interface PermissionOption {
+  kind: "allow_once" | "allow_always" | "reject_once" | "reject_always";
+  name: string;
+  optionId: string;
+}
+
 export interface PermissionEntry {
   type: "permission";
   id: string;
   title: string;
+  requestId: string;
+  toolCallId?: string;
+  options: PermissionOption[];
+  status: "pending" | "resolved";
+  selectedOptionId?: string;
+  selectedOptionName?: string;
 }
 
 export interface TurnCompletedEntry {
@@ -278,8 +290,7 @@ export interface AppState {
   commands: SlashCommand[];
   /** Tracks recently deleted session IDs to prevent stale SESSIONS broadcasts from re-adding them. */
   _recentlyDeletedIds: string[];
-  /** Whether the Tasks sidecar panel is visible. */
-  tasksSidecarOpen: boolean;
+
   /** Latest plan/todo entries from the most recent TodoWrite call. */
   latestPlan: PlanEntryItem[] | null;
   /** Latest task entries from the Tasks system (TaskCreate/TaskUpdate). */
@@ -302,7 +313,8 @@ export type Action =
   | { type: "TOOL_CALL_UPDATE"; toolCallId: string; status: string; title?: string; kind?: string; content?: string; rawInput?: unknown; meta: any }
   | { type: "PLAN"; entries: PlanEntryItem[] }
   | { type: "TASKS"; tasks: TaskItemEntry[] }
-  | { type: "PERMISSION"; title: string }
+  | { type: "PERMISSION_REQUEST"; requestId: string; title: string; toolCallId?: string; options: PermissionOption[] }
+  | { type: "PERMISSION_RESOLVED"; requestId: string; optionId: string; optionName: string }
   | { type: "SESSION_INFO"; sessionId: string; models: string[]; currentModel?: string | null; modes: { id: string }[] }
   | { type: "SYSTEM"; text: string }
   | { type: "TURN_START"; startedAt: number }
@@ -314,7 +326,7 @@ export type Action =
   | { type: "SET_TEXT_FILTER"; filter: string }
   | { type: "TOGGLE_DEBUG_COLLAPSE" }
   | { type: "TOGGLE_TASK_PANEL" }
-  | { type: "TOGGLE_TASKS_SIDECAR" }
+
   | { type: "SESSIONS"; sessions: DiskSession[] }
   | { type: "SESSION_HISTORY"; sessionId: string; entries: unknown[] }
   | { type: "SESSION_SWITCH_PENDING"; sessionId: string }

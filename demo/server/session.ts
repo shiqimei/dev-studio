@@ -118,8 +118,10 @@ export async function createAcpConnection(
     (msg) => broadcast({ type: "protocol", dir: "recv", ts: Date.now(), msg }),
   );
 
+  let webClient: WebClient | null = null;
   const connection = new ClientSideConnection((agent) => {
-    return new WebClient(agent, broadcast);
+    webClient = new WebClient(agent, broadcast);
+    return webClient;
   }, stream);
 
   const initT0 = performance.now();
@@ -138,7 +140,7 @@ export async function createAcpConnection(
   });
 
   log.info({ totalMs: Math.round(performance.now() - spawnT0), boot: bootMs() }, "api: createAcpConnection complete");
-  return { connection, agentProcess };
+  return { connection, agentProcess, webClient: webClient! };
 }
 
 /**

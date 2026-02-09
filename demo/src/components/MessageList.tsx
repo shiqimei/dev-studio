@@ -6,8 +6,9 @@ import { AssistantTurn } from "./messages/AssistantTurn";
 import { AssistantMessage } from "./messages/AssistantMessage";
 import { SystemMessage } from "./messages/SystemMessage";
 import { Plan } from "./messages/Plan";
+import { Permission } from "./messages/Permission";
 import { TurnStatusBar, CompletedBar } from "./TurnStatusBar";
-import type { ChatEntry, MessageEntry, ToolUseBlock } from "../types";
+import type { ChatEntry, MessageEntry, PermissionEntry, ToolUseBlock } from "../types";
 
 // ── Turn grouping ──────────────────────────
 
@@ -231,7 +232,16 @@ function EntryRenderer({
         />
       );
     case "permission":
-      return null;
+      return (
+        <Permission
+          title={entry.title}
+          requestId={entry.requestId}
+          options={entry.options}
+          status={entry.status}
+          selectedOptionId={entry.selectedOptionId}
+          selectedOptionName={entry.selectedOptionName}
+        />
+      );
   }
 }
 

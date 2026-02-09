@@ -1474,7 +1474,7 @@ export class ClaudeAcpAgent implements Agent {
     };
 
     const allowedTools = [];
-    const disallowedTools = ["AskUserQuestion"];
+    const disallowedTools: string[] = [];
 
     const disableBuiltInTools = params._meta?.disableBuiltInTools === true;
 
@@ -1668,7 +1668,7 @@ export class ClaudeAcpAgent implements Agent {
     }
 
     const allowedTools: string[] = [];
-    const disallowedTools = ["AskUserQuestion"];
+    const disallowedTools: string[] = [];
 
     const disableBuiltInTools = params._meta?.disableBuiltInTools === true;
     if (!disableBuiltInTools) {

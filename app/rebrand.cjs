@@ -20,11 +20,85 @@ function plutil(key, value, plist) {
   execFileSync("plutil", ["-replace", key, "-string", value, plist]);
 }
 
+function ensureSpotlightApp(bundlePath) {
+  if (process.platform !== "darwin") return;
+  const appsDir = path.join(require("os").homedir(), "Applications");
+  const wrapper = path.join(appsDir, `${APP_NAME}.app`);
+  fs.mkdirSync(appsDir, { recursive: true });
+
+  // Build a lightweight launcher .app bundle that runs `npm run app` in ROOT.
+  // A real .app bundle (not a symlink) is needed for Raycast/Spotlight indexing.
+  const macosDir = path.join(wrapper, "Contents/MacOS");
+  const resDir = path.join(wrapper, "Contents/Resources");
+  const plistPath = path.join(wrapper, "Contents/Info.plist");
+  const launcherPath = path.join(macosDir, "launcher");
+
+  // Check if launcher already points to the right project
+  if (fs.existsSync(launcherPath)) {
+    const existing = fs.readFileSync(launcherPath, "utf8");
+    if (existing.includes(ROOT)) return; // already up to date
+  }
+
+  // Remove old symlink or stale wrapper
+  fs.rmSync(wrapper, { recursive: true, force: true });
+
+  fs.mkdirSync(macosDir, { recursive: true });
+  fs.mkdirSync(resDir, { recursive: true });
+
+  // Launcher script — runs `npm run app` in the project
+  fs.writeFileSync(
+    launcherPath,
+    `#!/bin/bash\ncd "${ROOT}" && exec npm run app\n`,
+  );
+  fs.chmodSync(launcherPath, 0o755);
+
+  // Copy icon
+  const srcIcon = path.join(ROOT, "app/icon.icns");
+  const dstIcon = path.join(resDir, "AppIcon.icns");
+  if (fs.existsSync(srcIcon)) fs.copyFileSync(srcIcon, dstIcon);
+
+  // Info.plist
+  fs.writeFileSync(
+    plistPath,
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>${APP_NAME}</string>
+  <key>CFBundleDisplayName</key>
+  <string>${APP_NAME}</string>
+  <key>CFBundleIdentifier</key>
+  <string>${BUNDLE_ID}.launcher</string>
+  <key>CFBundleExecutable</key>
+  <string>launcher</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleVersion</key>
+  <string>1.0</string>
+  <key>LSUIElement</key>
+  <false/>
+</dict>
+</plist>\n`,
+  );
+
+  // Register with Launch Services
+  try {
+    execFileSync(
+      "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+      ["-f", wrapper],
+    );
+  } catch { /* ignore */ }
+}
+
 // Already rebranded?
 if (
   fs.existsSync(NEW_BUNDLE) &&
   fs.existsSync(path.join(NEW_BUNDLE, `Contents/MacOS/${APP_NAME}`))
 ) {
+  ensureSpotlightApp(NEW_BUNDLE);
   process.exit(0);
 }
 
@@ -115,5 +189,8 @@ try {
     ["-f", b],
   );
 } catch { /* ignore on non-macOS */ }
+
+// 9. Symlink into ~/Applications so Spotlight/Raycast can find the app
+ensureSpotlightApp(b);
 
 console.log(`Rebranded Electron → ${APP_NAME}`);

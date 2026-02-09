@@ -1580,6 +1580,47 @@
   margin: 0 auto;
 }
 
+/* ── Welcome screen (empty state) ─────────── */
+
+.welcome-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  gap: 12px;
+  user-select: none;
+}
+
+.welcome-greeting {
+  font-family: var(--font-sans);
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--color-text);
+  text-align: center;
+}
+
+.welcome-hint {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-muted);
+  text-align: center;
+}
+
+.welcome-kbd {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-dim);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0 5px;
+  line-height: 18px;
+  vertical-align: baseline;
+}
+
 /* ── Chat scroll (overlay scrollbar) ──────── */
 
 .chat-scroll-wrap {

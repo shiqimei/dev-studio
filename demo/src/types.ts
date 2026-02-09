@@ -330,7 +330,7 @@ export type Action =
   | { type: "SESSIONS"; sessions: DiskSession[] }
   | { type: "SESSION_HISTORY"; sessionId: string; entries: unknown[] }
   | { type: "SESSION_SWITCH_PENDING"; sessionId: string }
-  | { type: "SESSION_SWITCHED"; sessionId: string }
+  | { type: "SESSION_SWITCHED"; sessionId: string; turnStatus?: TurnStatus | null }
   | { type: "SESSION_TITLE_UPDATE"; sessionId: string; title: string }
   | { type: "MESSAGE_QUEUED"; queueId: string }
   | { type: "QUEUE_DRAIN_START"; queueId: string }

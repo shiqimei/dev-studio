@@ -615,20 +615,6 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         models: action.models,
         currentModel: action.currentModel || action.models[0] || null,
-        messages: [
-          ...state.messages,
-          {
-            type: "system",
-            id: uid(),
-            text:
-              "Session " +
-              action.sessionId.slice(0, 8) +
-              " | Model: " +
-              (action.currentModel || action.models.join(", ") || "unknown") +
-              " | Modes: " +
-              action.modes.map((m) => m.id).join(", "),
-          },
-        ],
       };
 
     case "SYSTEM": {
@@ -954,6 +940,11 @@ function reducer(state: AppState, action: Action): AppState {
         }
       }
 
+      // Use server-provided turnStatus (from session_switched message) if available,
+      // so the UI immediately shows "in progress" without waiting for the separate
+      // turn_start message that arrives after turn_content_replay.
+      const effectiveTurnStatus = action.turnStatus ?? restored.turnStatus;
+
       return {
         ...state,
         currentSessionId: action.sessionId,
@@ -965,8 +956,8 @@ function reducer(state: AppState, action: Action): AppState {
         // protoEntries are global debug traffic — keep them across session switches
         currentTurnId: null,
         turnToolCallIds: restored.turnToolCallIds,
-        turnStatus: restored.turnStatus,
-        busy: restored.queuedMessages.length > 0,
+        turnStatus: effectiveTurnStatus,
+        busy: restored.queuedMessages.length > 0 || effectiveTurnStatus?.status === "in_progress",
         queuedMessages: restored.queuedMessages,
         peekStatus: {},
         latestPlan: restored.latestPlan,
@@ -1659,7 +1650,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
         const elapsed = (window as any).__switchStart ? (performance.now() - (window as any).__switchStart).toFixed(0) : "?";
         console.log(`[${pageMs()}] handleMsg session_switched ${msg.sessionId.slice(0, 8)} switchE2E=${elapsed}ms`);
       }
-      dispatch({ type: "SESSION_SWITCHED", sessionId: msg.sessionId });
+      dispatch({ type: "SESSION_SWITCHED", sessionId: msg.sessionId, turnStatus: msg.turnStatus ?? null });
       break;
     case "session_title_update":
       dispatch({ type: "SESSION_TITLE_UPDATE", sessionId: msg.sessionId, title: msg.title });

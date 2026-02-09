@@ -4,13 +4,6 @@ import { stripCliXml } from "../strip-xml";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 
-/** Format a model ID like "claude-opus-4-6-20250219" into "Opus 4.6". */
-function prettyModelName(modelId: string): string {
-  const m = modelId.match(/^claude-(\w+)-(\d+)-(\d+)/);
-  if (m) return m[1].charAt(0).toUpperCase() + m[1].slice(1) + " " + m[2] + "." + m[3];
-  return modelId;
-}
-
 export function ChatPanel() {
   const state = useWsState();
   const { renameSession } = useWsActions();
@@ -24,7 +17,7 @@ export function ChatPanel() {
   const rawTitle = currentSession?.title;
   const sessionTitle =
     (rawTitle ? stripCliXml(rawTitle) || rawTitle.replace(/<[^>]+>/g, "").trim() : null) ||
-    (state.currentModel ? prettyModelName(state.currentModel) : null);
+    "New session";
 
   useEffect(() => {
     if (editing) inputRef.current?.select();

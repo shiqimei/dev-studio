@@ -145,6 +145,20 @@ export function startServer(port: number) {
     }
   }
 
+  /** Build a TurnStatus snapshot for a session (included in session_switched). */
+  function getTurnStatusSnapshot(sessionId: string): object | null {
+    const ts = turnStates[sessionId];
+    if (!ts || ts.status !== "in_progress") return null;
+    return {
+      status: "in_progress",
+      startedAt: ts.startedAt,
+      activity: ts.activity,
+      activityDetail: ts.activityDetail,
+      approxTokens: ts.approxTokens,
+      thinkingDurationMs: ts.thinkingDurationMs,
+    };
+  }
+
   /** Send in-progress turn state + buffered content to a single client (tmux-style attach).
    *  Completed turns are handled via augmentHistoryWithTurnStats (inline in history). */
   function sendTurnState(ws: { send(data: string): void }, sessionId: string) {
@@ -642,7 +656,7 @@ export function startServer(port: number) {
             ws.send(JSON.stringify({ type: "session_history", sessionId: targetSession, entries: augmentHistoryWithTurnStats(targetSession, histResult.entries as unknown[]) }));
           } catch {}
 
-          ws.send(JSON.stringify({ type: "session_switched", sessionId: targetSession }));
+          ws.send(JSON.stringify({ type: "session_switched", sessionId: targetSession, turnStatus: getTurnStatusSnapshot(targetSession) }));
           // Send state AFTER session_switched so messages land in the active session
           sendSessionMeta(ws, targetSession);
           sendTurnState(ws, targetSession);
@@ -667,7 +681,7 @@ export function startServer(port: number) {
               ws.send(JSON.stringify({ type: "session_history", sessionId: targetSession, entries: augmentHistoryWithTurnStats(targetSession, histResult.entries as unknown[]) }));
             } catch {}
 
-            ws.send(JSON.stringify({ type: "session_switched", sessionId: targetSession }));
+            ws.send(JSON.stringify({ type: "session_switched", sessionId: targetSession, turnStatus: getTurnStatusSnapshot(targetSession) }));
             // Send state AFTER session_switched so messages land in the active session
             sendSessionMeta(ws, targetSession);
             sendTurnState(ws, targetSession);
@@ -779,7 +793,7 @@ export function startServer(port: number) {
               clientState.currentSessionId = sessionId;
               liveSessionIds.add(sessionId);
               // Send switch only to the requesting client
-              ws.send(JSON.stringify({ type: "session_switched", sessionId }));
+              ws.send(JSON.stringify({ type: "session_switched", sessionId, turnStatus: getTurnStatusSnapshot(sessionId) }));
               log.info({ client: cid, session: sid(sessionId) }, "ws: ← session_switched");
               // Refresh session lists in parallel (non-blocking)
               broadcastSessions().catch(() => {});
@@ -802,7 +816,7 @@ export function startServer(port: number) {
               log.info({ session: sid(msg.sessionId), durationMs: Math.round(performance.now() - t0), entries: entryCount }, "api: sessions/getHistory completed");
               clientState.currentSessionId = msg.sessionId;
               ws.send(JSON.stringify({ type: "session_history", sessionId: msg.sessionId, entries: augmentHistoryWithTurnStats(msg.sessionId, result.entries as unknown[]) }));
-              ws.send(JSON.stringify({ type: "session_switched", sessionId: msg.sessionId }));
+              ws.send(JSON.stringify({ type: "session_switched", sessionId: msg.sessionId, turnStatus: getTurnStatusSnapshot(msg.sessionId) }));
               sendSessionMeta(ws, msg.sessionId);
               sendTurnState(ws, msg.sessionId);
               sendQueueState(ws, msg.sessionId);
@@ -836,7 +850,7 @@ export function startServer(port: number) {
               log.info({ durationMs: Math.round(performance.now() - t0), entries: entryCount }, "api: sessions/getSubagentHistory completed");
               clientState.currentSessionId = compositeId;
               ws.send(JSON.stringify({ type: "session_history", sessionId: compositeId, entries: augmentHistoryWithTurnStats(compositeId, result.entries as unknown[]) }));
-              ws.send(JSON.stringify({ type: "session_switched", sessionId: compositeId }));
+              ws.send(JSON.stringify({ type: "session_switched", sessionId: compositeId, turnStatus: getTurnStatusSnapshot(compositeId) }));
               sendSessionMeta(ws, compositeId);
               sendTurnState(ws, compositeId);
               sendQueueState(ws, compositeId);

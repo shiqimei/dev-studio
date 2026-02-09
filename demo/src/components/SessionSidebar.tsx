@@ -421,7 +421,13 @@ function findTeammateParent(diskSessions: DiskSession[], teammateSessionId: stri
   return null;
 }
 
-export function SessionSidebar() {
+export function SessionSidebar({
+  collapsed,
+  onToggleCollapse,
+}: {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+}) {
   const { state, newSession, resumeSession, resumeSubagent, requestSubagents } = useWs();
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
@@ -624,6 +630,38 @@ export function SessionSidebar() {
     state.diskSessions.filter((s) => s.isLive).map((s) => s.sessionId),
   );
 
+  if (collapsed) {
+    return (
+      <div className="sidebar-collapsed">
+        {/* Expand button */}
+        <button
+          onClick={onToggleCollapse}
+          className="sidebar-toggle-btn app-region-no-drag"
+          title="Show sidebar"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+            <line x1="6" y1="3.5" x2="6" y2="12.5" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
+        </button>
+        {/* New session */}
+        <button
+          onClick={newSession}
+          className="sidebar-toggle-btn app-region-no-drag"
+          title="New session"
+          style={{ marginTop: 4 }}
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M7 2.5V11.5M2.5 7H11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </button>
+        {/* Settings at bottom */}
+        <div className="flex-1" />
+        <CollapsedSettingsButton />
+      </div>
+    );
+  }
+
   return (
     <div className="sidebar-container">
       {/* Header */}
@@ -749,6 +787,82 @@ const KEYBINDINGS: { keys: string; description: string }[] = [
 ];
 
 type FooterTab = "theme" | "keybindings";
+
+/** Compact settings button for the collapsed sidebar rail. */
+function CollapsedSettingsButton() {
+  const { theme, setTheme } = useTheme();
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<FooterTab>("theme");
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("click", handleClickOutside, true);
+    return () => document.removeEventListener("click", handleClickOutside, true);
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} className="relative shrink-0 pb-3">
+      {open && (
+        <div className="theme-popover" style={{ left: "100%", right: "auto", bottom: 0, marginLeft: 4, width: 240 }}>
+          <div className="popover-tabs">
+            <button
+              className={`popover-tab${tab === "theme" ? " active" : ""}`}
+              onClick={() => setTab("theme")}
+            >
+              Theme
+            </button>
+            <button
+              className={`popover-tab${tab === "keybindings" ? " active" : ""}`}
+              onClick={() => setTab("keybindings")}
+            >
+              Keybindings
+            </button>
+          </div>
+          {tab === "theme" && THEMES.map((t) => (
+            <button
+              key={t.id}
+              className="theme-option"
+              onClick={() => { setTheme(t.id); setOpen(false); }}
+            >
+              <span className="theme-swatch" style={{ background: t.swatch }} />
+              <span className="theme-option-info">
+                <span className="theme-option-name">{t.label}</span>
+                <span className="theme-option-desc"> {t.description}</span>
+              </span>
+              <span className="theme-check">{theme === t.id ? "\u2713" : ""}</span>
+            </button>
+          ))}
+          {tab === "keybindings" && (
+            <div className="keybindings-list">
+              {KEYBINDINGS.map((kb) => (
+                <div key={kb.keys} className="keybinding-row">
+                  <kbd className="keybinding-keys">{kb.keys}</kbd>
+                  <span className="keybinding-desc">{kb.description}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <button
+        onClick={() => setOpen((prev) => !prev)}
+        className="sidebar-toggle-btn app-region-no-drag"
+        title="Settings"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </button>
+    </div>
+  );
+}
 
 function SidebarFooter() {
   const { theme, setTheme } = useTheme();

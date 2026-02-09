@@ -4,7 +4,13 @@ import { useWs } from "../context/WebSocketContext";
 const isElectron = navigator.userAgent.includes("Electron");
 const isMac = navigator.platform.startsWith("Mac");
 
-export function Header() {
+export function Header({
+  sidebarCollapsed,
+  onToggleSidebar,
+}: {
+  sidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
+}) {
   const { state, dispatch } = useWs();
   const toggleDebug = useCallback(() => dispatch({ type: "TOGGLE_DEBUG_COLLAPSE" }), [dispatch]);
 
@@ -24,9 +30,23 @@ export function Header() {
 
   return (
     <header
-      style={{ minHeight: 41.28 }}
-      className={`px-5 py-2.5 border-b border-border flex items-center justify-end gap-3 shrink-0 min-w-0 overflow-hidden${isElectron ? " app-region-drag" : ""}${isElectron && isMac ? " pl-[78px]" : ""}`}
+      style={{ height: 41.28 }}
+      className={`pr-5 border-b border-border flex items-center gap-3 shrink-0 min-w-0 overflow-hidden${isElectron ? " app-region-drag" : ""}${sidebarCollapsed ? (isElectron && isMac ? " pl-[78px]" : " pl-5") : " pl-1.5"}`}
     >
+      {onToggleSidebar && !sidebarCollapsed && (
+        <button
+          onClick={onToggleSidebar}
+          className="sidebar-toggle-btn app-region-no-drag"
+          title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+            <line x1="6" y1="3.5" x2="6" y2="12.5" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
+        </button>
+      )}
+
+      <div className="flex-1" />
 
       {debugBtnVisible && (
         <button

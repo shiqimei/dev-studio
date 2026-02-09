@@ -189,13 +189,15 @@ export class WebClient implements Client {
   ): Promise<RequestPermissionResponse> {
     const requestId = `perm-${++this.nextPermId}`;
 
-    // Detect interactive permission requests:
-    // - ExitPlanMode: options contain "plan" or "acceptEdits" optionIds
-    // - AskUserQuestion: options contain "q0_opt" prefixed optionIds
-    // Standard tool permissions use "allow_always" / "allow" / "reject".
-    const isInteractive = params.options.some(
-      (o) => o.optionId === "plan" || o.optionId === "acceptEdits" || o.optionId.startsWith("q"),
-    );
+    // ExitPlanMode: auto-approve with acceptEdits (no user interaction needed)
+    const isExitPlanMode = params.options.some((o) => o.optionId === "acceptEdits");
+    if (isExitPlanMode) {
+      log.info({ requestId, tool: params.toolCall.title }, "permission: auto-approved ExitPlanMode (acceptEdits)");
+      return { outcome: { outcome: "selected", optionId: "acceptEdits" } };
+    }
+
+    // AskUserQuestion: options have q{N}_opt{M} IDs — show interactive UI
+    const isInteractive = params.options.some((o) => o.optionId.startsWith("q"));
 
     if (!isInteractive) {
       // Auto-approve standard tool permissions (allow_once)

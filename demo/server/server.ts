@@ -707,7 +707,11 @@ export function startServer(port: number) {
 
         const clientState = clients.get(ws);
         if (!clientState) {
-          log.warn({ msgType: msg.type }, "ws: message from unknown client");
+          // Stale connection from before a hot reload — the clients Map was reset
+          // but bun --hot preserved the WebSocket. Close it so the browser reconnects
+          // and triggers the open handler on the fresh server instance.
+          log.warn({ msgType: msg.type }, "ws: message from unknown client, closing stale connection");
+          ws.close(4000, "Server reloaded");
           return;
         }
         const cid = clientState.id;

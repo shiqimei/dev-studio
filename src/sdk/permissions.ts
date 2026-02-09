@@ -2,11 +2,32 @@
  * canUseTool callback factory.
  * Extracted from ClaudeAcpAgent.canUseTool().
  */
-import type { AgentSideConnection } from "@agentclientprotocol/sdk";
+import type { AgentSideConnection, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import type { CanUseTool, PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import { EDIT_TOOL_NAMES } from "../acp/types.js";
 import { toolInfoFromToolUse } from "../acp/tool-conversion.js";
 import type { ManagedSession } from "./types.js";
+
+/**
+ * Race a requestPermission call against the abort signal so that canUseTool
+ * returns quickly when the SDK cancels the control request (e.g. on interrupt).
+ * Without this, the requestPermission promise would hang until the 5-minute
+ * timeout in WebClient even after the signal is already aborted.
+ */
+function raceWithAbort(
+  permissionPromise: Promise<RequestPermissionResponse>,
+  signal: AbortSignal,
+): Promise<RequestPermissionResponse> {
+  if (signal.aborted) {
+    return Promise.reject(new Error("Tool use aborted"));
+  }
+  return Promise.race([
+    permissionPromise,
+    new Promise<never>((_, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("Tool use aborted")), { once: true });
+    }),
+  ]);
+}
 
 /**
  * Creates a canUseTool callback for a given session.
@@ -49,19 +70,23 @@ export function createCanUseTool(
           kind: "allow_once" as const,
           name: opt.label,
           optionId: `q${qi}_opt${i}`,
+          description: opt.description,
         }));
 
-        const response = await client.requestPermission({
-          options,
-          sessionId,
-          toolCall: {
-            toolCallId: toolUseID,
-            rawInput: toolInput,
-            title: q.question,
-          },
-        });
+        const response = await raceWithAbort(
+          client.requestPermission({
+            options,
+            sessionId,
+            toolCall: {
+              toolCallId: toolUseID,
+              rawInput: toolInput,
+              title: q.question,
+            },
+          }),
+          signal,
+        );
 
-        if (signal.aborted || response.outcome?.outcome === "cancelled") {
+        if (response.outcome?.outcome === "cancelled") {
           throw new Error("Tool use aborted");
         }
 
@@ -81,25 +106,28 @@ export function createCanUseTool(
     }
 
     if (toolName === "ExitPlanMode") {
-      const response = await client.requestPermission({
-        options: [
-          {
-            kind: "allow_always",
-            name: "Yes, and auto-accept edits",
-            optionId: "acceptEdits",
+      const response = await raceWithAbort(
+        client.requestPermission({
+          options: [
+            {
+              kind: "allow_always",
+              name: "Yes, and auto-accept edits",
+              optionId: "acceptEdits",
+            },
+            { kind: "allow_once", name: "Yes, and manually approve edits", optionId: "default" },
+            { kind: "reject_once", name: "No, keep planning", optionId: "plan" },
+          ],
+          sessionId,
+          toolCall: {
+            toolCallId: toolUseID,
+            rawInput: toolInput,
+            title: toolInfoFromToolUse({ name: toolName, input: toolInput }).title,
           },
-          { kind: "allow_once", name: "Yes, and manually approve edits", optionId: "default" },
-          { kind: "reject_once", name: "No, keep planning", optionId: "plan" },
-        ],
-        sessionId,
-        toolCall: {
-          toolCallId: toolUseID,
-          rawInput: toolInput,
-          title: toolInfoFromToolUse({ name: toolName, input: toolInput }).title,
-        },
-      });
+        }),
+        signal,
+      );
 
-      if (signal.aborted || response.outcome?.outcome === "cancelled") {
+      if (response.outcome?.outcome === "cancelled") {
         throw new Error("Tool use aborted");
       }
       if (
@@ -144,24 +172,27 @@ export function createCanUseTool(
       };
     }
 
-    const response = await client.requestPermission({
-      options: [
-        {
-          kind: "allow_always",
-          name: "Always Allow",
-          optionId: "allow_always",
+    const response = await raceWithAbort(
+      client.requestPermission({
+        options: [
+          {
+            kind: "allow_always",
+            name: "Always Allow",
+            optionId: "allow_always",
+          },
+          { kind: "allow_once", name: "Allow", optionId: "allow" },
+          { kind: "reject_once", name: "Reject", optionId: "reject" },
+        ],
+        sessionId,
+        toolCall: {
+          toolCallId: toolUseID,
+          rawInput: toolInput,
+          title: toolInfoFromToolUse({ name: toolName, input: toolInput }).title,
         },
-        { kind: "allow_once", name: "Allow", optionId: "allow" },
-        { kind: "reject_once", name: "Reject", optionId: "reject" },
-      ],
-      sessionId,
-      toolCall: {
-        toolCallId: toolUseID,
-        rawInput: toolInput,
-        title: toolInfoFromToolUse({ name: toolName, input: toolInput }).title,
-      },
-    });
-    if (signal.aborted || response.outcome?.outcome === "cancelled") {
+      }),
+      signal,
+    );
+    if (response.outcome?.outcome === "cancelled") {
       throw new Error("Tool use aborted");
     }
     if (

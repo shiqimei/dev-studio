@@ -159,6 +159,9 @@
 [data-theme="dawn"] .sys-reminder-badge { background: #e7e5e4; color: #78716c; }
 [data-theme="dawn"] .msg.assistant [data-streamdown="inline-code"] { color: #2563eb; }
 [data-theme="dawn"] .sidebar-container { background: #F9F9F3; }
+[data-theme="dawn"] .sidebar-collapsed { background: #F9F9F3; }
+[data-theme="dawn"] .session-context-menu,
+[data-theme="dawn"] .theme-popover { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04); }
 
 /* ── Theme: GitHub Light ── */
 
@@ -197,6 +200,8 @@
 [data-theme="github-light"] .user-stdout { background: #f6f8fa; }
 [data-theme="github-light"] .sys-reminder-badge { background: #eaeef2; color: #656d76; }
 [data-theme="github-light"] .msg.assistant [data-streamdown="inline-code"] { color: #0550ae; }
+[data-theme="github-light"] .session-context-menu,
+[data-theme="github-light"] .theme-popover { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04); }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -682,7 +687,7 @@
 }
 
 .tool-call .tool-status.pending { color: var(--color-yellow); }
-.tool-call .tool-status.completed { color: var(--color-green); }
+.tool-call .tool-status.completed { color: var(--color-dim); }
 .tool-call .tool-status.failed { color: var(--color-red); }
 
 .tool-call .tool-content.tool-error { color: var(--color-red); }
@@ -924,7 +929,7 @@
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-.task-result-status.completed { color: var(--color-green); }
+.task-result-status.completed { color: var(--color-dim); }
 .task-result-status.failed { color: var(--color-red); }
 .task-result-status.pending { color: var(--color-yellow); }
 
@@ -1210,6 +1215,216 @@
   background: rgba(248, 113, 113, 0.1);
 }
 
+/* ── AskUserQuestion (rich question permission) ── */
+
+.permission-question {
+  font-family: var(--font-mono);
+  background: var(--color-tool-bg);
+  border: 1px solid var(--color-accent);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 4px 0;
+}
+
+.permission-question-resolved {
+  border-color: var(--color-border);
+}
+
+.permission-question-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.permission-question-icon {
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+
+.permission-question-resolved .permission-question-icon {
+  color: var(--color-dim);
+}
+
+.permission-question-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  line-height: 1.4;
+}
+
+.permission-question-answer {
+  font-size: 12px;
+  color: var(--color-green);
+  padding-left: 22px;
+}
+
+.permission-question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.permission-question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-mono);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.permission-question-option:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-dim);
+}
+
+.permission-question-option-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-dim);
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.permission-question-option:hover .permission-question-option-num {
+  background: var(--color-accent);
+  color: var(--color-bg);
+}
+
+.permission-question-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.permission-question-option-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text);
+  line-height: 1.4;
+}
+
+.permission-question-option-desc {
+  font-size: 11px;
+  color: var(--color-dim);
+  line-height: 1.4;
+}
+
+/* ── AskUserQuestion (interactive question) ── */
+
+.permission-question {
+  font-family: var(--font-mono);
+  background: var(--color-tool-bg);
+  border: 1px solid var(--color-accent);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 4px 0;
+}
+
+.permission-question-resolved {
+  border-color: var(--color-border);
+}
+
+.permission-question-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+.permission-question-resolved .permission-question-title {
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.permission-question-answer {
+  font-size: 12px;
+  color: var(--color-accent);
+  font-weight: 500;
+}
+
+.permission-question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.permission-question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  font-family: var(--font-mono);
+}
+
+.permission-question-option:hover {
+  background: var(--color-accent-dim);
+  border-color: var(--color-accent);
+}
+
+.permission-question-option-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  background: var(--color-overlay);
+  color: var(--color-dim);
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 1px;
+}
+
+.permission-question-option:hover .permission-question-option-num {
+  background: var(--color-accent);
+  color: var(--color-bg);
+}
+
+.permission-question-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.permission-question-option-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text);
+  line-height: 1.4;
+}
+
+.permission-question-option-desc {
+  font-size: 11px;
+  color: var(--color-dim);
+  line-height: 1.4;
+}
+
 /* ── Debug panel controls ─────────────────── */
 
 .debug-ctrl-btn {
@@ -1387,7 +1602,7 @@
 }
 
 .task-status.running { color: var(--color-yellow); }
-.task-status.completed { color: var(--color-green); }
+.task-status.completed { color: var(--color-dim); }
 .task-status.failed { color: var(--color-red); }
 
 .task-kill {
@@ -1466,9 +1681,69 @@
   background: var(--color-dim);
 }
 
+/* ── Sidebar toggle button ────────────────── */
+
+.sidebar-toggle-btn {
+  -webkit-app-region: no-drag;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 7px;
+  background: none;
+  border: none;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.sidebar-toggle-btn:hover {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+/* ── Sidebar toggle in title bar ──────────── */
+
+/* ── Sidebar collapsed strip ─────────────── */
+
+.sidebar-collapsed {
+  position: relative;
+  flex-shrink: 0;
+  background: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 56.28px;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.sidebar-collapsed::after {
+  content: "";
+  position: absolute;
+  top: 40.28px;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-border);
+}
+
+.sidebar-collapsed::before {
+  content: "";
+  position: absolute;
+  top: 40.28px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--color-border);
+}
+
 /* ── Sidebar container ────────────────────── */
 
 .sidebar-container {
+  position: relative;
   width: 280px;
   flex-shrink: 0;
   background: var(--color-bg);

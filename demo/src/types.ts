@@ -108,6 +108,7 @@ export interface PermissionOption {
   kind: "allow_once" | "allow_always" | "reject_once" | "reject_always";
   name: string;
   optionId: string;
+  description?: string;
 }
 
 export interface PermissionEntry {

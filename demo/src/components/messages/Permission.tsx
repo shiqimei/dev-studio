@@ -11,6 +11,11 @@ interface Props {
   selectedOptionName?: string;
 }
 
+/** True when the permission is an AskUserQuestion (option IDs match q{N}_opt{M}). */
+function isAskUserQuestion(options: PermissionOption[]): boolean {
+  return options.length > 0 && options.every((o) => /^q\d+_opt\d+$/.test(o.optionId));
+}
+
 export const Permission = memo(function Permission({
   title,
   requestId,
@@ -20,7 +25,46 @@ export const Permission = memo(function Permission({
   selectedOptionName,
 }: Props) {
   const { respondToPermission } = useWsActions();
+  const isQuestion = isAskUserQuestion(options);
 
+  // ── AskUserQuestion: rich question UI ──
+  if (isQuestion) {
+    if (status === "resolved") {
+      return (
+        <div className="permission-question permission-question-resolved">
+          <div className="permission-question-title">{title}</div>
+          <div className="permission-question-answer">
+            {selectedOptionName || selectedOptionId}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="permission-question">
+        <div className="permission-question-title">{title}</div>
+        <div className="permission-question-options">
+          {options.map((opt, i) => (
+            <button
+              key={opt.optionId}
+              className="permission-question-option"
+              onClick={() => respondToPermission(requestId, opt.optionId, opt.name)}
+            >
+              <span className="permission-question-option-num">{i + 1}</span>
+              <span className="permission-question-option-body">
+                <span className="permission-question-option-label">{opt.name}</span>
+                {opt.description && (
+                  <span className="permission-question-option-desc">{opt.description}</span>
+                )}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Standard permission UI ──
   if (status === "resolved") {
     const isCancelled = selectedOptionId === "cancelled";
     const isRejected =

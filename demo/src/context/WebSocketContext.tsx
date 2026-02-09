@@ -1341,7 +1341,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         // current session. The server already filters by session, but this guards
         // against bugs like a missing sessionId on a broadcast.
         if (msg.sessionId && currentSessionRef.current && msg.sessionId !== currentSessionRef.current) {
-          const globalTypes = new Set(["sessions", "session_history", "session_switched", "session_title_update", "session_deleted", "session_subagents", "protocol"]);
+          const globalTypes = new Set(["sessions", "session_history", "session_switched", "session_title_update", "session_deleted", "session_subagents", "protocol", "permission_request", "permission_resolved"]);
           if (!globalTypes.has(msg.type)) return;
         }
         handleMsg(msg, dispatch);

@@ -33,7 +33,7 @@ export function Header() {
 
   return (
     <header
-      style={{ minHeight: 38 }}
+      style={{ minHeight: 41.28 }}
       className={`px-5 py-2.5 border-b border-border flex items-center justify-end gap-3 shrink-0 min-w-0 overflow-hidden${isElectron ? " app-region-drag" : ""}${isElectron && isMac ? " pl-[78px]" : ""}`}
     >
       {totalCount > 0 && (

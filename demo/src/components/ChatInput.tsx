@@ -105,7 +105,7 @@ export function ChatInput() {
     redoStack.current = [];
     // Recalc height
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 240) + "px";
+    el.style.height = Math.min(el.scrollHeight, 210) + "px";
   }, [state.currentSessionId]);
 
   // ── Lazy command loading (gate on connected + empty commands) ──
@@ -210,7 +210,7 @@ export function ChatInput() {
     slashAnchorRef.current = -1;
     // Trigger height recalc
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 240) + "px";
+    el.style.height = Math.min(el.scrollHeight, 210) + "px";
   }, []);
 
   const selectFile = useCallback((filePath: string) => {
@@ -295,7 +295,7 @@ export function ChatInput() {
         lastSnapshotRef.current = prev;
         saveDraft(state.currentSessionId, prev);
         el.style.height = "auto";
-        el.style.height = Math.min(el.scrollHeight, 240) + "px";
+        el.style.height = Math.min(el.scrollHeight, 210) + "px";
         return;
       }
       if (
@@ -311,7 +311,7 @@ export function ChatInput() {
         lastSnapshotRef.current = next;
         saveDraft(state.currentSessionId, next);
         el.style.height = "auto";
-        el.style.height = Math.min(el.scrollHeight, 240) + "px";
+        el.style.height = Math.min(el.scrollHeight, 210) + "px";
         return;
       }
 
@@ -351,7 +351,7 @@ export function ChatInput() {
     if (!el) return;
     pushUndo();
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 240) + "px";
+    el.style.height = Math.min(el.scrollHeight, 210) + "px";
     saveDraft(state.currentSessionId, el.value);
     checkAutocomplete();
   }, [checkAutocomplete, pushUndo, state.currentSessionId]);
@@ -429,7 +429,7 @@ export function ChatInput() {
   const showAutocomplete = slashOpen || mentionOpen;
 
   return (
-    <div className="border-t border-border px-5 py-3 shrink-0 relative">
+    <div className="px-5 pt-3 pb-8 shrink-0 relative">
       <div className="chat-content">
       {/* Pinned queued messages */}
       {queuedEntries.length > 0 && (
@@ -525,13 +525,13 @@ export function ChatInput() {
       <div className="flex gap-2">
         <textarea
           ref={inputRef}
-          rows={6}
+          rows={3}
           placeholder={state.busy ? "Press ESC to interrupt..." : images.length > 0 ? "Add a message or send image..." : files.length > 0 ? "Add a message or send files..." : "Send a message... (/ for commands, @ for files)"}
           onKeyDown={onKeyDown}
           onInput={onInput}
           onPaste={onPaste}
           onFocus={onFocus}
-          className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none max-h-[240px] overflow-auto chat-input-shadow placeholder:text-dim"
+          className="flex-1 bg-surface border-none rounded-[20px] p-[14px] text-text font-mono text-sm outline-none resize-none max-h-[210px] overflow-auto chat-input-shadow placeholder:text-dim"
         />
 
       </div>

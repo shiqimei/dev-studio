@@ -123,7 +123,7 @@
 /* ── Theme: Dawn (warm light) ── */
 
 [data-theme="dawn"] {
-  --color-bg: #faf8f5;
+  --color-bg: #FAF9F6;
   --color-surface: #f0ede8;
   --color-border: #ddd9d1;
   --color-text: #1c1917;
@@ -158,6 +158,7 @@
 [data-theme="dawn"] .user-stdout { background: rgba(0, 0, 0, 0.03); }
 [data-theme="dawn"] .sys-reminder-badge { background: #e7e5e4; color: #78716c; }
 [data-theme="dawn"] .msg.assistant [data-streamdown="inline-code"] { color: #2563eb; }
+[data-theme="dawn"] .sidebar-container { background: #F9F9F3; }
 
 /* ── Theme: GitHub Light ── */
 
@@ -1299,17 +1300,46 @@
   height: 44px;
   display: flex;
   align-items: center;
-  border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
 }
 
 .sidebar-header {
   padding: 0 14px;
   justify-content: space-between;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .chat-title-header {
   padding: 0 20px;
+}
+
+.chat-title-label {
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin: -2px -6px;
+  transition: background 0.15s;
+}
+
+.chat-title-label:hover {
+  background: var(--color-overlay);
+}
+
+.chat-title-input {
+  width: 100%;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 2px 6px;
+  outline: none;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+
+.chat-title-input:focus {
+  border-color: var(--color-faint);
 }
 
 .sidebar-header-label {
@@ -1881,12 +1911,32 @@
 /* ── Chat input ───────────────────────────── */
 
 .chat-input-shadow {
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 2px 6px rgba(0, 0, 0, 0.4);
+  transition: box-shadow 0.2s ease;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+}
+
+.chat-input-shadow:hover {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 0 0 0.5px rgba(255, 255, 255, 0.15);
+}
+
+.chat-input-shadow:focus {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(255, 255, 255, 0.15);
 }
 
 [data-theme="dawn"] .chat-input-shadow,
 [data-theme="github-light"] .chat-input-shadow {
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.035), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+  background: #ffffff;
+}
+
+[data-theme="dawn"] .chat-input-shadow:hover,
+[data-theme="github-light"] .chat-input-shadow:hover {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.035), 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+}
+
+[data-theme="dawn"] .chat-input-shadow:focus,
+[data-theme="github-light"] .chat-input-shadow:focus {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.075), 0 0 0 0.5px rgba(0, 0, 0, 0.18);
 }
 
 /* ── Theme popover ────────────────────────── */

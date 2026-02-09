@@ -208,6 +208,8 @@
 ::-webkit-scrollbar-thumb { background: var(--color-faint); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--color-muted); }
 
+a { cursor: pointer; }
+
 /* ── Electron custom title bar ────────────── */
 
 .app-region-drag { -webkit-app-region: drag; }
@@ -1783,7 +1785,7 @@
 }
 
 .chat-title-input {
-  width: 100%;
+  width: 50%;
   background: var(--color-bg);
   border: 1px solid var(--color-border);
   border-radius: 5px;
@@ -2249,12 +2251,14 @@
 /* ── Sidebar session status sparkle ───────── */
 
 .sidebar-status-star {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 1em;
-  text-align: center;
   font-size: 10px;
   line-height: 1;
   flex-shrink: 0;
+  transform: translateY(1.5px);
 }
 
 .sidebar-in-progress {

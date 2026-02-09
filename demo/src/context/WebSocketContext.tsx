@@ -903,6 +903,7 @@ function reducer(state: AppState, action: Action): AppState {
     }
 
     case "SESSION_SWITCHED": {
+      const reducerT0 = performance.now();
       // Use freshly received history (SESSION_HISTORY arrived just before this)
       // No save-on-switch: server is authoritative, stale client cache would cause issues
       const cleanHistory = { ...state.sessionHistory };
@@ -945,6 +946,49 @@ function reducer(state: AppState, action: Action): AppState {
       // turn_start message that arrives after turn_content_replay.
       const effectiveTurnStatus = action.turnStatus ?? restored.turnStatus;
 
+      const reducerMs = (performance.now() - reducerT0).toFixed(1);
+      const isOptimisticPending = action.sessionId.startsWith("pending:");
+      const newSessionElapsed = !isOptimisticPending && (window as any).__newSessionStart ? (performance.now() - (window as any).__newSessionStart).toFixed(0) : null;
+      if (newSessionElapsed) {
+        performance.mark("new-session:reducer-done");
+        performance.measure("new-session:reducer", "new-session:switched", "new-session:reducer-done");
+        console.log(`[${pageMs()}] reducer SESSION_SWITCHED done reducer=${reducerMs}ms totalSinceNewSession=${newSessionElapsed}ms`);
+        // Schedule render completion measurement
+        requestAnimationFrame(() => {
+          const renderElapsed = (window as any).__newSessionStart ? (performance.now() - (window as any).__newSessionStart).toFixed(0) : "?";
+          performance.mark("new-session:rendered");
+          try { performance.measure("new-session:render", "new-session:reducer-done", "new-session:rendered"); } catch {}
+          try { performance.measure("new-session:total", "new-session:start", "new-session:rendered"); } catch {}
+          console.log(
+            `[${pageMs()}] NEW SESSION READY totalE2E=${renderElapsed}ms` +
+            `\n  Breakdown: check DevTools Performance tab for "new-session:*" measures` +
+            `\n  or see console logs above for per-phase timings`,
+          );
+          // Print a structured summary
+          const measures = performance.getEntriesByType("measure").filter((e) => e.name.startsWith("new-session:"));
+          if (measures.length > 0) {
+            console.groupCollapsed(`[perf] New session creation breakdown (${renderElapsed}ms total)`);
+            for (const m of measures) {
+              console.log(`  ${m.name.replace("new-session:", "").padEnd(20)} ${m.duration.toFixed(0)}ms`);
+            }
+            console.groupEnd();
+          }
+          // Cleanup marks/measures for next run
+          for (const m of performance.getEntriesByName("new-session:start")) performance.clearMarks(m.name);
+          for (const m of performance.getEntriesByName("new-session:switched")) performance.clearMarks(m.name);
+          for (const m of performance.getEntriesByName("new-session:sessions-list")) performance.clearMarks(m.name);
+          for (const m of performance.getEntriesByName("new-session:reducer-done")) performance.clearMarks(m.name);
+          for (const m of performance.getEntriesByName("new-session:rendered")) performance.clearMarks(m.name);
+          performance.clearMeasures("new-session:server-roundtrip");
+          performance.clearMeasures("new-session:reducer");
+          performance.clearMeasures("new-session:render");
+          performance.clearMeasures("new-session:total");
+          delete (window as any).__newSessionStart;
+        });
+      } else {
+        console.log(`[${pageMs()}] reducer SESSION_SWITCHED done reducer=${reducerMs}ms`);
+      }
+
       return {
         ...state,
         currentSessionId: action.sessionId,
@@ -963,6 +1007,21 @@ function reducer(state: AppState, action: Action): AppState {
         latestPlan: restored.latestPlan,
         latestTasks: restored.latestTasks,
         unreadCompletedSessions: readUnread,
+      };
+    }
+
+    case "SESSION_ID_RESOLVED": {
+      // Swap a pending (optimistic) session ID with the real one from the server.
+      // Only swaps IDs — doesn't reset messages/tasks/turnStatus (empty session stays empty).
+      const { pendingId, realId } = action;
+      console.log(`[${pageMs()}] reducer SESSION_ID_RESOLVED pending=${pendingId.slice(0, 20)} real=${realId.slice(0, 8)}`);
+      return {
+        ...state,
+        currentSessionId: state.currentSessionId === pendingId ? realId : state.currentSessionId,
+        switchingToSessionId: state.switchingToSessionId === pendingId ? null : state.switchingToSessionId,
+        diskSessions: state.diskSessions.map((s) =>
+          s.sessionId === pendingId ? { ...s, sessionId: realId } : s,
+        ),
       };
     }
 
@@ -1126,19 +1185,37 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   /** Tracks sessions that we've already requested history for (to avoid duplicate requests). */
   const historyRequestedFor = useRef(new Set<string>());
 
+  /** Tracks a pending new session creation for optimistic navigation. */
+  const pendingNewSessionRef = useRef<{
+    resolve: (sessionId: string) => void;
+    promise: Promise<string>;
+    tempId: string;
+  } | null>(null);
+
   const send = useCallback((text: string, images?: ImageAttachment[], files?: FileAttachment[]) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     const queueId = `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Show message in UI immediately (optimistic)
     dispatch({ type: "SEND_MESSAGE", text, images, files, queueId });
-    wsRef.current.send(
-      JSON.stringify({
-        type: "prompt",
-        text,
-        queueId,
-        ...(images?.length ? { images } : {}),
-        ...(files?.length ? { files } : {}),
-      }),
-    );
+
+    const payload = JSON.stringify({
+      type: "prompt",
+      text,
+      queueId,
+      ...(images?.length ? { images } : {}),
+      ...(files?.length ? { files } : {}),
+    });
+
+    // If a new session is still being created, defer the WS send until it's ready
+    if (pendingNewSessionRef.current) {
+      console.log(`[${pageMs()}] send: deferring prompt until session ready`);
+      pendingNewSessionRef.current.promise.then(() => {
+        console.log(`[${pageMs()}] send: session ready, sending deferred prompt`);
+        wsRef.current?.send(payload);
+      });
+    } else {
+      wsRef.current.send(payload);
+    }
   }, []);
 
   const interrupt = useCallback(() => {
@@ -1148,11 +1225,25 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
   const newSession = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const t0 = performance.now();
+    (window as any).__newSessionStart = t0;
+    performance.mark("new-session:start");
+
+    // Optimistic: show empty session instantly while server creates it in background
+    const tempId = `pending:${Date.now()}`;
+    let resolve!: (sessionId: string) => void;
+    const promise = new Promise<string>((r) => { resolve = r; });
+    pendingNewSessionRef.current = { resolve, promise, tempId };
+
+    console.log(`[${pageMs()}] newSession: optimistic switch to ${tempId}, sending request to server`);
+    dispatch({ type: "SESSION_SWITCHED", sessionId: tempId, turnStatus: null });
     wsRef.current.send(JSON.stringify({ type: "new_session" }));
   }, []);
 
   const resumeSessionCb = useCallback((sessionId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    // Cancel pending new session if user navigates away
+    if (pendingNewSessionRef.current) pendingNewSessionRef.current = null;
     console.log(`[${pageMs()}] switch requesting ${sessionId.slice(0, 8)}`);
     (window as any).__switchStart = performance.now();
     dispatch({ type: "SESSION_SWITCH_PENDING", sessionId });
@@ -1161,6 +1252,8 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
   const resumeSubagentCb = useCallback((parentSessionId: string, agentId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    // Cancel pending new session if user navigates away
+    if (pendingNewSessionRef.current) pendingNewSessionRef.current = null;
     console.log(`[${pageMs()}] switch requesting subagent ${parentSessionId.slice(0, 8)}:${agentId}`);
     (window as any).__switchStart = performance.now();
     dispatch({ type: "SESSION_SWITCH_PENDING", sessionId: `${parentSessionId}:subagent:${agentId}` });
@@ -1337,6 +1430,28 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           }
           return;
         }
+        // Optimistic new session: if creation fails, clear pending state
+        if (msg.type === "error" && pendingNewSessionRef.current) {
+          console.warn(`[${pageMs()}] newSession failed, reverting optimistic switch`);
+          pendingNewSessionRef.current = null;
+          // handleMsg will dispatch ERROR which shows the error in the UI
+        }
+
+        // Optimistic new session: intercept session_switched to resolve pending promise
+        // and swap temp ID instead of doing a full SESSION_SWITCHED reset.
+        if (msg.type === "session_switched" && pendingNewSessionRef.current) {
+          const pending = pendingNewSessionRef.current;
+          pendingNewSessionRef.current = null;
+          const now = performance.now();
+          const elapsed = (window as any).__newSessionStart ? (now - (window as any).__newSessionStart).toFixed(0) : "?";
+          performance.mark("new-session:switched");
+          try { performance.measure("new-session:server-roundtrip", "new-session:start", "new-session:switched"); } catch {}
+          console.log(`[${pageMs()}] handleMsg session_switched ${msg.sessionId.slice(0, 8)} (optimistic resolve) serverRoundtrip=${elapsed}ms`);
+          pending.resolve(msg.sessionId);
+          dispatch({ type: "SESSION_ID_RESOLVED", pendingId: pending.tempId, realId: msg.sessionId });
+          return;
+        }
+
         // Defense-in-depth: drop session-scoped messages that don't belong to the
         // current session. The server already filters by session, but this guards
         // against bugs like a missing sessionId on a broadcast.
@@ -1435,6 +1550,9 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!state.currentSessionId) return;
 
+    // Skip hash/localStorage sync for optimistic pending session IDs
+    if (state.currentSessionId.startsWith("pending:")) return;
+
     // Phase 1: On first session switch after connect, check if we need to
     // restore from the URL hash instead of the auto-created session.
     if (!hashInitialized.current) {
@@ -1499,6 +1617,8 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   // explicitly request the session history after a short delay.
   // This handles all race conditions (StrictMode double-mount, server push
   // failing, etc.) by pulling data from the client side.
+  // Skip for brand-new sessions (still tracked via __newSessionStart) — they
+  // are expected to have 0 messages and don't need a redundant switch_session.
   useEffect(() => {
     if (!state.currentSessionId || !state.connected) return;
     if (state.messages.length > 0) return;
@@ -1508,6 +1628,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     const timer = setTimeout(() => {
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      // Skip if this is a freshly-created session (empty messages is expected)
+      if ((window as any).__newSessionStart && performance.now() - (window as any).__newSessionStart < 5000) {
+        console.log(`[${pageMs()}] fallback skipped for new session ${sessionId.slice(0, 8)} (empty is expected)`);
+        return;
+      }
       historyRequestedFor.current.add(sessionId);
       console.log(`[${pageMs()}] fallback requesting history for ${sessionId.slice(0, 8)}`);
       const sub = sessionId.match(/^(.+):subagent:(.+)$/);
@@ -1599,7 +1724,11 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
         optionName: msg.optionName ?? msg.optionId,
       });
       break;
-    case "session_info":
+    case "session_info": {
+      const newSessionElapsed = (window as any).__newSessionStart ? (performance.now() - (window as any).__newSessionStart).toFixed(0) : null;
+      if (newSessionElapsed) {
+        console.log(`[${pageMs()}] handleMsg session_info sinceNewSession=${newSessionElapsed}ms models=${msg.models?.length ?? 0}`);
+      }
       dispatch({
         type: "SESSION_INFO",
         sessionId: msg.sessionId,
@@ -1608,6 +1737,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
         modes: msg.modes,
       });
       break;
+    }
     case "system":
       dispatch({ type: "SYSTEM", text: msg.text });
       break;
@@ -1636,9 +1766,15 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       dispatch({ type: "ERROR", text: msg.text });
       break;
     // Session management messages
-    case "sessions":
+    case "sessions": {
+      const newSessionElapsed = (window as any).__newSessionStart ? (performance.now() - (window as any).__newSessionStart).toFixed(0) : null;
+      if (newSessionElapsed) {
+        performance.mark("new-session:sessions-list");
+        console.log(`[${pageMs()}] handleMsg sessions count=${msg.sessions?.length ?? 0} sinceNewSession=${newSessionElapsed}ms`);
+      }
       dispatch({ type: "SESSIONS", sessions: msg.sessions });
       break;
+    }
     case "session_history": {
       const entryCount = msg.entries?.length ?? 0;
       console.log(`[${pageMs()}] handleMsg session_history entries=${entryCount} session=${msg.sessionId?.slice(0, 8)}`);
@@ -1647,8 +1783,16 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
     }
     case "session_switched":
       {
-        const elapsed = (window as any).__switchStart ? (performance.now() - (window as any).__switchStart).toFixed(0) : "?";
-        console.log(`[${pageMs()}] handleMsg session_switched ${msg.sessionId.slice(0, 8)} switchE2E=${elapsed}ms`);
+        const now = performance.now();
+        const switchElapsed = (window as any).__switchStart ? (now - (window as any).__switchStart).toFixed(0) : "?";
+        const newSessionElapsed = (window as any).__newSessionStart ? (now - (window as any).__newSessionStart).toFixed(0) : null;
+        if (newSessionElapsed) {
+          performance.mark("new-session:switched");
+          performance.measure("new-session:server-roundtrip", "new-session:start", "new-session:switched");
+          console.log(`[${pageMs()}] handleMsg session_switched ${msg.sessionId.slice(0, 8)} newSessionE2E=${newSessionElapsed}ms (server roundtrip)`);
+        } else {
+          console.log(`[${pageMs()}] handleMsg session_switched ${msg.sessionId.slice(0, 8)} switchE2E=${switchElapsed}ms`);
+        }
       }
       dispatch({ type: "SESSION_SWITCHED", sessionId: msg.sessionId, turnStatus: msg.turnStatus ?? null });
       break;

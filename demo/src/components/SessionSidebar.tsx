@@ -56,7 +56,7 @@ function SidebarCompletedLabel({ turnInfo }: { turnInfo: TurnStatus }) {
   if (tokens && tokens > 0) parts.push(`${formatTokens(tokens)} tokens`);
   if (thinkingMs >= 1000) parts.push(`thought for ${formatDuration(thinkingMs)}`);
 
-  return <>* Brewed for {parts.join(" · ")}</>;
+  return <><span className="sidebar-status-star idle">*</span> Brewed for {parts.join(" · ")}</>;
 }
 
 /** Compact in-progress label for sidebar: "Reading... (5s)" */
@@ -73,7 +73,7 @@ function SidebarInProgressLabel({ turnInfo }: { turnInfo: TurnStatus }) {
 
   return (
     <span className="truncate">
-      {label}... ({formatDuration(elapsed)})
+      {label}... {formatDuration(elapsed)}
     </span>
   );
 }

@@ -338,4 +338,5 @@ export type Action =
   | { type: "QUEUE_CANCELLED"; queueId: string }
   | { type: "COMMANDS"; commands: SlashCommand[]; models?: string[]; currentModel?: string | null }
   | { type: "SESSION_SUBAGENTS"; sessionId: string; children: SubagentChild[] }
-  | { type: "SESSION_DELETED"; sessionIds: string[] };
+  | { type: "SESSION_DELETED"; sessionIds: string[] }
+  | { type: "SESSION_ID_RESOLVED"; pendingId: string; realId: string };

@@ -20,14 +20,10 @@ export const THEMES: ThemeMeta[] = [
 ];
 
 const STORAGE_KEY = "acp:theme";
-const DEFAULT_THEME: ThemeId = "dusk";
+const DEFAULT_THEME: ThemeId = "github-light";
 
 function applyTheme(id: ThemeId) {
-  if (id === DEFAULT_THEME) {
-    document.documentElement.removeAttribute("data-theme");
-  } else {
-    document.documentElement.setAttribute("data-theme", id);
-  }
+  document.documentElement.setAttribute("data-theme", id);
 }
 
 function loadTheme(): ThemeId {

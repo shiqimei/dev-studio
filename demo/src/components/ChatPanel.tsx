@@ -23,11 +23,9 @@ export function ChatPanel() {
 
   return (
     <div className="flex-1 flex flex-col min-w-0">
-      {sessionTitle && (
-        <div className="px-5 py-3 border-b border-border shrink-0">
-          <h1 className="text-sm font-medium text-text">{sessionTitle}</h1>
-        </div>
-      )}
+      <div className="chat-title-header">
+        <h1 className="text-sm font-medium text-text truncate">{sessionTitle ?? "\u00a0"}</h1>
+      </div>
       <MessageList />
       <ChatInput />
     </div>

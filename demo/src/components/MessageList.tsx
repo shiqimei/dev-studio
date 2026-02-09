@@ -1,4 +1,4 @@
-import { useLayoutEffect } from "react";
+import { useLayoutEffect, useRef, useCallback } from "react";
 import { useWsState, useWsActions } from "../context/WebSocketContext";
 import { useAutoScroll } from "../hooks/useAutoScroll";
 import { UserMessage } from "./messages/UserMessage";
@@ -23,11 +23,39 @@ export function MessageList() {
   // Derive parent session ID once for all assistant turns
   const parentSessionId = state.currentSessionId?.split(":subagent:")[0] ?? null;
 
+  // Custom overlay scrollbar
+  const scrollThumbRef = useRef<HTMLDivElement>(null);
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    onScroll();
+    const el = e.currentTarget;
+    const thumb = scrollThumbRef.current;
+    if (!thumb) return;
+    const { scrollTop, scrollHeight, clientHeight } = el;
+    if (scrollHeight <= clientHeight) {
+      thumb.style.opacity = "0";
+      return;
+    }
+    thumb.style.opacity = "1";
+    const ratio = clientHeight / scrollHeight;
+    const thumbH = Math.max(ratio * clientHeight, 24);
+    const maxScroll = scrollHeight - clientHeight;
+    const thumbTop = (scrollTop / maxScroll) * (clientHeight - thumbH);
+    thumb.style.height = `${thumbH}px`;
+    thumb.style.top = `${thumbTop}px`;
+    clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = setTimeout(() => {
+      thumb.style.opacity = "0";
+    }, 800);
+  }, [onScroll]);
+
   return (
+    <div className="chat-scroll-wrap">
     <div
       ref={ref}
-      onScroll={onScroll}
-      className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-1"
+      onScroll={handleScroll}
+      className="chat-scroll-list px-5 py-4 flex flex-col gap-1"
     >
       {state.messages.map((entry, idx) => {
         const isLatest = idx === state.messages.length - 1;
@@ -59,6 +87,8 @@ export function MessageList() {
         }
       })}
       <TurnStatusBar status={state.turnStatus} />
+    </div>
+    <div ref={scrollThumbRef} className="sidebar-scroll-thumb" />
     </div>
   );
 }

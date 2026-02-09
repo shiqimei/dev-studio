@@ -208,7 +208,7 @@
 ::-webkit-scrollbar-thumb { background: var(--color-faint); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--color-muted); }
 
-a { cursor: pointer; }
+a, [data-streamdown="link"] { cursor: pointer; }
 
 /* ── Electron custom title bar ────────────── */
 
@@ -1774,6 +1774,7 @@ a { cursor: pointer; }
 }
 
 .chat-title-label {
+  max-width: 50%;
   border-radius: 4px;
   padding: 2px 6px;
   margin: -2px -6px;

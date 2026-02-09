@@ -498,10 +498,24 @@ export function startServer(port: number) {
   function drainQueue(sessionId: string) {
     const q = getQueue(sessionId);
     if (q.length === 0) return;
-    const next = q.shift()!;
-    log.info({ session: sid(sessionId), queueId: next.id, remaining: q.length }, "queue: draining");
-    broadcast({ type: "queue_drain_start", queueId: next.id, sessionId });
-    processPrompt(sessionId, next.text, next.images, next.files);
+
+    // Drain ALL queued messages at once — combine into a single prompt
+    const items = q.splice(0, q.length);
+    for (const item of items) {
+      log.info({ session: sid(sessionId), queueId: item.id, batchSize: items.length }, "queue: draining");
+      broadcast({ type: "queue_drain_start", queueId: item.id, sessionId });
+    }
+
+    // Combine texts (newline-separated), merge images and files
+    const combinedText = items.map((m) => m.text).filter(Boolean).join("\n\n");
+    const combinedImages = items.flatMap((m) => m.images ?? []);
+    const combinedFiles = items.flatMap((m) => m.files ?? []);
+    processPrompt(
+      sessionId,
+      combinedText,
+      combinedImages.length > 0 ? combinedImages : undefined,
+      combinedFiles.length > 0 ? combinedFiles : undefined,
+    );
   }
 
   function clearSessionQueue(sessionId: string | null) {

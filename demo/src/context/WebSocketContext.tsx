@@ -135,6 +135,7 @@ const emptySnapshot: SessionSnapshot = {
   turnToolCallIds: [],
   turnStatus: null,
   queuedMessages: [],
+  pendingQueuedEntries: [],
   latestPlan: null,
   latestTasks: null,
 };
@@ -144,6 +145,7 @@ const initialState: AppState = {
   reconnectAttempt: 0,
   busy: false,
   queuedMessages: [],
+  pendingQueuedEntries: [],
   messages: [],
   currentTurnId: null,
   tasks: {},
@@ -273,7 +275,7 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, connected: true, reconnectAttempt: 0, busy: false, startTime: Date.now() };
 
     case "WS_DISCONNECTED":
-      return { ...state, connected: false, busy: false, queuedMessages: [] };
+      return { ...state, connected: false, busy: false, queuedMessages: [], pendingQueuedEntries: [] };
 
     case "WS_RECONNECTING":
       return { ...state, reconnectAttempt: action.attempt };
@@ -303,6 +305,22 @@ function reducer(state: AppState, action: Action): AppState {
         content,
         _queueId: action.queueId,
       };
+
+      // When the session is already busy, the message will be queued server-side.
+      // Don't add it to messages[] yet — hold it in pendingQueuedEntries and
+      // preserve the current turnStatus so the running bar stays visible.
+      if (state.turnStatus?.status === "in_progress") {
+        return {
+          ...state,
+          busy: true,
+          queuedMessages: action.queueId
+            ? [...state.queuedMessages, action.queueId]
+            : state.queuedMessages,
+          pendingQueuedEntries: [...state.pendingQueuedEntries, userTurn],
+        };
+      }
+
+      // Not busy — optimistic: show the message immediately and start a new turn
       return {
         ...state,
         busy: true,
@@ -890,6 +908,7 @@ function reducer(state: AppState, action: Action): AppState {
             turnToolCallIds: [],
             turnStatus: null,
             queuedMessages: [],
+            pendingQueuedEntries: [],
             latestPlan: extractLatestPlan(historyMessages),
             latestTasks: null,
           },
@@ -1003,6 +1022,7 @@ function reducer(state: AppState, action: Action): AppState {
         turnStatus: effectiveTurnStatus,
         busy: restored.queuedMessages.length > 0 || effectiveTurnStatus?.status === "in_progress",
         queuedMessages: restored.queuedMessages,
+        pendingQueuedEntries: restored.pendingQueuedEntries,
         peekStatus: {},
         latestPlan: restored.latestPlan,
         latestTasks: restored.latestTasks,
@@ -1034,23 +1054,44 @@ function reducer(state: AppState, action: Action): AppState {
       };
 
     // ── Queue management actions ────────────
-    case "MESSAGE_QUEUED":
+    case "MESSAGE_QUEUED": {
+      // Idempotent: SEND_MESSAGE already adds to queuedMessages when busy
+      if (state.queuedMessages.includes(action.queueId)) return state;
       return {
         ...state,
         queuedMessages: [...state.queuedMessages, action.queueId],
       };
+    }
 
-    case "QUEUE_DRAIN_START":
+    case "QUEUE_DRAIN_START": {
+      // Move the queued message from pendingQueuedEntries into messages[]
+      // now that the agent is about to process it.
+      const drainEntry = state.pendingQueuedEntries.find(
+        (m) => m._queueId === action.queueId,
+      );
       return {
         ...state,
         busy: true,
         queuedMessages: state.queuedMessages.filter((id) => id !== action.queueId),
+        pendingQueuedEntries: state.pendingQueuedEntries.filter(
+          (m) => m._queueId !== action.queueId,
+        ),
+        messages: drainEntry
+          ? [...finalizeStreaming(state.messages, state.currentTurnId), drainEntry]
+          : state.messages,
+        // Reset turn state for the new turn about to start
+        currentTurnId: drainEntry ? null : state.currentTurnId,
       };
+    }
 
     case "QUEUE_CANCELLED":
       return {
         ...state,
         queuedMessages: state.queuedMessages.filter((id) => id !== action.queueId),
+        pendingQueuedEntries: state.pendingQueuedEntries.filter(
+          (m) => m._queueId !== action.queueId,
+        ),
+        // Also clean from messages in case it was added there (non-busy send path)
         messages: state.messages.filter(
           (m) => !(m.type === "message" && m.role === "user" && (m as MessageEntry)._queueId === action.queueId),
         ),

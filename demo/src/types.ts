@@ -194,6 +194,8 @@ export interface SessionSnapshot {
   turnToolCallIds: string[];
   turnStatus: TurnStatus | null;
   queuedMessages: string[];
+  /** Queued user messages not yet picked up by the agent (held out of messages[]). */
+  pendingQueuedEntries: MessageEntry[];
   latestPlan: PlanEntryItem[] | null;
   latestTasks: TaskItemEntry[] | null;
 }
@@ -261,6 +263,8 @@ export interface AppState {
   reconnectAttempt: number;
   busy: boolean;
   queuedMessages: string[];
+  /** Queued user messages not yet picked up by the agent (held out of messages[]). */
+  pendingQueuedEntries: MessageEntry[];
   messages: ChatEntry[];
   currentTurnId: string | null;
   tasks: Record<string, TaskInfo>;

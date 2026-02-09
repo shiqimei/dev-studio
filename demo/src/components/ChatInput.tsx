@@ -1,6 +1,6 @@
-import { useRef, useCallback, useState, useEffect, useMemo } from "react";
+import { useRef, useCallback, useState, useEffect } from "react";
 import { useWs } from "../context/WebSocketContext";
-import type { ImageAttachment, FileAttachment, SlashCommand, MessageEntry } from "../types";
+import type { ImageAttachment, FileAttachment, SlashCommand } from "../types";
 
 // ── localStorage helpers for session-scoped draft persistence ──
 const DRAFT_KEY_PREFIX = "chatInput:draft:";
@@ -407,14 +407,9 @@ export function ChatInput() {
     }
   }, [slashIdx, mentionIdx, slashOpen, mentionOpen]);
 
-  // Collect queued message entries for the pinned queue area
-  const queuedEntries = useMemo(() => {
-    if (state.queuedMessages.length === 0) return [];
-    const queuedSet = new Set(state.queuedMessages);
-    return state.messages.filter(
-      (m) => m.type === "message" && m.role === "user" && (m as MessageEntry)._queueId && queuedSet.has((m as MessageEntry)._queueId!),
-    ) as MessageEntry[];
-  }, [state.messages, state.queuedMessages]);
+  // Queued message entries for the pinned queue area — read directly from
+  // pendingQueuedEntries (messages held out of the chat until agent picks them up).
+  const queuedEntries = state.pendingQueuedEntries;
 
   const isSubagentView = state.currentSessionId?.includes(":subagent:") ?? false;
 

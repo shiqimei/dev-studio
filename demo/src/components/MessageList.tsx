@@ -10,7 +10,7 @@ import type { MessageEntry } from "../types";
 
 export function MessageList() {
   const state = useWsState();
-  const { cancelQueued, resumeSubagent } = useWsActions();
+  const { resumeSubagent } = useWsActions();
   const { ref, onScroll, scrollToBottom } = useAutoScroll<HTMLDivElement>(state.messages, state.turnStatus);
 
   // Force scroll to bottom when the user sends a message, even if they had scrolled up
@@ -38,8 +38,6 @@ export function MessageList() {
                 key={entry.id}
                 entry={entry}
                 isLatest={isLatest}
-                isQueued={!!((entry as MessageEntry)._queueId && state.queuedMessages.includes((entry as MessageEntry)._queueId!))}
-                onCancelQueued={cancelQueued}
               />
             ) : (
               <AssistantTurn

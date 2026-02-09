@@ -42,6 +42,31 @@ function normalizeSubagentType(raw: string): SubagentType {
   }
 }
 
+/** Extract SubagentChild[] from parsed chat messages by scanning Task tool_use blocks. */
+function extractSubagentChildrenFromMessages(messages: ChatEntry[]): SubagentChild[] {
+  const children: SubagentChild[] = [];
+  const seen = new Set<string>();
+  for (const entry of messages) {
+    if (entry.type !== "message" || entry.role !== "assistant") continue;
+    for (const block of entry.content) {
+      if (block.type !== "tool_use" || block.name !== "Task") continue;
+      // Try agentId already linked by mergeToolResults, or extract from result text as fallback
+      const agentId = block.agentId || (block.result ? extractAgentId(block.result) : undefined);
+      if (!agentId) continue;
+      if (seen.has(agentId)) continue;
+      seen.add(agentId);
+      const inp = block.input as Record<string, unknown> | null;
+      children.push({
+        agentId,
+        taskPrompt: block.title || String(inp?.description ?? "Sub-agent"),
+        timestamp: new Date().toISOString(),
+        agentType: normalizeSubagentType(String(inp?.subagent_type ?? "")),
+      });
+    }
+  }
+  return children;
+}
+
 /** High-resolution timestamp since page navigation start (ms). */
 function pageMs(): string {
   return performance.now().toFixed(0) + "ms";
@@ -740,7 +765,21 @@ function reducer(state: AppState, action: Action): AppState {
       // sessions-index.json during concurrent new session creation).
       const incomingIds = new Set(action.sessions.map((s) => s.sessionId));
       const recentlyDeleted = new Set(state._recentlyDeletedIds);
-      const merged = action.sessions.filter((s) => !recentlyDeleted.has(s.sessionId));
+      // Build a lookup of existing children so we can preserve optimistically-inserted
+      // subagent children when the server broadcast doesn't include them.
+      const existingChildrenBySession = new Map<string, SubagentChild[]>();
+      for (const s of state.diskSessions) {
+        if (s.children?.length) existingChildrenBySession.set(s.sessionId, s.children);
+      }
+      const merged = action.sessions
+        .filter((s) => !recentlyDeleted.has(s.sessionId))
+        .map((s) => {
+          // Preserve existing children if the incoming session doesn't include them
+          if (!s.children?.length && existingChildrenBySession.has(s.sessionId)) {
+            return { ...s, children: existingChildrenBySession.get(s.sessionId)! };
+          }
+          return s;
+        });
       // Preserve existing sessions that are missing from the incoming list
       // but were NOT recently deleted (they were probably missed due to a race condition)
       if (state.diskSessionsLoaded) {
@@ -833,11 +872,35 @@ function reducer(state: AppState, action: Action): AppState {
       // Mark the target session as read (no longer unread-completed)
       const { [action.sessionId]: _, ...readUnread } = state.unreadCompletedSessions;
 
+      // Extract sub-agent children from the restored messages so the sidebar
+      // shows them immediately on page reload without needing an extra API call.
+      // Always extract and merge with existing children — previous extraction or
+      // optimistic inserts may have captured only a subset of the sub-agents.
+      const baseSessionId = action.sessionId.replace(/:subagent:.+$/, "");
+      let updatedDiskSessions = state.diskSessions;
+      if (restored.messages.length > 0) {
+        const extracted = extractSubagentChildrenFromMessages(restored.messages);
+        if (extracted.length > 0) {
+          const existingSession = state.diskSessions.find((s) => s.sessionId === baseSessionId);
+          const existingChildren = existingSession?.children ?? [];
+          const existingIds = new Set(existingChildren.map((c) => c.agentId));
+          const newChildren = extracted.filter((c) => !existingIds.has(c.agentId));
+          if (newChildren.length > 0 || existingChildren.length === 0) {
+            updatedDiskSessions = state.diskSessions.map((s) =>
+              s.sessionId === baseSessionId
+                ? { ...s, children: [...existingChildren, ...newChildren] }
+                : s,
+            );
+          }
+        }
+      }
+
       return {
         ...state,
         currentSessionId: action.sessionId,
         switchingToSessionId: null,
         sessionHistory: cleanHistory,
+        diskSessions: updatedDiskSessions,
         messages: restored.messages,
         tasks: restored.tasks,
         // protoEntries are global debug traffic — keep them across session switches

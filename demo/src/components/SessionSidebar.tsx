@@ -162,19 +162,13 @@ const SessionItem = memo(function SessionItem({
   return (
     <button
       onClick={onClick}
-      className={`session-item-btn group w-full min-w-0 overflow-hidden text-left pr-2 py-2 border-b border-border transition-colors cursor-pointer ${
-        hasChildren ? "pl-6" : "pl-3"
-      } ${
-        isActive
-          ? "bg-[var(--color-accent-dim)] border-l-2 border-l-[var(--color-accent)]"
-          : "hover:bg-[var(--color-border)] border-l-2 border-l-transparent"
-      }`}
+      className="session-item-btn group w-full min-w-0 overflow-hidden text-left transition-colors cursor-pointer"
     >
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1.5">
         {session.teamName && (
           <span className="team-badge">Team</span>
         )}
-        <div className="text-xs truncate flex-1 min-w-0 text-dim">
+        <div className="session-item-title truncate flex-1 min-w-0">
           {cleanTitle(session.title)}
         </div>
         <span
@@ -185,8 +179,8 @@ const SessionItem = memo(function SessionItem({
           &#x22EE;
         </span>
       </div>
-      <div className="text-[10px] text-dim mt-0.5 flex items-center justify-between min-w-0">
-        <span className={`truncate flex items-center gap-1 min-w-0 ${isInProgress ? "sidebar-in-progress" : isCompleted && isUnread ? "" : "opacity-60"}`}>
+      <div className="session-item-meta">
+        <span className={`truncate flex items-center gap-1 min-w-0 ${isInProgress ? "sidebar-in-progress" : isCompleted && isUnread ? "" : ""}`}>
           {isInProgress && <SidebarSparkleActive />}
           {isLive && !isInProgress && !isCompleted && <SidebarSparkleIdle />}
           {isInProgress ? (
@@ -203,12 +197,12 @@ const SessionItem = memo(function SessionItem({
             <span className="truncate">
               {shortPath(session.projectPath) ?? session.sessionId.slice(0, 8)}
               {session.gitBranch && (
-                <span className="opacity-60"> ({session.gitBranch})</span>
+                <span className="opacity-50"> ({session.gitBranch})</span>
               )}
             </span>
           )}
         </span>
-        <span className="shrink-0 ml-1">
+        <span className="shrink-0 ml-1 session-item-time">
           {relativeTime(session.updatedAt)}
         </span>
       </div>
@@ -265,18 +259,18 @@ const SubagentItem = memo(function SubagentItem({
       <button
         onClick={onClick}
         style={{ paddingLeft: hasChildren ? paddingLeft + 18 : paddingLeft }}
-        className={`w-full text-left pr-3 py-1.5 border-b border-border transition-colors cursor-pointer ${
+        className={`subagent-item-btn w-full text-left pr-3 transition-colors cursor-pointer ${
           isActive
-            ? "bg-[var(--color-accent-dim)] border-l-2 border-l-[var(--color-purple)]"
-            : "hover:bg-[var(--color-border)] border-l-2 border-l-transparent"
+            ? "subagent-item-active"
+            : "subagent-item-inactive"
         }`}
       >
-        <div className="text-xs truncate flex items-center gap-1.5 text-dim">
+        <div className="flex items-center gap-1.5 min-w-0">
           <span className={badge.className}>{badge.label}</span>
-          <span className="truncate">{child.taskPrompt || "Sub-agent"}</span>
+          <span className="subagent-item-title truncate">{child.taskPrompt || "Sub-agent"}</span>
         </div>
-        <div className="text-[10px] text-dim mt-0.5 flex items-center justify-between pl-3">
-          <span className="truncate opacity-60">{child.agentId.slice(0, 8)}</span>
+        <div className="subagent-item-meta">
+          <span className="truncate">{child.agentId.slice(0, 8)}</span>
           <span className="shrink-0 ml-1">{relativeTime(child.timestamp)}</span>
         </div>
       </button>
@@ -504,6 +498,26 @@ export function SessionSidebar() {
     });
   }, [activeSessionId, state.diskSessions, subagentsLoaded, subagentsLoading, requestSubagents]);
 
+  // Auto-fetch subagents for the active session when a turn completes.
+  // This ensures newly-spawned sub-agents appear in the sidebar without
+  // requiring the user to click the sub-agent link in the chat.
+  const prevTurnStatusRef = useRef<string | undefined>();
+  useEffect(() => {
+    if (!activeSessionId) return;
+    // Only act on the base session (not sub-agent sessions)
+    if (activeSessionId.includes(":subagent:")) return;
+
+    const session = state.diskSessions.find((s) => s.sessionId === activeSessionId);
+    const currentStatus = session?.turnStatus;
+    const prevStatus = prevTurnStatusRef.current;
+    prevTurnStatusRef.current = currentStatus;
+
+    // When a turn completes, refresh subagents from the server
+    if (prevStatus === "in_progress" && currentStatus === "completed") {
+      requestSubagents(activeSessionId);
+    }
+  }, [activeSessionId, state.diskSessions, requestSubagents]);
+
   // Scroll active sub-agent into view after tree expansion
   const activeSubagentRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -596,31 +610,36 @@ export function SessionSidebar() {
   );
 
   return (
-    <div className="w-72 shrink-0 bg-surface border-r border-border flex flex-col overflow-hidden">
+    <div className="sidebar-container">
       {/* Header */}
-      <div className="px-3 py-2.5 border-b border-border flex items-center justify-between">
-        <span className="text-xs font-semibold text-dim uppercase tracking-wider">
-          Sessions
+      <div className="sidebar-header">
+        <span className="sidebar-header-label">
+          {(() => {
+            const active = state.diskSessions.find((s) => s.sessionId === activeSessionId);
+            return shortPath(active?.projectPath ?? null) ?? "Sessions";
+          })()}
         </span>
         <button
           onClick={newSession}
-          className="w-6 h-6 flex items-center justify-center rounded text-dim hover:text-text hover:bg-[var(--color-border)] transition-colors text-lg leading-none cursor-pointer"
-          title="New instance"
+          className="sidebar-new-btn"
+          title="New session"
         >
-          +
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M7 2.5V11.5M2.5 7H11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
         </button>
       </div>
 
-      {/* Unified session list */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
+      {/* Session list */}
+      <div className="sidebar-list">
         {state.diskSessions.length === 0 && !state.diskSessionsLoaded && (
-          <div className="flex items-center justify-center py-6">
+          <div className="flex items-center justify-center py-8">
             <span className="sidebar-spinner" />
           </div>
         )}
         {state.diskSessions.length === 0 && state.diskSessionsLoaded && (
-          <div className="px-3 py-3 text-xs text-dim text-center">
-            No sessions found
+          <div className="sidebar-empty">
+            No sessions yet
           </div>
         )}
         {state.diskSessions.map((session) => {
@@ -629,22 +648,21 @@ export function SessionSidebar() {
           const isLoadingSubagents = subagentsLoading.has(session.sessionId);
           return (
             <div key={session.sessionId}>
-              <div className="relative flex items-center min-w-0">
-                {hasChildren && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); toggleExpand(session.sessionId); }}
-                    className={`absolute left-1 top-1/2 -translate-y-1/2 z-10 session-chevron${isExpanded ? " expanded" : ""}`}
-                    title={`${session.children!.length} sub-agent${session.children!.length > 1 ? "s" : ""}`}
-                  >
-                    {isLoadingSubagents ? (
-                      <span className="sidebar-spinner" style={{ width: 12, height: 12 }} />
-                    ) : (
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                        <path d="M4.5 2.5L7.5 6L4.5 9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    )}
-                  </button>
-                )}
+              <div className={`session-row${session.sessionId === activeSessionId ? " session-row-active" : ""}`}>
+                <button
+                  onClick={(e) => { e.stopPropagation(); toggleExpand(session.sessionId); }}
+                  className={`session-chevron-slot${isExpanded ? " expanded" : ""}`}
+                  tabIndex={0}
+                  title={hasChildren ? `${session.children!.length} sub-agent${session.children!.length > 1 ? "s" : ""}` : "Show sub-agents"}
+                >
+                  {isLoadingSubagents ? (
+                    <span className="sidebar-spinner" style={{ width: 12, height: 12 }} />
+                  ) : (
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                      <path d="M4.5 2.5L7.5 6L4.5 9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </button>
                 <div className="flex-1 min-w-0">
                   <SessionItem
                     session={session}
@@ -667,7 +685,13 @@ export function SessionSidebar() {
                   />
                 </div>
               </div>
-              {hasChildren && isExpanded && renderSubagentTree(session.children!, session.sessionId, 0)}
+              {isExpanded && (
+                hasChildren
+                  ? renderSubagentTree(session.children!, session.sessionId, 0)
+                  : !isLoadingSubagents && (
+                    <div className="subagent-empty-placeholder">No sub-agent sessions</div>
+                  )
+              )}
             </div>
           );
         })}
@@ -682,6 +706,21 @@ export function SessionSidebar() {
           onClose={() => setContextMenu(null)}
         />
       )}
+
+      {/* Logo */}
+      <div className="px-4 py-3 border-t border-border flex items-center gap-2 shrink-0 opacity-50">
+        <svg
+          className="w-3.5 h-3.5 shrink-0"
+          viewBox="0 0 1200 1200"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            fill="#d97757"
+            d="M 233.959793 800.214905 L 468.644287 668.536987 L 472.590637 657.100647 L 468.644287 650.738403 L 457.208069 650.738403 L 417.986633 648.322144 L 283.892639 644.69812 L 167.597321 639.865845 L 54.926208 633.825623 L 26.577238 627.785339 L 3.3e-05 592.751709 L 2.73832 575.27533 L 26.577238 559.248352 L 60.724873 562.228149 L 136.187973 567.382629 L 249.422867 575.194763 L 331.570496 580.026978 L 453.261841 592.671082 L 472.590637 592.671082 L 475.328857 584.859009 L 468.724915 580.026978 L 463.570557 575.194763 L 346.389313 495.785217 L 219.543671 411.865906 L 153.100723 363.543762 L 117.181267 339.060425 L 99.060455 316.107361 L 91.248367 266.01355 L 123.865784 230.093994 L 167.677887 233.073853 L 178.872513 236.053772 L 223.248367 270.201477 L 318.040283 343.570496 L 441.825592 434.738342 L 459.946411 449.798706 L 467.194672 444.64447 L 468.080597 441.020203 L 459.946411 427.409485 L 392.617493 305.718323 L 320.778564 181.932983 L 288.80542 130.630859 L 280.348999 99.865845 C 277.369171 87.221436 275.194641 76.590698 275.194641 63.624268 L 312.322174 13.20813 L 332.8591 6.604126 L 382.389313 13.20813 L 403.248352 31.328979 L 434.013519 101.71814 L 483.865753 212.537048 L 561.181274 363.221497 L 583.812134 407.919434 L 595.892639 449.315491 L 600.40271 461.959839 L 608.214783 461.959839 L 608.214783 454.711609 L 614.577271 369.825623 L 626.335632 265.61084 L 637.771851 131.516846 L 641.718201 93.745117 L 660.402832 48.483276 L 697.530334 24.000122 L 726.52356 37.852417 L 750.362549 72 L 747.060486 94.067139 L 732.886047 186.201416 L 705.100708 330.52356 L 686.979919 427.167847 L 697.530334 427.167847 L 709.61084 415.087341 L 758.496704 350.174561 L 840.644348 247.490051 L 876.885925 206.738342 L 919.167847 161.71814 L 946.308838 140.29541 L 997.61084 140.29541 L 1035.38269 196.429626 L 1018.469849 254.416199 L 965.637634 321.422852 L 921.825562 378.201538 L 859.006714 462.765259 L 819.785278 530.41626 L 823.409424 535.812073 L 832.75177 534.92627 L 974.657776 504.724915 L 1051.328979 490.872559 L 1142.818848 475.167786 L 1184.214844 494.496582 L 1188.724854 514.147644 L 1172.456421 554.335693 L 1074.604126 578.496765 L 959.838989 601.449829 L 788.939636 641.879272 L 786.845764 643.409485 L 789.261841 646.389343 L 866.255127 653.637634 L 899.194702 655.409424 L 979.812134 655.409424 L 1129.932861 666.604187 L 1169.154419 692.537109 L 1192.671265 724.268677 L 1188.724854 748.429688 L 1128.322144 779.194641 L 1046.818848 759.865845 L 856.590759 714.604126 L 791.355774 698.335754 L 782.335693 698.335754 L 782.335693 703.731567 L 836.69812 756.885986 L 936.322205 846.845581 L 1061.073975 962.81897 L 1067.436279 991.490112 L 1051.409424 1014.120911 L 1034.496704 1011.704712 L 924.885986 929.234924 L 882.604126 892.107544 L 786.845764 811.48999 L 780.483276 811.48999 L 780.483276 819.946289 L 802.550415 852.241699 L 919.087341 1027.409424 L 925.127625 1081.127686 L 916.671204 1098.604126 L 886.469849 1109.154419 L 853.288696 1103.114136 L 785.073914 1007.355835 L 714.684631 899.516785 L 657.906067 802.872498 L 650.979858 806.81897 L 617.476624 1167.704834 L 601.771851 1186.147705 L 565.530212 1200 L 535.328857 1177.046997 L 519.302124 1139.919556 L 535.328857 1066.550537 L 554.657776 970.792053 L 570.362488 894.68457 L 584.536926 800.134277 L 592.993347 768.724976 L 592.429626 766.630859 L 585.503479 767.516968 L 514.22821 865.369263 L 405.825531 1011.865906 L 320.053711 1103.677979 L 299.516815 1111.812256 L 263.919525 1093.369263 L 267.221497 1060.429688 L 287.114136 1031.114136 L 405.825531 880.107361 L 477.422913 786.52356 L 523.651062 732.483276 L 523.328918 724.671265 L 520.590698 724.671265 L 205.288605 929.395935 L 149.154434 936.644409 L 124.993355 914.01355 L 127.973183 876.885986 L 139.409409 864.80542 L 234.201385 799.570435 L 233.879227 799.8927 Z"
+          />
+        </svg>
+        <span className="text-[11px] font-semibold text-text">Claude Code ACP</span>
+      </div>
     </div>
   );
 }

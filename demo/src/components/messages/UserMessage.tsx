@@ -279,11 +279,9 @@ function hasXmlTags(text: string): boolean {
 interface Props {
   entry: MessageEntry;
   isLatest: boolean;
-  isQueued: boolean;
-  onCancelQueued: (queueId: string) => void;
 }
 
-export const UserMessage = memo(function UserMessage({ entry, isLatest, isQueued, onCancelQueued }: Props) {
+export const UserMessage = memo(function UserMessage({ entry, isLatest }: Props) {
   const [preview, setPreview] = useState<string | null>(null);
   const [userExpanded, setUserExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
@@ -317,19 +315,7 @@ export const UserMessage = memo(function UserMessage({ entry, isLatest, isQueued
   if (hideText && images.length === 0 && fileBlocks.length === 0) return null;
 
   return (
-    <div className={`msg user${isQueued ? " msg-queued" : ""}`}>
-      {isQueued && (
-        <div className="queued-badge">
-          <span>Queued</span>
-          <button
-            type="button"
-            className="queued-cancel"
-            onClick={() => onCancelQueued(entry._queueId!)}
-          >
-            x
-          </button>
-        </div>
-      )}
+    <div className="msg user">
       {fileBlocks.length > 0 && (
         <div className="flex gap-2 mb-2 flex-wrap">
           {fileBlocks.map((fb, i) => (

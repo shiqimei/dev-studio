@@ -9,20 +9,6 @@ import { ResizeHandle } from "./components/ResizeHandle";
 import { DebugPanel } from "./components/DebugPanel";
 import { SessionSidebar } from "./components/SessionSidebar";
 
-function ReconnectBanner() {
-  const { state } = useWs();
-  if (state.connected) return null;
-
-  return (
-    <div className="bg-amber-900/80 text-amber-200 text-xs text-center py-1.5 px-4 shrink-0 flex items-center justify-center gap-2">
-      <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-      {state.reconnectAttempt > 0
-        ? `Connection lost. Reconnecting (attempt ${state.reconnectAttempt})...`
-        : "Connecting to server..."}
-    </div>
-  );
-}
-
 function Layout() {
   const { state } = useWs();
   const debugPanelRef = useRef<HTMLDivElement>(null);
@@ -30,7 +16,6 @@ function Layout() {
   return (
     <>
       <Header />
-      <ReconnectBanner />
       <TaskBar />
       <TaskPanel />
       <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -47,6 +32,7 @@ function Layout() {
           </>
         )}
       </div>
+
     </>
   );
 }

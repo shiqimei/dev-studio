@@ -866,6 +866,15 @@ export function startServer(port: number) {
             log.info({ client: cid }, "ws: → get_commands");
             try {
               const t0 = performance.now();
+              // Lazily resume the current session if not already live
+              // (getAvailableCommands needs at least one active session with a query)
+              const cmdSessionId = clientState.currentSessionId;
+              if (cmdSessionId && !liveSessionIds.has(cmdSessionId)) {
+                log.info({ client: cid, session: sid(cmdSessionId) }, "ws: resuming session for get_commands");
+                await resumeSession(acpConnection.connection, cmdSessionId);
+                liveSessionIds.add(cmdSessionId);
+                broadcastSessions().catch(() => {});
+              }
               const result = await acpConnection.connection.extMethod("sessions/getAvailableCommands", {});
               const cmdCount = (result.commands as unknown[])?.length ?? 0;
               log.info({ durationMs: Math.round(performance.now() - t0), commands: cmdCount }, "api: sessions/getAvailableCommands completed");

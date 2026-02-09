@@ -417,7 +417,6 @@ export function ChatInput() {
   }, [state.messages, state.queuedMessages]);
 
   const isSubagentView = state.currentSessionId?.includes(":subagent:") ?? false;
-  const disabled = !state.connected;
 
   if (isSubagentView) {
     return (
@@ -527,12 +526,11 @@ export function ChatInput() {
           ref={inputRef}
           rows={6}
           placeholder={state.busy ? "Press ESC to interrupt..." : images.length > 0 ? "Add a message or send image..." : files.length > 0 ? "Add a message or send files..." : "Send a message... (/ for commands, @ for files)"}
-          disabled={disabled}
           onKeyDown={onKeyDown}
           onInput={onInput}
           onPaste={onPaste}
           onFocus={onFocus}
-          className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none max-h-[240px] overflow-auto shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_2px_6px_rgba(0,0,0,0.4)] placeholder:text-dim disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none max-h-[240px] overflow-auto shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_2px_6px_rgba(0,0,0,0.4)] placeholder:text-dim"
         />
 
       </div>

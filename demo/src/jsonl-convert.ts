@@ -390,22 +390,20 @@ function formatLocalCommand(content: string): string {
  * Merge tool_result content blocks into the preceding assistant turn's matching tool_use blocks.
  */
 function mergeToolResults(entries: ChatEntry[], resultBlocks: ContentBlock[]): void {
-  // Find the most recent assistant turn
-  let lastAssistant: MessageEntry | null = null;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i];
-    if (e.type === "message" && e.role === "assistant") {
-      lastAssistant = e;
-      break;
-    }
-  }
-  if (!lastAssistant) return;
-
   for (const block of resultBlocks) {
     if (block.type !== "tool_result") continue;
-    const toolUse = lastAssistant.content.find(
-      (b): b is ToolUseBlock => b.type === "tool_use" && b.id === block.tool_use_id,
-    );
+    // Search backwards through ALL assistant turns to find the matching tool_use.
+    // Background tasks (e.g. Task tool) can have their results arrive many turns
+    // later, so the tool_use may not be in the most recent assistant turn.
+    let toolUse: ToolUseBlock | undefined;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if (e.type !== "message" || e.role !== "assistant") continue;
+      toolUse = e.content.find(
+        (b): b is ToolUseBlock => b.type === "tool_use" && b.id === block.tool_use_id,
+      );
+      if (toolUse) break;
+    }
     if (toolUse) {
       toolUse.status = block.is_error ? "failed" : "completed";
       // Extract text from tool result content for display

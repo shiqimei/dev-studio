@@ -1,0 +1,238 @@
+/**
+ * Electron main process for the Claude Code ACP demo.
+ *
+ * Starts the Bun backend server and Vite dev server,
+ * then opens a BrowserWindow pointing at the Vite URL.
+ */
+
+import { app, BrowserWindow, Menu, nativeImage } from "electron";
+import { execFileSync } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { copyFileSync, existsSync } from "node:fs";
+import { createConnection } from "node:net";
+import path from "node:path";
+import { createServer, type ViteDevServer } from "vite";
+
+const ROOT = path.resolve(import.meta.dirname, "../..");
+
+// Patch Electron's Info.plist and icon before the app is fully ready.
+// The plist name takes effect on next launch; the dock icon is set at runtime below.
+(() => {
+  const plist = path.join(
+    ROOT,
+    "node_modules/electron/dist/Electron.app/Contents/Info.plist",
+  );
+  if (existsSync(plist)) {
+    try {
+      execFileSync("plutil", ["-replace", "CFBundleName", "-string", "Claude Code ACP", plist]);
+      execFileSync("plutil", [
+        "-replace",
+        "CFBundleDisplayName",
+        "-string",
+        "Claude Code ACP",
+        plist,
+      ]);
+    } catch { /* ignore on non-macOS or if plutil unavailable */ }
+  }
+
+  const srcIcon = path.join(ROOT, "app/icon.icns");
+  const dstIcon = path.join(
+    ROOT,
+    "node_modules/electron/dist/Electron.app/Contents/Resources/electron.icns",
+  );
+  if (existsSync(srcIcon)) {
+    try {
+      copyFileSync(srcIcon, dstIcon);
+    } catch { /* ignore */ }
+  }
+})();
+const BACKEND_PORT = 5689;
+const VITE_PORT = 5688;
+
+let backend: ChildProcess | null = null;
+let vite: ViteDevServer | null = null;
+
+async function waitForPort(port: number, timeoutMs = 10_000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const ok = await new Promise<boolean>((resolve) => {
+      const sock = createConnection({ port, host: "127.0.0.1" }, () => {
+        sock.destroy();
+        resolve(true);
+      });
+      sock.on("error", () => resolve(false));
+    });
+    if (ok) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`Port ${port} not ready after ${timeoutMs}ms`);
+}
+
+function startBackend(): ChildProcess {
+  const child = spawn("bun", ["--hot", path.join(ROOT, "demo/server/index.ts")], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(BACKEND_PORT) },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  child.stdout?.on("data", (data: Buffer) => {
+    process.stdout.write(`[server] ${data.toString()}`);
+  });
+  child.stderr?.on("data", (data: Buffer) => {
+    process.stderr.write(`[server] ${data.toString()}`);
+  });
+  child.on("exit", (code, signal) => {
+    if (signal !== "SIGTERM" && signal !== "SIGINT") {
+      console.error(`Backend exited unexpectedly (code=${code}, signal=${signal})`);
+    }
+  });
+
+  return child;
+}
+
+async function startVite(): Promise<ViteDevServer> {
+  const server = await createServer({
+    configFile: path.join(ROOT, "demo/vite.config.ts"),
+    root: path.join(ROOT, "demo"),
+    server: { port: VITE_PORT },
+  });
+  await server.listen();
+  return server;
+}
+
+function createWindow(): BrowserWindow {
+  const isMac = process.platform === "darwin";
+
+  const win = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    title: "Claude Code ACP",
+    titleBarStyle: isMac ? "hiddenInset" : "hidden",
+    ...(isMac
+      ? { trafficLightPosition: { x: 16, y: 12 } }
+      : { titleBarOverlay: { color: "#0a0a0a", symbolColor: "#fafafa", height: 36 } }),
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  win.loadURL(`http://localhost:${VITE_PORT}`);
+  return win;
+}
+
+async function cleanup() {
+  if (vite) {
+    await vite.close();
+    vite = null;
+  }
+  if (backend) {
+    backend.kill("SIGTERM");
+    backend = null;
+  }
+}
+
+app.setName("Claude Code ACP");
+
+// Set dock icon at runtime (works immediately for the current process)
+if (process.platform === "darwin" && app.dock) {
+  const iconPath = path.join(ROOT, "app/icon.icns");
+  if (existsSync(iconPath)) {
+    app.dock.setIcon(nativeImage.createFromPath(iconPath));
+  }
+}
+
+app.whenReady().then(async () => {
+  try {
+    const isMac = process.platform === "darwin";
+    const appName = "Claude Code ACP";
+
+    const template: Electron.MenuItemConstructorOptions[] = [
+      ...(isMac
+        ? [
+            {
+              label: appName,
+              submenu: [
+                { role: "about" as const, label: `About ${appName}` },
+                { type: "separator" as const },
+                { role: "services" as const },
+                { type: "separator" as const },
+                { role: "hide" as const, label: `Hide ${appName}` },
+                { role: "hideOthers" as const },
+                { role: "unhide" as const },
+                { type: "separator" as const },
+                { role: "quit" as const, label: `Quit ${appName}` },
+              ],
+            } satisfies Electron.MenuItemConstructorOptions,
+          ]
+        : []),
+      {
+        label: "File",
+        submenu: [isMac ? { role: "close" as const } : { role: "quit" as const }],
+      },
+      {
+        label: "Edit",
+        submenu: [
+          { role: "undo" as const },
+          { role: "redo" as const },
+          { type: "separator" as const },
+          { role: "cut" as const },
+          { role: "copy" as const },
+          { role: "paste" as const },
+          { role: "selectAll" as const },
+        ],
+      },
+      {
+        label: "View",
+        submenu: [
+          { role: "reload" as const },
+          { role: "forceReload" as const },
+          { role: "toggleDevTools" as const },
+          { type: "separator" as const },
+          { role: "resetZoom" as const },
+          { role: "zoomIn" as const },
+          { role: "zoomOut" as const },
+          { type: "separator" as const },
+          { role: "togglefullscreen" as const },
+        ],
+      },
+      {
+        label: "Window",
+        submenu: [
+          { role: "minimize" as const },
+          { role: "zoom" as const },
+          ...(isMac
+            ? [
+                { type: "separator" as const },
+                { role: "front" as const },
+              ]
+            : [{ role: "close" as const }]),
+        ],
+      },
+    ];
+
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+
+    // 1. Start backend
+    backend = startBackend();
+    await waitForPort(BACKEND_PORT);
+
+    // 2. Start Vite
+    vite = await startVite();
+
+    // 3. Open window
+    createWindow();
+  } catch (err) {
+    console.error("Failed to start:", err);
+    await cleanup();
+    app.quit();
+  }
+});
+
+app.on("window-all-closed", () => {
+  app.quit();
+});
+
+app.on("before-quit", () => {
+  cleanup();
+});

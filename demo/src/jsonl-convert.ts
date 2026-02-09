@@ -222,6 +222,30 @@ function convertContentBlocks(content: unknown): ContentBlock[] {
 export function jsonlToEntries(rawEntries: unknown[]): ChatEntry[] {
   const entries: ChatEntry[] = [];
 
+  // Accumulate turn_duration stats across multiple SDK calls within a single user turn.
+  // Only emit a single turn_completed at the boundary (next user message or end of entries).
+  let pendingTurnMs = 0;
+  let pendingTurnOutputTokens: number | undefined;
+  let pendingTurnThinkingMs: number | undefined;
+  let pendingTurnCostUsd: number | undefined;
+
+  function flushPendingTurn() {
+    if (pendingTurnMs > 0) {
+      entries.push({
+        type: "turn_completed",
+        id: uid(),
+        durationMs: pendingTurnMs,
+        ...(pendingTurnOutputTokens != null && { outputTokens: pendingTurnOutputTokens }),
+        ...(pendingTurnThinkingMs != null && { thinkingDurationMs: pendingTurnThinkingMs }),
+        ...(pendingTurnCostUsd != null && { costUsd: pendingTurnCostUsd }),
+      });
+      pendingTurnMs = 0;
+      pendingTurnOutputTokens = undefined;
+      pendingTurnThinkingMs = undefined;
+      pendingTurnCostUsd = undefined;
+    }
+  }
+
   /** Get or create the current assistant turn (last entry if it's an assistant message). */
   function currentAssistantTurn(): MessageEntry | null {
     const last = entries[entries.length - 1];
@@ -246,6 +270,8 @@ export function jsonlToEntries(rawEntries: unknown[]): ChatEntry[] {
         if (isToolResult) {
           mergeToolResults(entries, content);
         } else {
+          // New user turn boundary — flush any accumulated turn stats from the previous turn
+          flushPendingTurn();
           entries.push({
             type: "message",
             id: uid(),
@@ -307,14 +333,16 @@ export function jsonlToEntries(rawEntries: unknown[]): ChatEntry[] {
           const ms = Number((entry as any).durationMs ?? 0);
           if (ms > 0) {
             const e = entry as any;
-            entries.push({
-              type: "turn_completed",
-              id: uid(),
-              durationMs: ms,
-              ...(e.outputTokens != null && { outputTokens: e.outputTokens }),
-              ...(e.thinkingDurationMs != null && { thinkingDurationMs: e.thinkingDurationMs }),
-              ...(e.costUsd != null && { costUsd: e.costUsd }),
-            });
+            pendingTurnMs += ms;
+            if (e.outputTokens != null) {
+              pendingTurnOutputTokens = (pendingTurnOutputTokens ?? 0) + Number(e.outputTokens);
+            }
+            if (e.thinkingDurationMs != null) {
+              pendingTurnThinkingMs = (pendingTurnThinkingMs ?? 0) + Number(e.thinkingDurationMs);
+            }
+            if (e.costUsd != null) {
+              pendingTurnCostUsd = (pendingTurnCostUsd ?? 0) + Number(e.costUsd);
+            }
           }
           break;
         } else if (subtype === "api_error") {
@@ -348,6 +376,9 @@ export function jsonlToEntries(rawEntries: unknown[]): ChatEntry[] {
       }
     }
   }
+
+  // Flush any remaining accumulated turn stats (last turn in the session)
+  flushPendingTurn();
 
   return entries;
 }

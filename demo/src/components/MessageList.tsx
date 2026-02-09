@@ -300,12 +300,6 @@ export function MessageList() {
       className="chat-scroll-list px-5 py-4"
     >
       <div className="chat-content flex flex-col gap-1">
-      {state.messages.length === 0 && (
-        <div className="welcome-container">
-          <div className="welcome-greeting">What do you want to build next?</div>
-          <div className="welcome-hint">Send a message to get started, or type <span className="welcome-kbd">/</span> for commands</div>
-        </div>
-      )}
       {turnGroups.map((group, gi) => {
         const isLatestGroup = gi === turnGroups.length - 1;
         // Only render expanded when the latest group is actively streaming

@@ -37,6 +37,8 @@ export function ChatPanel() {
     setEditing(false);
   };
 
+  const isEmpty = state.messages.length === 0;
+
   return (
     <div className="flex-1 flex flex-col min-w-0">
       <div className="chat-title-header">
@@ -62,8 +64,23 @@ export function ChatPanel() {
           </h1>
         )}
       </div>
-      <MessageList />
-      <ChatInput />
+      {isEmpty ? (
+        <div className="welcome-screen">
+          <div className="welcome-centered">
+            <div className="welcome-greeting">What do you want to build next?</div>
+            <div className="welcome-hint">
+              Send a message to get started, or type{" "}
+              <span className="welcome-kbd">/</span> for commands
+            </div>
+            <ChatInput />
+          </div>
+        </div>
+      ) : (
+        <>
+          <MessageList />
+          <ChatInput />
+        </>
+      )}
     </div>
   );
 }

@@ -88,6 +88,8 @@ export function toolTitle(name: string, input: unknown): string {
       return "";
     case "TodoWrite":
       return inp.todos ? `${(inp.todos as unknown[]).length} items` : "";
+    case "Skill":
+      return String(inp.skill ?? inp.args ?? "");
     default:
       // MCP browser tools
       if (name.startsWith("mcp__claude-in-chrome__")) {

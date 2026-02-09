@@ -363,6 +363,16 @@ export function toolInfoFromToolUse(toolUse: any): ToolInfo {
         content: [],
       };
 
+    case "Skill":
+      return {
+        title: input?.skill ? String(input.skill) : "Skill",
+        kind: "other",
+        content:
+          input && input.args
+            ? [{ type: "content", content: { type: "text", text: String(input.args) } }]
+            : [],
+      };
+
     case "ExitPlanMode":
       return {
         title: "Ready to code?",

@@ -1,9 +1,10 @@
-import { useState, useEffect, memo } from "react";
+import { useState, useEffect, useMemo, memo } from "react";
 import { codeToTokens, type ThemedToken } from "shiki";
 import { Streamdown } from "streamdown";
 import { createCodePlugin, type CodeHighlighterPlugin } from "@streamdown/code";
 import { detectLanguage } from "../../lang-detect";
 import { toolOverview } from "../../jsonl-convert";
+import { useTheme } from "../../context/ThemeContext";
 import type { BundledLanguage } from "shiki";
 
 function formatDuration(ms: number): string {
@@ -42,9 +43,6 @@ function withAutoDetect(plugin: CodeHighlighterPlugin): CodeHighlighterPlugin {
     },
   };
 }
-const sdCode = withAutoDetect(createCodePlugin({ themes: ["monokai", "monokai"] }));
-const sdPlugins = { code: sdCode };
-
 interface Props {
   kind: string;
   title: string;
@@ -408,6 +406,11 @@ export function parseTaskResult(content: string): TaskResultData | null {
 }
 
 function TaskResultView({ data }: { data: TaskResultData }) {
+  const { shikiTheme } = useTheme();
+  const sdPlugins = useMemo(
+    () => ({ code: withAutoDetect(createCodePlugin({ themes: [shikiTheme, shikiTheme] })) }),
+    [shikiTheme],
+  );
   const statusClass = data.status === "completed" || data.status === "success"
     ? "completed"
     : data.status === "failed" || data.status === "error"
@@ -435,7 +438,7 @@ function TaskResultView({ data }: { data: TaskResultData }) {
       )}
       {data.body && (
         <div className="task-result-body">
-          <Streamdown mode="static" isAnimating={false} plugins={sdPlugins}>
+          <Streamdown key={shikiTheme} mode="static" isAnimating={false} plugins={sdPlugins}>
             {data.body}
           </Streamdown>
         </div>
@@ -462,22 +465,23 @@ function detectLang(filePath: string): string {
   return EXT_TO_LANG[ext] || "text";
 }
 
-function useShikiHighlight(code: string, lang: string) {
+function useShikiHighlight(code: string, lang: string, theme: string) {
   const [lines, setLines] = useState<ThemedToken[][] | null>(null);
+  const fallbackColor = theme === "github-light" ? "#24292e" : "#d4d4d4";
 
   useEffect(() => {
     let cancelled = false;
-    codeToTokens(code, { lang, theme: "monokai" })
+    codeToTokens(code, { lang, theme })
       .then((result) => {
         if (!cancelled) setLines(result.tokens);
       })
       .catch(() => {
         if (!cancelled) {
-          setLines(code.split("\n").map((t) => [{ content: t, color: "#d4d4d4" } as ThemedToken]));
+          setLines(code.split("\n").map((t) => [{ content: t, color: fallbackColor } as ThemedToken]));
         }
       });
     return () => { cancelled = true; };
-  }, [code, lang]);
+  }, [code, lang, theme]);
 
   return lines;
 }
@@ -510,10 +514,11 @@ function parseCatOutput(content: string): { lines: ParsedLine[]; rawCode: string
 }
 
 function CodeView({ content, filePath }: { content: string; filePath: string }) {
+  const { shikiTheme } = useTheme();
   const { clean, reminders } = splitSystemReminders(content);
   const lang = detectLang(filePath);
   const { lines: parsed, rawCode } = parseCatOutput(clean);
-  const highlighted = useShikiHighlight(rawCode, lang);
+  const highlighted = useShikiHighlight(rawCode, lang, shikiTheme);
 
   return (
     <div className="tool-content code-view">
@@ -613,15 +618,17 @@ interface HighlightedDiffLine {
 }
 
 function DiffView({ input, filePath }: { input: Record<string, unknown>; filePath: string }) {
+  const { shikiTheme } = useTheme();
   const oldStr = String(input.old_string ?? "");
   const newStr = String(input.new_string ?? "");
   const [lines, setLines] = useState<HighlightedDiffLine[] | null>(null);
   const lang = detectLang(filePath);
+  const fallbackColor = shikiTheme === "github-light" ? "#24292e" : "#d4d4d4";
 
   useEffect(() => {
     let cancelled = false;
     const combined = oldStr + "\n" + newStr;
-    codeToTokens(combined, { lang, theme: "monokai" })
+    codeToTokens(combined, { lang, theme: shikiTheme })
       .then((result) => {
         if (cancelled) return;
         const oldLineCount = oldStr.split("\n").length;
@@ -638,18 +645,18 @@ function DiffView({ input, filePath }: { input: Record<string, unknown>; filePat
         if (cancelled) return;
         const fallback: HighlightedDiffLine[] = [
           ...oldStr.split("\n").map((t) => ({
-            tokens: [{ content: t, color: "#d4d4d4" }] as ThemedToken[],
+            tokens: [{ content: t, color: fallbackColor }] as ThemedToken[],
             type: "removed" as const,
           })),
           ...newStr.split("\n").map((t) => ({
-            tokens: [{ content: t, color: "#d4d4d4" }] as ThemedToken[],
+            tokens: [{ content: t, color: fallbackColor }] as ThemedToken[],
             type: "added" as const,
           })),
         ];
         setLines(fallback);
       });
     return () => { cancelled = true; };
-  }, [oldStr, newStr, lang]);
+  }, [oldStr, newStr, lang, shikiTheme]);
 
   if (!lines) {
     return (

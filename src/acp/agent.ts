@@ -765,6 +765,9 @@ export class ClaudeAcpAgent implements Agent {
                   if (isBackground) claudeCodeMeta.isBackground = true;
                   const parentId = (message as any).parent_tool_use_id;
                   if (parentId) claudeCodeMeta.parentToolUseId = parentId;
+                  if (toolUse.name === "Task" && inputObj?.subagent_type) {
+                    claudeCodeMeta.subagentType = inputObj.subagent_type;
+                  }
                   await timedUpdate("sessionUpdate.tool_cache_update", {
                     sessionId: params.sessionId,
                     update: {

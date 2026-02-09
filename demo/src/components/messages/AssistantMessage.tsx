@@ -1,8 +1,9 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { Streamdown } from "streamdown";
 import { createCodePlugin, type CodeHighlighterPlugin } from "@streamdown/code";
 import { detectLanguage } from "../../lang-detect";
 import { stripCliXml } from "../../strip-xml";
+import { useTheme } from "../../context/ThemeContext";
 import type { BundledLanguage } from "shiki";
 
 /** Wrap the code plugin to auto-detect language for untagged code blocks. */
@@ -23,20 +24,22 @@ function withAutoDetect(plugin: CodeHighlighterPlugin): CodeHighlighterPlugin {
   };
 }
 
-const code = withAutoDetect(createCodePlugin({ themes: ["monokai", "monokai"] }));
-const plugins = { code };
-
 interface Props {
   text: string;
   done: boolean;
 }
 
 export const AssistantMessage = memo(function AssistantMessage({ text, done }: Props) {
+  const { shikiTheme } = useTheme();
+  const plugins = useMemo(
+    () => ({ code: withAutoDetect(createCodePlugin({ themes: [shikiTheme, shikiTheme] })) }),
+    [shikiTheme],
+  );
   const clean = stripCliXml(text);
   if (!clean) return null;
   return (
     <div className="msg assistant">
-      <Streamdown mode="streaming" isAnimating={!done} plugins={plugins}>
+      <Streamdown key={shikiTheme} mode="streaming" isAnimating={!done} plugins={plugins}>
         {clean}
       </Streamdown>
     </div>

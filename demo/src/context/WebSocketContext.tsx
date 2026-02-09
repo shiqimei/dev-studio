@@ -968,9 +968,24 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         diskSessions: state.diskSessions.map((s) => {
           if (s.sessionId !== action.sessionId) return s;
-          // Merge loaded subagent children with existing teammate children
+          // Merge loaded subagent children with existing teammate children.
+          // Preserve specific types from optimistic/extracted children when the
+          // server returns the generic "agent" fallback (e.g. after context compression).
           const existingTeammates = (s.children ?? []).filter((c: any) => !!c.sessionId);
-          return { ...s, children: [...existingTeammates, ...action.children] };
+          const existingSubagents = (s.children ?? []).filter((c: any) => !c.sessionId);
+          const existingTypeByAgentId = new Map<string, SubagentType>();
+          for (const c of existingSubagents) {
+            if (c.agentType && c.agentType !== "agent") {
+              existingTypeByAgentId.set(c.agentId, c.agentType);
+            }
+          }
+          const mergedChildren = action.children.map((c) => {
+            if (c.agentType === "agent" && existingTypeByAgentId.has(c.agentId)) {
+              return { ...c, agentType: existingTypeByAgentId.get(c.agentId)! };
+            }
+            return c;
+          });
+          return { ...s, children: [...existingTeammates, ...mergedChildren] };
         }),
       };
     }

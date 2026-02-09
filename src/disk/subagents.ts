@@ -126,30 +126,42 @@ async function scanJsonlForTaskSpawns(jsonlPath: string): Promise<{ agentId: str
  * Detect agent type from a subagent's own JSONL content.
  * Used as a fallback when parent session scanning fails (e.g., after context compression).
  *
- * Heuristic: read the first few lines to find the model field in the first assistant message.
- * - Haiku models → "explore" (Explore agents always use haiku)
- * - Otherwise → "agent" (cannot reliably distinguish plan/code without parent context)
+ * Heuristics (checked in order):
+ * 1. System init entry with permission_mode: "plan" → "plan"
+ * 2. First assistant message with haiku model → "explore"
+ * 3. Otherwise → "agent" (cannot reliably distinguish code from other types)
  */
 async function detectTypeFromSubagentJsonl(jsonlPath: string): Promise<SubagentType> {
   try {
     const fh = await fs.promises.open(jsonlPath, "r");
     try {
-    // Read enough to cover the first few JSONL entries
-    const buf = Buffer.alloc(16384);
-    const { bytesRead } = await fh.read(buf, 0, 16384, 0);
+      // Read enough to cover the first few JSONL entries
+      const buf = Buffer.alloc(16384);
+      const { bytesRead } = await fh.read(buf, 0, 16384, 0);
 
-    const chunk = buf.toString("utf-8", 0, bytesRead);
-    for (const line of chunk.split("\n")) {
-      if (!line) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (entry.type !== "assistant") continue;
-        const model: string = entry.message?.model ?? "";
-        if (model.includes("haiku")) return "explore";
-        // Non-haiku model found — can't distinguish plan vs code, stop looking
-        break;
-      } catch { /* skip malformed line */ }
-    }
+      const chunk = buf.toString("utf-8", 0, bytesRead);
+      let modelType: SubagentType | null = null;
+      for (const line of chunk.split("\n")) {
+        if (!line) continue;
+        try {
+          const entry = JSON.parse(line);
+          // Check system init for permission_mode (most reliable signal)
+          if (entry.type === "system" && entry.subtype === "init") {
+            const mode: string = entry.permission_mode ?? "";
+            if (mode === "plan") return "plan";
+          }
+          // Check first assistant message model as secondary heuristic
+          if (entry.type === "assistant" && modelType === null) {
+            const model: string = entry.message?.model ?? "";
+            if (model.includes("haiku")) {
+              modelType = "explore";
+            } else if (model) {
+              modelType = "agent";
+            }
+          }
+        } catch { /* skip malformed line */ }
+      }
+      if (modelType) return modelType;
     } finally { await fh.close(); }
   } catch { /* file unreadable */ }
   return "agent";

@@ -530,7 +530,7 @@ export function ChatInput() {
           onInput={onInput}
           onPaste={onPaste}
           onFocus={onFocus}
-          className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none max-h-[240px] overflow-auto shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_2px_6px_rgba(0,0,0,0.4)] placeholder:text-dim"
+          className="flex-1 bg-surface border-none rounded-md px-4 py-2 text-text font-mono text-sm outline-none resize-none max-h-[240px] overflow-auto chat-input-shadow placeholder:text-dim"
         />
 
       </div>

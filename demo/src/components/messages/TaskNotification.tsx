@@ -1,7 +1,9 @@
+import { useMemo } from "react";
 import { Streamdown } from "streamdown";
 import { createCodePlugin, type CodeHighlighterPlugin } from "@streamdown/code";
 import { detectLanguage } from "../../lang-detect";
 import { parseTaskResult } from "./ToolCall";
+import { useTheme } from "../../context/ThemeContext";
 import type { BundledLanguage } from "shiki";
 
 function withAutoDetect(plugin: CodeHighlighterPlugin): CodeHighlighterPlugin {
@@ -19,8 +21,6 @@ function withAutoDetect(plugin: CodeHighlighterPlugin): CodeHighlighterPlugin {
     },
   };
 }
-const sdCode = withAutoDetect(createCodePlugin({ themes: ["monokai", "monokai"] }));
-const sdPlugins = { code: sdCode };
 
 const STATUS_COLORS: Record<string, string> = {
   completed: "var(--color-green)",
@@ -34,6 +34,11 @@ interface Props {
 }
 
 export function TaskNotification({ text }: Props) {
+  const { shikiTheme } = useTheme();
+  const sdPlugins = useMemo(
+    () => ({ code: withAutoDetect(createCodePlugin({ themes: [shikiTheme, shikiTheme] })) }),
+    [shikiTheme],
+  );
   const data = parseTaskResult(text);
   if (!data) return null;
 
@@ -54,7 +59,7 @@ export function TaskNotification({ text }: Props) {
       </div>
       {data.body && (
         <div className="task-notification-body">
-          <Streamdown mode="static" isAnimating={false} plugins={sdPlugins}>
+          <Streamdown key={shikiTheme} mode="static" isAnimating={false} plugins={sdPlugins}>
             {data.body}
           </Streamdown>
         </div>

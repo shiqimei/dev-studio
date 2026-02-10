@@ -765,9 +765,7 @@ export function startServer(port: number) {
           sendSessionMeta(ws, targetSession);
           sendTurnState(ws, targetSession);
           sendQueueState(ws, targetSession);
-          if (kanbanState) {
-            ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState.columnOverrides, sortOrders: kanbanState.sortOrders, pendingPrompts: kanbanState.pendingPrompts }));
-          }
+          ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState?.columnOverrides ?? {}, sortOrders: kanbanState?.sortOrders ?? {}, pendingPrompts: kanbanState?.pendingPrompts ?? {} }));
           log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
 
           // Fire-and-forget: don't block the open handler waiting for session list
@@ -793,9 +791,7 @@ export function startServer(port: number) {
             sendSessionMeta(ws, targetSession);
             sendTurnState(ws, targetSession);
             sendQueueState(ws, targetSession);
-            if (kanbanState) {
-              ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState.columnOverrides, sortOrders: kanbanState.sortOrders, pendingPrompts: kanbanState.pendingPrompts }));
-            }
+            ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState?.columnOverrides ?? {}, sortOrders: kanbanState?.sortOrders ?? {}, pendingPrompts: kanbanState?.pendingPrompts ?? {} }));
             log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
             broadcastSessions().catch((err) => log.error({ client: clientId, err: err.message }, "ws: broadcastSessions failed"));
           } catch (err: any) {

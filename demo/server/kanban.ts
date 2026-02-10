@@ -6,11 +6,20 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
+export interface RecurringTaskEntry {
+  type: "interval" | "filewatcher";
+  intervalMs?: number;
+  watchPaths?: string[];
+  prompt: string;
+  active: boolean;
+}
+
 export interface KanbanState {
   version: 1;
   columnOverrides: Record<string, string>;
   sortOrders: Partial<Record<string, string[]>>;
   pendingPrompts: Record<string, string>;
+  recurringTasks?: Record<string, RecurringTaskEntry>;
   updatedAt: string;
 }
 
@@ -73,12 +82,26 @@ export function cleanKanbanState(
     if (filtered.length > 0) newSortOrders[col] = filtered;
   }
 
+  let newRecurringTasks: Record<string, RecurringTaskEntry> | undefined;
+  if (state.recurringTasks) {
+    newRecurringTasks = {};
+    for (const [id, entry] of Object.entries(state.recurringTasks)) {
+      if (validSessionIds.has(id)) {
+        newRecurringTasks[id] = entry;
+      } else {
+        changed = true;
+      }
+    }
+    if (Object.keys(newRecurringTasks).length === 0) newRecurringTasks = undefined;
+  }
+
   if (!changed) return null;
   return {
     ...state,
     columnOverrides: newOverrides,
     sortOrders: newSortOrders,
     pendingPrompts: newPrompts,
+    recurringTasks: newRecurringTasks,
     updatedAt: new Date().toISOString(),
   };
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef, useCallback } from "react";
+import { useMemo, useState, useEffect, useRef, useCallback, Fragment } from "react";
 import { useDrag, useDrop } from "react-dnd";
 import { useWsState, useWsActions } from "../context/WebSocketContext";
 import { ChatInput } from "./ChatInput";
@@ -10,7 +10,7 @@ import {
   findAncestorPath,
   findTeammateParent,
 } from "./SessionSidebar";
-import type { DiskSession, TurnStatus, SubagentChild } from "../types";
+import type { DiskSession, TurnStatus, SubagentChild, RecurringTaskConfig } from "../types";
 
 // ── Inline backlog card editor ──
 
@@ -52,6 +52,155 @@ function BacklogNewCard({ onSave, onCancel }: { onSave: (text: string) => void; 
         onKeyDown={handleKeyDown}
         onBlur={() => { if (!text.trim()) onCancel(); }}
       />
+    </div>
+  );
+}
+
+// ── Inline recurring card editor ──
+
+function RecurringNewCard({
+  onSave,
+  onCancel,
+}: {
+  onSave: (prompt: string, triggerType: "interval" | "filewatcher", config: { intervalMs?: number; watchPaths?: string[] }) => void;
+  onCancel: () => void;
+}) {
+  const [prompt, setPrompt] = useState("");
+  const [triggerType, setTriggerType] = useState<"interval" | "filewatcher">("interval");
+  const [intervalValue, setIntervalValue] = useState(30);
+  const [intervalUnit, setIntervalUnit] = useState<"s" | "m">("s");
+  const [watchPaths, setWatchPaths] = useState("src/**/*.ts");
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const handleSave = () => {
+    if (!prompt.trim()) return;
+    const config =
+      triggerType === "interval"
+        ? { intervalMs: intervalValue * (intervalUnit === "m" ? 60000 : 1000) }
+        : { watchPaths: watchPaths.split(",").map((s) => s.trim()).filter(Boolean) };
+    onSave(prompt.trim(), triggerType, config);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey && prompt.trim()) {
+      e.preventDefault();
+      handleSave();
+    } else if (e.key === "Escape") {
+      onCancel();
+    }
+  };
+
+  return (
+    <div className="kanban-new-card kanban-recurring-form">
+      <textarea
+        ref={inputRef}
+        className="kanban-new-card-input"
+        placeholder="Prompt to run on each trigger..."
+        value={prompt}
+        rows={2}
+        onChange={(e) => setPrompt(e.target.value)}
+        onKeyDown={handleKeyDown}
+      />
+      <div className="kanban-recurring-trigger-toggle">
+        <button
+          className={`kanban-recurring-trigger-btn${triggerType === "interval" ? " active" : ""}`}
+          onClick={() => setTriggerType("interval")}
+        >
+          Interval
+        </button>
+        <button
+          className={`kanban-recurring-trigger-btn${triggerType === "filewatcher" ? " active" : ""}`}
+          onClick={() => setTriggerType("filewatcher")}
+        >
+          File Watcher
+        </button>
+      </div>
+      {triggerType === "interval" ? (
+        <div className="kanban-recurring-config">
+          <span className="kanban-recurring-config-label">Every</span>
+          <input
+            type="number"
+            className="kanban-recurring-config-input"
+            value={intervalValue}
+            min={1}
+            onChange={(e) => setIntervalValue(Math.max(1, parseInt(e.target.value) || 1))}
+          />
+          <select
+            className="kanban-recurring-config-select"
+            value={intervalUnit}
+            onChange={(e) => setIntervalUnit(e.target.value as "s" | "m")}
+          >
+            <option value="s">sec</option>
+            <option value="m">min</option>
+          </select>
+        </div>
+      ) : (
+        <div className="kanban-recurring-config">
+          <input
+            className="kanban-recurring-config-input kanban-recurring-config-input-wide"
+            placeholder="src/**/*.ts, *.json"
+            value={watchPaths}
+            onChange={(e) => setWatchPaths(e.target.value)}
+          />
+        </div>
+      )}
+      <div className="kanban-recurring-actions">
+        <button className="kanban-recurring-save-btn" onClick={handleSave} disabled={!prompt.trim()}>
+          Create
+        </button>
+        <button className="kanban-recurring-cancel-btn" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Recurring badge on cards ──
+
+function formatInterval(ms: number): string {
+  if (ms >= 60000) return `${Math.round(ms / 60000)}m`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
+function RecurringBadge({
+  config,
+  onToggle,
+}: {
+  config: RecurringTaskConfig;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="kanban-recurring-badge">
+      <span className={`recurring-status-dot${config.active ? " active" : ""}`} />
+      <span className="recurring-label">
+        {config.type === "interval"
+          ? `Every ${formatInterval(config.intervalMs ?? 30000)}`
+          : `Watching ${(config.watchPaths ?? [])[0] ?? "..."}`}
+      </span>
+      <button
+        className="recurring-toggle-btn"
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggle();
+        }}
+        title={config.active ? "Pause" : "Resume"}
+      >
+        {config.active ? (
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <rect x="1" y="1" width="3" height="8" rx="0.5" fill="currentColor" />
+            <rect x="6" y="1" width="3" height="8" rx="0.5" fill="currentColor" />
+          </svg>
+        ) : (
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <path d="M2 1L9 5L2 9V1Z" fill="currentColor" />
+          </svg>
+        )}
+      </button>
     </div>
   );
 }
@@ -118,7 +267,7 @@ function KanbanSessionRow({
   onSelect,
   onCardClick,
   onMore,
-  onMoveCard,
+  onDragHover,
   onStackToggle,
   hideStackBadge,
   isEditing,
@@ -147,7 +296,7 @@ function KanbanSessionRow({
   onSelect: () => void;
   onCardClick: (sessionId: string, columnId: KanbanColumnId, e: React.MouseEvent) => void;
   onMore: (e: React.MouseEvent) => void;
-  onMoveCard: (dragSessionId: string, sourceCol: KanbanColumnId, targetIndex: number, targetCol: KanbanColumnId) => void;
+  onDragHover?: (insertIndex: number | null) => void;
   onStackToggle?: () => void;
   hideStackBadge?: boolean;
   isEditing?: boolean;
@@ -182,43 +331,25 @@ function KanbanSessionRow({
 
   const [, dropRef] = useDrop({
     accept: DRAG_TYPE,
-    canDrop: (item: KanbanDragItem) => {
-      // Disable card-level drop for multi-card drags — let column handle it
-      if (item.selectedIds && item.selectedIds.length > 1) return false;
-      return true;
-    },
     hover: (item: KanbanDragItem, monitor) => {
-      if (!cardRef.current) return;
-      if (item.sessionId === session.sessionId) return;
-      // Skip card-level reordering for multi-card drag (handled at column level)
+      if (!cardRef.current || !onDragHover) return;
       if (item.selectedIds && item.selectedIds.length > 1) return;
 
-      const dragIdx = item.index;
-      const hoverIdx = index;
-      const dragCol = item.sourceColumn;
-      const hoverCol = columnId;
-
-      // For same-column reorder, use midpoint threshold to prevent jitter
-      if (dragCol === hoverCol) {
-        if (dragIdx === hoverIdx) return;
-        const rect = cardRef.current.getBoundingClientRect();
-        const midY = (rect.bottom - rect.top) / 2;
-        const clientOffset = monitor.getClientOffset();
-        if (!clientOffset) return;
-        const hoverClientY = clientOffset.y - rect.top;
-        // Moving down: only move when cursor is below midpoint
-        if (dragIdx < hoverIdx && hoverClientY < midY) return;
-        // Moving up: only move when cursor is above midpoint
-        if (dragIdx > hoverIdx && hoverClientY > midY) return;
+      // Cross-column drop into completed: always indicate top position
+      if (columnId === "completed" && item.sourceColumn !== "completed") {
+        onDragHover(0);
+        return;
       }
 
-      onMoveCard(item.sessionId, dragCol, hoverIdx, hoverCol);
+      const rect = cardRef.current.getBoundingClientRect();
+      const clientOffset = monitor.getClientOffset();
+      if (!clientOffset) return;
+      const hoverClientY = clientOffset.y - rect.top;
+      const midY = (rect.bottom - rect.top) / 2;
+      const insertIdx = hoverClientY < midY ? index : index + 1;
 
-      // Mutate the drag item to reflect its new position (prevents repeated shuffling)
-      item.index = hoverIdx;
-      item.sourceColumn = hoverCol;
+      onDragHover(insertIdx);
     },
-    drop: () => ({}), // Signal that a card handled the drop (so column-level drop is skipped)
   });
 
   // Combine drag and drop refs onto the same element
@@ -453,34 +584,72 @@ function KanbanColumnView({
   onAddCard?: () => void;
   onSaveNewCard?: (text: string) => void;
   onCancelNewCard?: () => void;
+  recurringTasks?: Record<string, RecurringTaskConfig>;
+  onSaveNewRecurringCard?: (prompt: string, triggerType: "interval" | "filewatcher", config: { intervalMs?: number; watchPaths?: string[] }) => void;
+  onToggleRecurring?: (sessionId: string, active: boolean) => void;
 }) {
   const AUTO_STACK_THRESHOLD = 5;
   const [autoStackExpanded, setAutoStackExpanded] = useState(false);
   const shouldAutoStack = column.id === "completed" && sessions.length > AUTO_STACK_THRESHOLD && !autoStackExpanded;
   const autoStackCount = sessions.length - AUTO_STACK_THRESHOLD;
 
+  // Drop indicator state — tracks where the insertion line should appear
+  const [dropIndicatorIdx, setDropIndicatorIdx] = useState<number | null>(null);
+  const dropIndicatorRef = useRef<number | null>(null);
+
+  const handleDragHover = useCallback((idx: number | null) => {
+    setDropIndicatorIdx(idx);
+    dropIndicatorRef.current = idx;
+  }, []);
+
   const [{ isOver, canDrop }, dropRef] = useDrop({
     accept: DRAG_TYPE,
-    drop: (item: KanbanDragItem, monitor) => {
-      // If a card-level drop target already handled this, skip
-      if (monitor.didDrop()) return;
+    hover: (item: KanbanDragItem, monitor) => {
+      // Only handle hovering over empty column space (not over cards)
+      if (!monitor.isOver({ shallow: true })) return;
+      if (item.selectedIds && item.selectedIds.length > 1) return;
+      // Cross-column into completed: show indicator at top
+      if (column.id === "completed" && item.sourceColumn !== "completed") {
+        handleDragHover(0);
+        return;
+      }
+      // Empty column or hovering above/below all cards — show indicator at
+      // top (0) or bottom (sessions.length) based on existing indicator position.
+      // If no indicator is set yet, default to appending at the end.
+      if (sessions.length === 0) {
+        handleDragHover(0);
+      } else if (dropIndicatorRef.current === null) {
+        handleDragHover(sessions.length);
+      }
+    },
+    drop: (item: KanbanDragItem) => {
+      const indicatorIdx = dropIndicatorRef.current;
+      setDropIndicatorIdx(null);
+      dropIndicatorRef.current = null;
+
       // Multi-card drag: move all selected cards to this column
       if (item.selectedIds && item.selectedIds.length > 1 && onBulkMove) {
         onBulkMove(item.selectedIds, column.id);
         return;
       }
-      // Drop on empty column space — for completed column, drop at top by default
-      // (card-level hover reordering already handles intentional positioning)
-      const dropIndex = column.id === "completed" && item.sourceColumn !== "completed"
-        ? 0
-        : sessions.length;
-      onMoveCard(item.sessionId, item.sourceColumn, dropIndex, column.id);
+
+      // Pass raw indicator position — handleMoveCard adjusts using actual visual positions
+      const targetIdx = indicatorIdx ?? (column.id === "completed" && item.sourceColumn !== "completed" ? 0 : sessions.length);
+      onMoveCard(item.sessionId, item.sourceColumn, targetIdx, column.id);
     },
     collect: (monitor) => ({
       isOver: monitor.isOver(),
       canDrop: monitor.canDrop(),
     }),
   });
+
+  // Clear drop indicator when drag leaves column
+  useEffect(() => {
+    if (!isOver) {
+      setDropIndicatorIdx(null);
+      dropIndicatorRef.current = null;
+    }
+  }, [isOver]);
 
   const dropClass = isOver && canDrop
     ? " kanban-column-drop-active"
@@ -500,13 +669,16 @@ function KanbanColumnView({
         )}
       </div>
       <div className="kanban-column-body">
-        {editingNewCard && onSaveNewCard && onCancelNewCard && (
+        {editingNewCard && column.id === "recurring" && onSaveNewRecurringCard && onCancelNewCard && (
+          <RecurringNewCard onSave={onSaveNewRecurringCard} onCancel={onCancelNewCard} />
+        )}
+        {editingNewCard && column.id !== "recurring" && onSaveNewCard && onCancelNewCard && (
           <BacklogNewCard onSave={onSaveNewCard} onCancel={onCancelNewCard} />
         )}
         {sessions.length === 0 && !editingNewCard ? (
           <div className="kanban-column-empty">{column.emptyLabel}</div>
-        ) : (
-          sessions.map((session, idx) => {
+        ) : (<>
+          {sessions.map((session, idx) => {
             // Compute stack position: first selected card in column is "top",
             // all other selected cards are "rest" (collapsed behind top card)
             const isSel = selectedCards.has(session.sessionId);
@@ -529,8 +701,9 @@ function KanbanColumnView({
               }
             }
             return (
+              <Fragment key={session.sessionId}>
+                {dropIndicatorIdx === idx && <div className="kanban-drop-indicator" />}
               <KanbanSessionRow
-                key={session.sessionId}
                 session={session}
                 columnId={column.id}
                 index={idx}
@@ -546,7 +719,7 @@ function KanbanColumnView({
                 onSelect={() => onSelectSession(session.sessionId, column.id)}
                 onCardClick={onCardClick}
                 onMore={(e) => onMore(session.sessionId, session.title, e)}
-                onMoveCard={onMoveCard}
+                onDragHover={handleDragHover}
                 onStackToggle={stackToggle}
                 hideStackBadge={hideBadge}
                 isEditing={editingCardId === session.sessionId}
@@ -560,9 +733,17 @@ function KanbanColumnView({
                 resumeSession={resumeSession}
                 resumeSubagent={resumeSubagent}
               />
+              {column.id === "recurring" && recurringTasks?.[session.sessionId] && onToggleRecurring && (
+                <RecurringBadge
+                  config={recurringTasks[session.sessionId]}
+                  onToggle={() => onToggleRecurring(session.sessionId, !recurringTasks[session.sessionId].active)}
+                />
+              )}
+              </Fragment>
             );
-          })
-        )}
+          })}
+          {dropIndicatorIdx === sessions.length && <div className="kanban-drop-indicator" />}
+        </>)}
       </div>
       {column.id === "completed" && autoStackExpanded && sessions.length > AUTO_STACK_THRESHOLD && (
         <div className="kanban-column-footer">
@@ -580,7 +761,7 @@ function KanbanColumnView({
 
 export function KanbanPanel() {
   const state = useWsState();
-  const { resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, send, saveKanbanState } = useWsActions();
+  const { resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, send, saveKanbanState, createRecurringTask, toggleRecurringTask, stopRecurringTask } = useWsActions();
 
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
@@ -874,6 +1055,18 @@ export function KanbanPanel() {
     }
   }, [createBacklogSession, resumeSession, send]);
 
+  const handleSaveNewRecurringCard = useCallback(
+    async (prompt: string, triggerType: "interval" | "filewatcher", config: { intervalMs?: number; watchPaths?: string[] }) => {
+      setEditingNewCard(null);
+      try {
+        await createRecurringTask(prompt, triggerType, config);
+      } catch (err) {
+        console.error("Failed to create recurring task:", err);
+      }
+    },
+    [createRecurringTask],
+  );
+
   // Ref to track pendingPrompts in the move callback without stale closure
   const pendingPromptsRef = useRef(pendingPrompts);
   pendingPromptsRef.current = pendingPrompts;
@@ -911,6 +1104,11 @@ export function KanbanPanel() {
         }, 300);
       }
 
+      // When dragging out of recurring, stop the recurring task
+      if (sourceCol === "recurring" && targetCol !== "recurring") {
+        stopRecurringTask(dragSessionId);
+      }
+
       // Update column override if cross-column
       if (sourceCol !== targetCol) {
         setColumnOverrides((prev) => ({ ...prev, [dragSessionId]: targetCol }));
@@ -919,35 +1117,36 @@ export function KanbanPanel() {
       setSortOrders((prev) => {
         const next = { ...prev };
 
-        // Initialize column sort order from current display order if not yet tracked
-        if (!next[sourceCol]) {
-          next[sourceCol] = columnDataRef.current[sourceCol].map((s) => s.sessionId);
-        }
-        if (sourceCol !== targetCol && !next[targetCol]) {
-          next[targetCol] = columnDataRef.current[targetCol].map((s) => s.sessionId);
-        }
-
-        // Remove from source
-        const sourceArr = [...next[sourceCol]!];
-        const removeIdx = sourceArr.indexOf(dragSessionId);
-        if (removeIdx !== -1) sourceArr.splice(removeIdx, 1);
+        // Always rebuild sort order from current visual display to prevent drift
+        // between the sort order array (which can have stale/missing entries) and
+        // the actual rendered card list.
+        const sourceVisual = columnDataRef.current[sourceCol].map((s) => s.sessionId);
 
         if (sourceCol === targetCol) {
-          // In-column reorder
-          sourceArr.splice(targetIndex, 0, dragSessionId);
-          next[sourceCol] = sourceArr;
+          // Same-column reorder: use the visual list as the source of truth
+          const currentIdx = sourceVisual.indexOf(dragSessionId);
+          const filtered = sourceVisual.filter((id) => id !== dragSessionId);
+          // targetIndex is the raw indicator position (visual index).
+          // Adjust for the removed card: if it was before the target, decrement.
+          let adjustedTarget = targetIndex;
+          if (currentIdx !== -1 && currentIdx < targetIndex) {
+            adjustedTarget--;
+          }
+          filtered.splice(Math.min(adjustedTarget, filtered.length), 0, dragSessionId);
+          next[sourceCol] = filtered;
         } else {
-          // Cross-column move
-          next[sourceCol] = sourceArr;
-          const targetArr = [...next[targetCol]!];
-          targetArr.splice(targetIndex, 0, dragSessionId);
+          // Cross-column move: rebuild both columns from visual display
+          next[sourceCol] = sourceVisual.filter((id) => id !== dragSessionId);
+          const targetVisual = columnDataRef.current[targetCol].map((s) => s.sessionId);
+          const targetArr = [...targetVisual];
+          targetArr.splice(Math.min(targetIndex, targetArr.length), 0, dragSessionId);
           next[targetCol] = targetArr;
         }
 
         return next;
       });
     },
-    [resumeSession, send],
+    [resumeSession, send, stopRecurringTask],
   );
 
   const handleCardClick = useCallback(
@@ -975,6 +1174,14 @@ export function KanbanPanel() {
 
   const handleBulkMove = useCallback(
     (sessionIds: string[], targetCol: KanbanColumnId) => {
+      // Stop recurring tasks when moving out of the recurring column
+      if (targetCol !== "recurring") {
+        for (const id of sessionIds) {
+          if (state.kanbanRecurringTasks[id]) {
+            stopRecurringTask(id);
+          }
+        }
+      }
       // Update column overrides for all cards
       setColumnOverrides((prev) => {
         const next = { ...prev };
@@ -1044,7 +1251,7 @@ export function KanbanPanel() {
       }
       clearSelection();
     },
-    [resumeSession, send, clearSelection, columnOverrides, state.diskSessions, state.liveTurnStatus],
+    [resumeSession, send, clearSelection, columnOverrides, state.diskSessions, state.liveTurnStatus, state.kanbanRecurringTasks, stopRecurringTask],
   );
 
   const handleStartEditing = useCallback((sessionId: string) => {
@@ -1125,11 +1332,16 @@ export function KanbanPanel() {
             resumeSession={resumeSession}
             resumeSubagent={resumeSubagent}
             liveSessionIds={liveSessionIds}
-            {...((col.id === "backlog" || col.id === "in_progress") ? {
+            {...((col.id === "backlog" || col.id === "in_progress" || col.id === "recurring") ? {
               editingNewCard: editingNewCard === col.id,
               onAddCard: () => setEditingNewCard(col.id),
               onSaveNewCard: (text: string) => handleSaveNewCard(text, col.id),
               onCancelNewCard: () => setEditingNewCard(null),
+            } : {})}
+            {...(col.id === "recurring" ? {
+              recurringTasks: state.kanbanRecurringTasks,
+              onSaveNewRecurringCard: handleSaveNewRecurringCard,
+              onToggleRecurring: toggleRecurringTask,
             } : {})}
           />
         ))}

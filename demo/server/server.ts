@@ -1,10 +1,11 @@
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createAcpConnection, createNewSession, resumeSession } from "./session.js";
+import { createHaikuRouterPool } from "./haiku-router.js";
 import type { AcpConnection } from "./types.js";
 import { log, bootMs } from "./log.js";
-import { type KanbanState, getProjectDir, readKanbanState, writeKanbanState, cleanKanbanState } from "./kanban.js";
+import { type KanbanState, type RecurringTaskEntry, getProjectDir, readKanbanState, writeKanbanState, cleanKanbanState } from "./kanban.js";
+import { startRecurringTask, stopRecurringTask, stopAllRecurringTasks } from "./recurring.js";
 
 export function startServer(port: number) {
   // ── Client tracking ──
@@ -391,16 +392,36 @@ export function startServer(port: number) {
     const t0 = performance.now();
     log.info({ boot: bootMs() }, "prewarm: starting ACP connection");
     connectingPromise = (async () => {
+      // Warm up Haiku routing pool in parallel with ACP connection
+      const haikuWarmup = haikuRouter.warmup();
+
       acpConnection = await createAcpConnection(broadcast);
       log.info({ durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "prewarm: ACP connection ready");
       // Load kanban state from disk
       try {
         const projDir = getResolvedProjectDir();
         kanbanState = await readKanbanState(projDir);
-        if (kanbanState) log.info("kanban: loaded from disk");
+        if (kanbanState) {
+          log.info("kanban: loaded from disk");
+          // Restore active recurring tasks
+          if (kanbanState.recurringTasks) {
+            const cwd = process.env.ACP_CWD || process.cwd();
+            for (const [sessionId, config] of Object.entries(kanbanState.recurringTasks)) {
+              if (config.active) {
+                try {
+                  startRecurringTask(sessionId, config, port, cwd);
+                } catch (err: any) {
+                  log.warn({ session: sessionId.slice(0, 8), err: err.message }, "recurring: restore failed");
+                }
+              }
+            }
+          }
+        }
       } catch (err: any) {
         log.warn({ err: err.message }, "kanban: load error");
       }
+      // Wait for Haiku pool (likely already done since ACP connect is slower)
+      await haikuWarmup;
     })();
     return connectingPromise;
   }
@@ -595,50 +616,12 @@ export function startServer(port: number) {
     }
   }
 
-  /** Use Haiku via the Claude Agent SDK to decide whether a message relates to the current session. */
-  async function routeWithHaiku(messageText: string, sessionTitle: string | null, lastTurnSummary: string | null): Promise<boolean> {
-    if (!sessionTitle) return true; // untitled → stay in current session
+  // ── Haiku Router Pool (pre-warmed streaming SDK sessions) ──
+  const haikuRouter = createHaikuRouterPool();
 
-    try {
-      const t0 = performance.now();
-      const contextBlock = lastTurnSummary ? `\n${lastTurnSummary}\n` : "";
-      const q = query({
-        prompt:
-          `Session title: "${sessionTitle}"${contextBlock}\nNew message: "${messageText.slice(0, 500)}"\n\n` +
-          `Reply with ONLY "same" if the message relates to the current session topic, or "new" if it's a different topic that should start a fresh session.`,
-        options: {
-          systemPrompt:
-            "You are a message router. Given a session title, the latest conversation exchange, " +
-            "and a new user message, determine if the message should continue in the same session " +
-            "or start a new one. " +
-            'Reply with ONLY "same" or "new".',
-          model: "claude-haiku-4-5-20251001",
-          maxThinkingTokens: 0,
-          maxTurns: 1,
-          maxBudgetUsd: 0.01,
-          tools: [],
-          settingSources: [],
-          mcpServers: {},
-          hooks: {},
-          persistSession: false,
-          cwd: process.cwd(),
-        },
-      });
-
-      let answer = "";
-      for await (const message of q) {
-        if (message.type === "result" && message.subtype === "success") {
-          answer = message.result?.trim().toLowerCase() ?? "";
-        }
-      }
-
-      const isSame = !answer.startsWith("new");
-      log.info({ durationMs: Math.round(performance.now() - t0), answer, isSame }, "route: Haiku decision");
-      return isSame;
-    } catch (err: any) {
-      log.warn({ err: err.message }, "route: Haiku SDK query failed, defaulting to same session");
-      return true;
-    }
+  /** Use a pre-warmed Haiku worker to decide whether a message relates to the current session. */
+  function routeWithHaiku(messageText: string, sessionTitle: string | null, lastTurnSummary: string | null): Promise<boolean> {
+    return haikuRouter.route(messageText, sessionTitle, lastTurnSummary);
   }
 
   // Coalesce concurrent broadcastSessions calls — if one is already in flight,
@@ -815,7 +798,7 @@ export function startServer(port: number) {
           sendSessionMeta(ws, targetSession);
           sendTurnState(ws, targetSession);
           sendQueueState(ws, targetSession);
-          ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState?.columnOverrides ?? {}, sortOrders: kanbanState?.sortOrders ?? {}, pendingPrompts: kanbanState?.pendingPrompts ?? {} }));
+          ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState?.columnOverrides ?? {}, sortOrders: kanbanState?.sortOrders ?? {}, pendingPrompts: kanbanState?.pendingPrompts ?? {}, recurringTasks: kanbanState?.recurringTasks ?? {} }));
           log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
 
           // Fire-and-forget: don't block the open handler waiting for session list
@@ -841,7 +824,7 @@ export function startServer(port: number) {
             sendSessionMeta(ws, targetSession);
             sendTurnState(ws, targetSession);
             sendQueueState(ws, targetSession);
-            ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState?.columnOverrides ?? {}, sortOrders: kanbanState?.sortOrders ?? {}, pendingPrompts: kanbanState?.pendingPrompts ?? {} }));
+            ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState?.columnOverrides ?? {}, sortOrders: kanbanState?.sortOrders ?? {}, pendingPrompts: kanbanState?.pendingPrompts ?? {}, recurringTasks: kanbanState?.recurringTasks ?? {} }));
             log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
             broadcastSessions().catch((err) => log.error({ client: clientId, err: err.message }, "ws: broadcastSessions failed"));
           } catch (err: any) {
@@ -1055,11 +1038,16 @@ export function startServer(port: number) {
                   }
                 }
               }
+              // Stop any recurring tasks for deleted sessions
+              for (const id of deletedIds) {
+                stopRecurringTask(id);
+              }
               // Clean up kanban state for deleted sessions
               if (kanbanState) {
                 for (const id of deletedIds) {
                   delete kanbanState.columnOverrides[id];
                   delete kanbanState.pendingPrompts[id];
+                  if (kanbanState.recurringTasks) delete kanbanState.recurringTasks[id];
                   for (const order of Object.values(kanbanState.sortOrders)) {
                     if (!order) continue;
                     const idx = order.indexOf(id);
@@ -1239,6 +1227,102 @@ export function startServer(port: number) {
             break;
           }
 
+          case "create_recurring_task": {
+            log.info({ client: cid, triggerType: msg.triggerType }, "ws: → create_recurring_task");
+            try {
+              const t0 = performance.now();
+              const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
+              log.info({ client: cid, session: sid(sessionId), durationMs: Math.round(performance.now() - t0) }, "recurring: session created");
+              liveSessionIds.add(sessionId);
+
+              // Rename the session to the prompt text (truncated)
+              const title = (msg.prompt as string).slice(0, 80);
+              await acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
+
+              // Store recurring config in kanban state
+              const entry: RecurringTaskEntry = {
+                type: msg.triggerType,
+                ...(msg.triggerType === "interval" ? { intervalMs: msg.intervalMs ?? 30000 } : {}),
+                ...(msg.triggerType === "filewatcher" ? { watchPaths: msg.watchPaths ?? [] } : {}),
+                prompt: msg.prompt,
+                active: true,
+              };
+              if (!kanbanState) {
+                kanbanState = { version: 1, columnOverrides: {}, sortOrders: {}, pendingPrompts: {}, updatedAt: new Date().toISOString() };
+              }
+              kanbanState.columnOverrides[sessionId] = "recurring";
+              if (!kanbanState.recurringTasks) kanbanState.recurringTasks = {};
+              kanbanState.recurringTasks[sessionId] = entry;
+              kanbanState.updatedAt = new Date().toISOString();
+              writeKanbanState(getResolvedProjectDir(), kanbanState).catch((err) =>
+                log.error({ err: err.message }, "kanban: recurring save error"),
+              );
+
+              // Start the background subprocess
+              const cwd = process.env.ACP_CWD || process.cwd();
+              startRecurringTask(sessionId, entry, port, cwd);
+
+              // Notify all clients
+              ws.send(JSON.stringify({ type: "recurring_task_created", sessionId }));
+              sendToAll(JSON.stringify({
+                type: "kanban_state",
+                columnOverrides: kanbanState.columnOverrides,
+                sortOrders: kanbanState.sortOrders ?? {},
+                pendingPrompts: kanbanState.pendingPrompts ?? {},
+                recurringTasks: kanbanState.recurringTasks ?? {},
+              }));
+              broadcastSessions().catch(() => {});
+            } catch (err: any) {
+              log.error({ client: cid, err: err.message }, "ws: create_recurring_task error");
+              ws.send(JSON.stringify({ type: "error", text: err.message }));
+            }
+            break;
+          }
+
+          case "toggle_recurring_task": {
+            const { sessionId: toggleId, active } = msg;
+            log.info({ client: cid, session: sid(toggleId), active }, "ws: → toggle_recurring_task");
+            if (kanbanState?.recurringTasks?.[toggleId]) {
+              kanbanState.recurringTasks[toggleId].active = active;
+              kanbanState.updatedAt = new Date().toISOString();
+              if (active) {
+                const entry = kanbanState.recurringTasks[toggleId];
+                const cwd = process.env.ACP_CWD || process.cwd();
+                startRecurringTask(toggleId, entry, port, cwd);
+              } else {
+                stopRecurringTask(toggleId);
+              }
+              writeKanbanState(getResolvedProjectDir(), kanbanState).catch(() => {});
+              sendToAll(JSON.stringify({
+                type: "kanban_state",
+                columnOverrides: kanbanState.columnOverrides,
+                sortOrders: kanbanState.sortOrders ?? {},
+                pendingPrompts: kanbanState.pendingPrompts ?? {},
+                recurringTasks: kanbanState.recurringTasks ?? {},
+              }));
+            }
+            break;
+          }
+
+          case "stop_recurring_task": {
+            const { sessionId: stopId } = msg;
+            log.info({ client: cid, session: sid(stopId) }, "ws: → stop_recurring_task");
+            stopRecurringTask(stopId);
+            if (kanbanState?.recurringTasks) {
+              delete kanbanState.recurringTasks[stopId];
+              kanbanState.updatedAt = new Date().toISOString();
+              writeKanbanState(getResolvedProjectDir(), kanbanState).catch(() => {});
+              sendToAll(JSON.stringify({
+                type: "kanban_state",
+                columnOverrides: kanbanState.columnOverrides,
+                sortOrders: kanbanState.sortOrders ?? {},
+                pendingPrompts: kanbanState.pendingPrompts ?? {},
+                recurringTasks: kanbanState.recurringTasks ?? {},
+              }));
+            }
+            break;
+          }
+
           case "save_kanban_state": {
             log.info({ client: cid }, "ws: → save_kanban_state");
             kanbanState = {
@@ -1246,6 +1330,7 @@ export function startServer(port: number) {
               columnOverrides: msg.columnOverrides ?? {},
               sortOrders: msg.sortOrders ?? {},
               pendingPrompts: msg.pendingPrompts ?? {},
+              recurringTasks: kanbanState?.recurringTasks,
               updatedAt: new Date().toISOString(),
             };
             if (kanbanSaveTimer) clearTimeout(kanbanSaveTimer);
@@ -1258,6 +1343,91 @@ export function startServer(port: number) {
                 log.error({ err: err.message }, "kanban: save error");
               }
             }, KANBAN_SAVE_DEBOUNCE_MS);
+            break;
+          }
+
+          case "create_recurring_task": {
+            log.info({ client: cid, triggerType: msg.triggerType }, "ws: → create_recurring_task");
+            try {
+              const t0 = performance.now();
+              const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
+              liveSessionIds.add(sessionId);
+
+              // Rename session to the prompt text (truncated)
+              const title = (msg.prompt as string).slice(0, 80);
+              await acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
+
+              // Build config
+              const config: RecurringTaskEntry = {
+                type: msg.triggerType ?? "interval",
+                prompt: msg.prompt,
+                active: true,
+                ...(msg.triggerType === "filewatcher"
+                  ? { watchPaths: msg.watchPaths ?? [] }
+                  : { intervalMs: msg.intervalMs ?? 30000 }),
+              };
+
+              // Store in kanban state
+              if (!kanbanState) {
+                kanbanState = { version: 1, columnOverrides: {}, sortOrders: {}, pendingPrompts: {}, recurringTasks: {}, updatedAt: new Date().toISOString() };
+              }
+              kanbanState.columnOverrides[sessionId] = "recurring";
+              if (!kanbanState.recurringTasks) kanbanState.recurringTasks = {};
+              kanbanState.recurringTasks[sessionId] = config;
+              kanbanState.updatedAt = new Date().toISOString();
+              writeKanbanState(getResolvedProjectDir(), kanbanState).catch((err) =>
+                log.error({ err: err.message }, "kanban: recurring save error"),
+              );
+
+              // Start the background process
+              const cwd = process.env.ACP_CWD || process.cwd();
+              startRecurringTask(sessionId, config, port, cwd);
+
+              // Respond with the new session ID
+              ws.send(JSON.stringify({ type: "recurring_task_created", sessionId }));
+              // Broadcast updated recurring tasks + sessions
+              sendToAll(JSON.stringify({ type: "recurring_tasks_state", tasks: kanbanState.recurringTasks }));
+              await broadcastSessions();
+              log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - t0) }, "ws: recurring task created");
+            } catch (err: any) {
+              log.error({ client: cid, err: err.message }, "ws: create_recurring_task error");
+              ws.send(JSON.stringify({ type: "error", text: err.message }));
+            }
+            break;
+          }
+
+          case "toggle_recurring_task": {
+            const { sessionId, active } = msg;
+            log.info({ client: cid, session: sid(sessionId), active }, "ws: → toggle_recurring_task");
+            if (kanbanState?.recurringTasks?.[sessionId]) {
+              kanbanState.recurringTasks[sessionId].active = active;
+              kanbanState.updatedAt = new Date().toISOString();
+              if (active) {
+                const cwd = process.env.ACP_CWD || process.cwd();
+                startRecurringTask(sessionId, kanbanState.recurringTasks[sessionId], port, cwd);
+              } else {
+                stopRecurringTask(sessionId);
+              }
+              writeKanbanState(getResolvedProjectDir(), kanbanState).catch((err) =>
+                log.error({ err: err.message }, "kanban: toggle save error"),
+              );
+              sendToAll(JSON.stringify({ type: "recurring_tasks_state", tasks: kanbanState.recurringTasks }));
+            }
+            break;
+          }
+
+          case "stop_recurring_task": {
+            const { sessionId } = msg;
+            log.info({ client: cid, session: sid(sessionId) }, "ws: → stop_recurring_task");
+            stopRecurringTask(sessionId);
+            if (kanbanState?.recurringTasks) {
+              delete kanbanState.recurringTasks[sessionId];
+              kanbanState.updatedAt = new Date().toISOString();
+              writeKanbanState(getResolvedProjectDir(), kanbanState).catch((err) =>
+                log.error({ err: err.message }, "kanban: stop save error"),
+              );
+              sendToAll(JSON.stringify({ type: "recurring_tasks_state", tasks: kanbanState.recurringTasks }));
+            }
             break;
           }
 
@@ -1285,6 +1455,14 @@ export function startServer(port: number) {
   prewarmAcpConnection().catch((err) => {
     log.error({ err: err.message }, "prewarm failed");
   });
+
+  // Graceful shutdown: stop all recurring task subprocesses
+  const shutdown = () => {
+    stopAllRecurringTasks();
+    process.exit(0);
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 
   return server;
 }

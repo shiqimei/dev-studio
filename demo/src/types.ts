@@ -315,7 +315,16 @@ export interface AppState {
   kanbanColumnOverrides: Record<string, string>;
   kanbanSortOrders: Partial<Record<string, string[]>>;
   kanbanPendingPrompts: Record<string, string>;
+  kanbanRecurringTasks: Record<string, RecurringTaskConfig>;
   kanbanStateLoaded: boolean;
+}
+
+export interface RecurringTaskConfig {
+  type: "interval" | "filewatcher";
+  intervalMs?: number;
+  watchPaths?: string[];
+  prompt: string;
+  active: boolean;
 }
 
 // ── Actions ─────────────────────────────────
@@ -359,4 +368,4 @@ export type Action =
   | { type: "SESSION_DELETED"; sessionIds: string[] }
   | { type: "SESSION_ID_RESOLVED"; pendingId: string; realId: string }
   | { type: "SESSION_DESELECTED" }
-  | { type: "KANBAN_STATE_LOADED"; columnOverrides: Record<string, string>; sortOrders: Partial<Record<string, string[]>>; pendingPrompts: Record<string, string> };
+  | { type: "KANBAN_STATE_LOADED"; columnOverrides: Record<string, string>; sortOrders: Partial<Record<string, string[]>>; pendingPrompts: Record<string, string>; recurringTasks: Record<string, RecurringTaskConfig> };

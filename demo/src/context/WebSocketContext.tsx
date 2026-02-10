@@ -180,6 +180,7 @@ const initialState: AppState = {
   kanbanColumnOverrides: {},
   kanbanSortOrders: {},
   kanbanPendingPrompts: {},
+  kanbanRecurringTasks: {},
   kanbanStateLoaded: false,
 };
 
@@ -1200,6 +1201,7 @@ function reducer(state: AppState, action: Action): AppState {
         kanbanColumnOverrides: action.columnOverrides,
         kanbanSortOrders: action.sortOrders,
         kanbanPendingPrompts: action.pendingPrompts,
+        kanbanRecurringTasks: action.recurringTasks,
         kanbanStateLoaded: true,
       };
 
@@ -1228,6 +1230,9 @@ export interface WsActions {
   requestSubagents: (sessionId: string) => void;
   respondToPermission: (requestId: string, optionId: string, optionName: string) => void;
   saveKanbanState: (columnOverrides: Record<string, string>, sortOrders: Partial<Record<string, string[]>>, pendingPrompts: Record<string, string>) => void;
+  createRecurringTask: (prompt: string, triggerType: "interval" | "filewatcher", config: { intervalMs?: number; watchPaths?: string[] }) => Promise<string>;
+  toggleRecurringTask: (sessionId: string, active: boolean) => void;
+  stopRecurringTask: (sessionId: string) => void;
 }
 
 interface WsContextValue {
@@ -1248,6 +1253,9 @@ interface WsContextValue {
   requestSubagents: (sessionId: string) => void;
   respondToPermission: (requestId: string, optionId: string, optionName: string) => void;
   saveKanbanState: (columnOverrides: Record<string, string>, sortOrders: Partial<Record<string, string[]>>, pendingPrompts: Record<string, string>) => void;
+  createRecurringTask: (prompt: string, triggerType: "interval" | "filewatcher", config: { intervalMs?: number; watchPaths?: string[] }) => Promise<string>;
+  toggleRecurringTask: (sessionId: string, active: boolean) => void;
+  stopRecurringTask: (sessionId: string) => void;
 }
 
 const WsActionsContext = createContext<WsActions | null>(null);
@@ -1468,6 +1476,39 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     wsRef.current.send(JSON.stringify({ type: "save_kanban_state", columnOverrides, sortOrders, pendingPrompts }));
   }, []);
 
+  /** Pending recurring task creation resolve callback. */
+  const pendingRecurringRef = useRef<{ resolve: (sessionId: string) => void } | null>(null);
+
+  const createRecurringTask = useCallback((
+    prompt: string,
+    triggerType: "interval" | "filewatcher",
+    config: { intervalMs?: number; watchPaths?: string[] },
+  ): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        reject(new Error("WebSocket not connected"));
+        return;
+      }
+      pendingRecurringRef.current = { resolve };
+      wsRef.current.send(JSON.stringify({
+        type: "create_recurring_task",
+        prompt,
+        triggerType,
+        ...config,
+      }));
+    });
+  }, []);
+
+  const toggleRecurringTask = useCallback((sessionId: string, active: boolean) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "toggle_recurring_task", sessionId, active }));
+  }, []);
+
+  const stopRecurringTaskAction = useCallback((sessionId: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "stop_recurring_task", sessionId }));
+  }, []);
+
   const fileSearchCallbacks = useRef<Map<string, (files: string[]) => void>>(new Map());
 
   const searchFiles = useCallback((query: string, callback: (files: string[]) => void) => {
@@ -1621,6 +1662,16 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           pendingBacklogRef.current = null;
         }
 
+        // Resolve pending recurring task creation
+        if (msg.type === "recurring_task_created" && pendingRecurringRef.current) {
+          pendingRecurringRef.current.resolve(msg.sessionId);
+          pendingRecurringRef.current = null;
+          return;
+        }
+        if (msg.type === "error" && pendingRecurringRef.current) {
+          pendingRecurringRef.current = null;
+        }
+
         if (msg.type === "error" && pendingNewSessionRef.current) {
           console.warn(`[${pageMs()}] newSession failed, reverting optimistic switch`);
           pendingNewSessionRef.current = null;
@@ -1756,9 +1807,12 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       requestSubagents,
       respondToPermission,
       saveKanbanState,
+      createRecurringTask,
+      toggleRecurringTask,
+      stopRecurringTask: stopRecurringTaskAction,
     }),
     // All deps are useCallback([]) or useReducer dispatch — stable references
-    [dispatch, send, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState],
+    [dispatch, send, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, createRecurringTask, toggleRecurringTask, stopRecurringTaskAction],
   );
 
   // ── Hash-based URL routing ──
@@ -2041,7 +2095,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       dispatch({ type: "SESSION_SUBAGENTS", sessionId: msg.sessionId, children: msg.children ?? [] });
       break;
     case "kanban_state":
-      dispatch({ type: "KANBAN_STATE_LOADED", columnOverrides: msg.columnOverrides ?? {}, sortOrders: msg.sortOrders ?? {}, pendingPrompts: msg.pendingPrompts ?? {} });
+      dispatch({ type: "KANBAN_STATE_LOADED", columnOverrides: msg.columnOverrides ?? {}, sortOrders: msg.sortOrders ?? {}, pendingPrompts: msg.pendingPrompts ?? {}, recurringTasks: msg.recurringTasks ?? {} });
       break;
   }
 }

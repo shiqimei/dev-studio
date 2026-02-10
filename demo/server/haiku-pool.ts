@@ -1,28 +1,27 @@
 /**
- * Haiku Router Pool
+ * Haiku Worker Pool
  *
- * Keeps pre-warmed streaming SDK sessions alive so routing calls avoid the
- * ~4s cold start of spawning a new subprocess per query. Each worker holds
- * an open `query()` subprocess; push a prompt → read the response (~1s).
+ * General-purpose pre-warmed Haiku worker pool. Keeps streaming SDK sessions
+ * alive so lightweight calls (routing, title generation, etc.) avoid the
+ * ~4s cold start of spawning a new subprocess per query.
  *
  * Workers are recycled after MAX_USES to prevent unbounded context growth
  * (each prompt/response pair accumulates in the conversation history).
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import * as path from "node:path";
 import { log } from "./log.js";
 
 // ── Config ──
 
 const POOL_SIZE = 2;
-const MAX_USES = 40; // recycle a worker after this many routing calls
+const MAX_USES = 40; // recycle a worker after this many calls
 const MAX_POOL_SIZE = 4; // cap total workers (pool + overflow)
 
 const SYSTEM_PROMPT =
-  "You are a message router. Given a session title, the latest conversation exchange, " +
-  "and a new user message, determine if the message should continue in the same session " +
-  "or start a new one. " +
-  'Reply with ONLY "same" or "new".';
+  "You are a fast, efficient assistant. Follow the instructions in each message exactly. " +
+  "Be concise. Output ONLY what is requested, nothing else.";
 
 // ── Worker ──
 
@@ -72,7 +71,7 @@ function createWorker(): Worker {
   }
 
   // Push a warmup prompt before calling query() so the iterable yields immediately
-  push('Session title: "warmup"\nNew message: "warmup"\nReply ONLY "same" or "new".');
+  push('Reply with exactly "ready".');
 
   const conversation = query({
     prompt: iterable,
@@ -105,7 +104,7 @@ function createWorker(): Worker {
             if (block.type === "text") text += block.text;
           }
         }
-        return text.trim().toLowerCase();
+        return text.trim();
       }
       // skip system/init/stream messages
     }
@@ -117,16 +116,20 @@ function createWorker(): Worker {
 
 // ── Pool ──
 
-export interface HaikuRouterPool {
+export interface HaikuPool {
   /** Warm the pool — spawns workers and absorbs cold start. Returns when ready. */
   warmup(): Promise<void>;
+  /** Send a prompt and get a response using a pre-warmed worker. */
+  query(prompt: string): Promise<string>;
   /** Route a message: returns true if it belongs to the current session. */
   route(messageText: string, sessionTitle: string | null, lastTurnSummary: string | null): Promise<boolean>;
+  /** Generate a concise session title from user message and assistant response. */
+  generateTitle(cwd: string, userMessage: string, assistantText: string): Promise<string | null>;
   /** Gracefully shut down all workers. */
   shutdown(): void;
 }
 
-export function createHaikuRouterPool(): HaikuRouterPool {
+export function createHaikuPool(): HaikuPool {
   const workers: Worker[] = [];
   let warmupPromise: Promise<void> | null = null;
 
@@ -209,11 +212,34 @@ export function createHaikuRouterPool(): HaikuRouterPool {
     }
   }
 
+  // ── Generic query ──
+
+  async function queryPool(prompt: string): Promise<string> {
+    let worker: Worker | null = null;
+    try {
+      worker = await acquire();
+      worker.push(prompt);
+      const answer = await worker.readResponse();
+      worker.uses++;
+      return answer;
+    } catch (err: any) {
+      // Evict the broken worker and spawn a replacement
+      if (worker) {
+        recycleWorker(worker);
+        worker = null; // prevent release in finally
+      }
+      throw err;
+    } finally {
+      if (worker) release(worker);
+    }
+  }
+
   // ── Route ──
 
-  function buildPrompt(messageText: string, sessionTitle: string, lastTurnSummary: string | null): string {
+  function buildRoutePrompt(messageText: string, sessionTitle: string, lastTurnSummary: string | null): string {
     const contextBlock = lastTurnSummary ? `\n${lastTurnSummary}\n` : "";
     return (
+      `You are routing a message. Determine if it should continue in the current session or start a new one.\n\n` +
       `Session title: "${sessionTitle}"${contextBlock}\nNew message: "${messageText.slice(0, 500)}"\n\n` +
       `Reply with ONLY "same" if the message relates to the current session topic, or "new" if it's a different topic that should start a fresh session.`
     );
@@ -226,29 +252,64 @@ export function createHaikuRouterPool(): HaikuRouterPool {
   ): Promise<boolean> {
     if (!sessionTitle) return true; // untitled → stay in current session
 
-    let worker: Worker | null = null;
     try {
       const t0 = performance.now();
-      worker = await acquire();
-
-      const prompt = buildPrompt(messageText, sessionTitle, lastTurnSummary);
-      worker.push(prompt);
-      const answer = await worker.readResponse();
-      worker.uses++;
-
-      const isSame = !answer.startsWith("new");
-      log.info({ durationMs: Math.round(performance.now() - t0), answer, isSame, uses: worker.uses }, "route: Haiku decision (pooled)");
+      const prompt = buildRoutePrompt(messageText, sessionTitle, lastTurnSummary);
+      const answer = await queryPool(prompt);
+      const isSame = !answer.toLowerCase().startsWith("new");
+      log.info({ durationMs: Math.round(performance.now() - t0), answer, isSame }, "route: Haiku decision (pooled)");
       return isSame;
     } catch (err: any) {
       log.warn({ err: err.message }, "route: Haiku pooled query failed, defaulting to same session");
-      // Evict the broken worker and spawn a replacement
-      if (worker) {
-        recycleWorker(worker);
-        worker = null; // prevent release in finally
-      }
       return true;
-    } finally {
-      if (worker) release(worker);
+    }
+  }
+
+  // ── Title generation ──
+
+  const MAX_TITLE_LENGTH = 32;
+
+  function buildTitlePrompt(projectName: string, userMessage: string, assistantText: string): string {
+    let prompt =
+      `Generate a concise session title in ≤${MAX_TITLE_LENGTH} characters. ` +
+      `Use imperative verb phrases (e.g. Fix login bug, Add dark mode, Refactor auth). ` +
+      `No quotes, no trailing punctuation. Output ONLY the title, nothing else.\n\n` +
+      `Project: ${projectName}\n\nUser message:\n${userMessage.slice(0, 500)}`;
+    if (assistantText.length > 0) {
+      prompt += `\n\nAssistant response:\n${assistantText.slice(0, 500)}`;
+    }
+    return prompt;
+  }
+
+  async function generateTitle(
+    cwd: string,
+    userMessage: string,
+    assistantText: string,
+  ): Promise<string | null> {
+    try {
+      const t0 = performance.now();
+      const projectName = path.basename(cwd);
+      const prompt = buildTitlePrompt(projectName, userMessage, assistantText);
+      const raw = await queryPool(prompt);
+
+      if (!raw) return null;
+
+      // Clean up: trim whitespace, remove surrounding quotes, truncate
+      let title = raw.trim();
+      if (
+        (title.startsWith('"') && title.endsWith('"')) ||
+        (title.startsWith("'") && title.endsWith("'"))
+      ) {
+        title = title.slice(1, -1);
+      }
+      if (title.endsWith(".")) title = title.slice(0, -1);
+      title = title.slice(0, MAX_TITLE_LENGTH).trim();
+
+      log.info({ durationMs: Math.round(performance.now() - t0), title }, "haiku-pool: generated title");
+      return title || null;
+    } catch (err: any) {
+      log.warn({ err: err.message }, "haiku-pool: generateTitle failed");
+      return null;
     }
   }
 
@@ -262,5 +323,5 @@ export function createHaikuRouterPool(): HaikuRouterPool {
     workers.length = 0;
   }
 
-  return { warmup, route, shutdown };
+  return { warmup, query: queryPool, route, generateTitle, shutdown };
 }

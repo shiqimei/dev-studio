@@ -183,6 +183,8 @@ export interface DiskSession {
   turnCostUsd?: number;
   /** Thinking duration in ms (present when turnStatus is "completed"). */
   turnThinkingDurationMs?: number;
+  /** Why the last turn ended (e.g., "end_turn", "error", "max_tokens"). */
+  turnStopReason?: string;
 }
 
 export interface TaskItemEntry {
@@ -234,6 +236,8 @@ export interface TurnStatus {
   activity?: TurnActivity;
   /** Tool name or description for the current activity */
   activityDetail?: string;
+  /** Why the turn ended (e.g., "end_turn", "error", "max_tokens", "tool_use"). */
+  stopReason?: string;
 }
 
 // ── Tasks ────────────────────────────────────
@@ -347,7 +351,7 @@ export type Action =
   | { type: "SYSTEM"; text: string }
   | { type: "TURN_START"; startedAt: number }
   | { type: "TURN_ACTIVITY"; activity: TurnActivity; detail?: string; approxTokens?: number; thinkingDurationMs?: number }
-  | { type: "TURN_END"; durationMs?: number; outputTokens?: number; thinkingDurationMs?: number; costUsd?: number }
+  | { type: "TURN_END"; durationMs?: number; outputTokens?: number; thinkingDurationMs?: number; costUsd?: number; stopReason?: string }
   | { type: "ERROR"; text: string }
   | { type: "PROTOCOL"; dir: "send" | "recv"; ts: number; msg: unknown }
   | { type: "SET_DIR_FILTER"; filter: DirFilter }

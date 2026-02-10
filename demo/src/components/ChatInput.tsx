@@ -1,5 +1,6 @@
 import { useRef, useCallback, useState, useEffect } from "react";
 import { useWs } from "../context/WebSocketContext";
+import { toSupportedImage } from "../utils";
 import type { ImageAttachment, FileAttachment, SlashCommand } from "../types";
 
 // ── localStorage helpers for session-scoped draft persistence ──
@@ -18,51 +19,6 @@ function saveDraft(sessionId: string | null, text: string) {
 function loadDraft(sessionId: string | null): string {
   if (!sessionId) return "";
   return localStorage.getItem(DRAFT_KEY_PREFIX + sessionId) ?? "";
-}
-
-const SUPPORTED_IMAGE_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-]);
-
-/**
- * Convert an image blob to PNG if its type isn't supported by the API.
- * Returns { data: base64, mimeType } ready for ImageAttachment.
- */
-function toSupportedImage(blob: Blob): Promise<{ data: string; mimeType: string }> {
-  if (SUPPORTED_IMAGE_TYPES.has(blob.type)) {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result as string;
-        resolve({ data: dataUrl.split(",")[1], mimeType: blob.type });
-      };
-      reader.readAsDataURL(blob);
-    });
-  }
-
-  // Convert to PNG via canvas
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(blob);
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(img, 0, 0);
-      URL.revokeObjectURL(url);
-      const pngDataUrl = canvas.toDataURL("image/png");
-      resolve({ data: pngDataUrl.split(",")[1], mimeType: "image/png" });
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("Failed to load image for conversion"));
-    };
-    img.src = url;
-  });
 }
 
 /** Get the basename from a file path. */

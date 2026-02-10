@@ -128,6 +128,13 @@ function uid(): string {
   return "m" + nextId++;
 }
 
+/**
+ * Sessions whose titles should not be auto-updated by the SDK.
+ * Used by the kanban board to prevent retry prompts from polluting card titles.
+ * When a session is in this set, incoming `session_title_update` messages are dropped.
+ */
+export const titleLockedSessions = new Set<string>();
+
 const emptySnapshot: SessionSnapshot = {
   messages: [],
   tasks: {},
@@ -727,9 +734,11 @@ function reducer(state: AppState, action: Action): AppState {
       }
 
       // Build completed turn status for liveTurnStatus (sidebar display)
+      const isError = action.stopReason === "error";
+      const endStatus = isError ? "error" as const : "completed" as const;
       const completedStatus: TurnStatus | null = action.durationMs != null
         ? {
-            status: "completed",
+            status: endStatus,
             startedAt: state.turnStatus?.startedAt ?? Date.now(),
             endedAt: Date.now(),
             durationMs: action.durationMs,
@@ -737,9 +746,10 @@ function reducer(state: AppState, action: Action): AppState {
             thinkingDurationMs: action.thinkingDurationMs,
             costUsd: action.costUsd,
             approxTokens: state.turnStatus?.approxTokens,
+            stopReason: action.stopReason,
           }
         : state.turnStatus
-          ? { ...state.turnStatus, status: "completed", endedAt: Date.now(), durationMs: Date.now() - state.turnStatus.startedAt }
+          ? { ...state.turnStatus, status: endStatus, endedAt: Date.now(), durationMs: Date.now() - state.turnStatus.startedAt, stopReason: action.stopReason }
           : null;
 
       // Add a turn_completed entry to messages (the single source of truth for
@@ -893,10 +903,11 @@ function reducer(state: AppState, action: Action): AppState {
           // Back to in_progress — no longer unread-completed
           delete unread[s.sessionId];
         } else if (lts[s.sessionId]?.status === "in_progress") {
-          // Transition: was in_progress, now completed — use server metrics when available
+          // Transition: was in_progress, now completed/error — use server metrics when available
           const existing = lts[s.sessionId];
+          const isError = s.turnStatus === "error" || s.turnStopReason === "error";
           lts[s.sessionId] = {
-            status: "completed",
+            status: isError ? "error" : "completed",
             startedAt: existing.startedAt,
             endedAt: Date.now(),
             durationMs: s.turnDurationMs ?? (Date.now() - existing.startedAt),
@@ -904,24 +915,26 @@ function reducer(state: AppState, action: Action): AppState {
             costUsd: s.turnCostUsd,
             thinkingDurationMs: s.turnThinkingDurationMs ?? existing.thinkingDurationMs,
             approxTokens: existing.approxTokens,
+            stopReason: s.turnStopReason,
           };
           // Always mark as needing review (moves to "in review" column)
           unread[s.sessionId] = true;
-        } else if (lts[s.sessionId]?.status === "completed") {
+        } else if (lts[s.sessionId]?.status === "completed" || lts[s.sessionId]?.status === "error") {
           // Already completed — keep stats for sidebar display. Only clean unread state.
           if (!s.turnStatus) {
             delete unread[s.sessionId];
           }
-        } else if (s.turnStatus === "completed" && s.turnDurationMs != null) {
-          // Seed from server-provided completion metrics
+        } else if ((s.turnStatus === "completed" || s.turnStatus === "error") && s.turnDurationMs != null) {
+          // Seed from server-provided completion/error metrics
           lts[s.sessionId] = {
-            status: "completed",
+            status: s.turnStatus === "error" ? "error" : "completed",
             startedAt: s.turnStartedAt ?? 0,
             endedAt: Date.now(),
             durationMs: s.turnDurationMs,
             outputTokens: s.turnOutputTokens,
             costUsd: s.turnCostUsd,
             thinkingDurationMs: s.turnThinkingDurationMs,
+            stopReason: s.turnStopReason,
           };
         } else {
           // No liveTurnStatus entry and no server completion data — nothing to track
@@ -2031,6 +2044,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
         outputTokens: msg.outputTokens,
         thinkingDurationMs: msg.thinkingDurationMs,
         costUsd: msg.costUsd,
+        stopReason: msg.stopReason,
       });
       break;
     case "error":
@@ -2068,6 +2082,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       dispatch({ type: "SESSION_SWITCHED", sessionId: msg.sessionId, turnStatus: msg.turnStatus ?? null });
       break;
     case "session_title_update":
+      if (titleLockedSessions.has(msg.sessionId)) break;
       dispatch({ type: "SESSION_TITLE_UPDATE", sessionId: msg.sessionId, title: msg.title });
       break;
     // route_result is handled in the onmessage handler (needs pendingRouteRef)

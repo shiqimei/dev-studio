@@ -1,8 +1,8 @@
 import { useMemo, useState, useEffect, useRef, useCallback, Fragment } from "react";
 import { useDrag, useDrop } from "react-dnd";
-import { useWsState, useWsActions } from "../context/WebSocketContext";
+import { useWsState, useWsActions, titleLockedSessions } from "../context/WebSocketContext";
 import { ChatInput } from "./ChatInput";
-import { cleanTitle } from "../utils";
+import { cleanTitle, toSupportedImage } from "../utils";
 import {
   SessionItem,
   SubagentItem,
@@ -10,12 +10,13 @@ import {
   findAncestorPath,
   findTeammateParent,
 } from "./SessionSidebar";
-import type { DiskSession, TurnStatus, SubagentChild, RecurringTaskConfig } from "../types";
+import type { DiskSession, TurnStatus, SubagentChild, RecurringTaskConfig, ImageAttachment } from "../types";
 
 // ── Inline backlog card editor ──
 
-function BacklogNewCard({ onSave, onCancel }: { onSave: (text: string) => void; onCancel: () => void }) {
+function BacklogNewCard({ onSave, onCancel }: { onSave: (text: string, images?: ImageAttachment[]) => void; onCancel: () => void }) {
   const [text, setText] = useState("");
+  const [images, setImages] = useState<ImageAttachment[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -23,20 +24,53 @@ function BacklogNewCard({ onSave, onCancel }: { onSave: (text: string) => void; 
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey && text.trim()) {
+    if (e.key === "Enter" && !e.shiftKey && (text.trim() || images.length > 0)) {
       e.preventDefault();
-      onSave(text.trim());
+      onSave(text.trim(), images.length > 0 ? images : undefined);
     } else if (e.key === "Escape") {
       onCancel();
     }
   };
 
+  const onPaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (!item.type.startsWith("image/")) continue;
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (!file) continue;
+      toSupportedImage(file).then((attachment) => {
+        setImages((prev) => [...prev, attachment]);
+      });
+    }
+  }, []);
+
   return (
     <div className="kanban-new-card">
+      {images.length > 0 && (
+        <div className="kanban-new-card-images">
+          {images.map((img, i) => (
+            <div key={`img-${i}`} className="kanban-new-card-image-chip">
+              <img
+                src={`data:${img.mimeType};base64,${img.data}`}
+                alt={`Pasted image ${i + 1}`}
+              />
+              <button
+                type="button"
+                onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                className="kanban-new-card-image-remove"
+              >
+                x
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <textarea
         ref={inputRef}
         className="kanban-new-card-input"
-        placeholder="Describe the task..."
+        placeholder={images.length > 0 ? "Add a description or send image..." : "Describe the task..."}
         value={text}
         rows={3}
         onChange={(e) => {
@@ -50,7 +84,8 @@ function BacklogNewCard({ onSave, onCancel }: { onSave: (text: string) => void; 
           el.style.height = `${Math.min(Math.max(el.scrollHeight, minH), maxH)}px`;
         }}
         onKeyDown={handleKeyDown}
-        onBlur={() => { if (!text.trim()) onCancel(); }}
+        onPaste={onPaste}
+        onBlur={() => { if (!text.trim() && images.length === 0) onCancel(); }}
       />
     </div>
   );
@@ -241,12 +276,24 @@ function categorizeSession(
   const live = liveTurnStatus[session.sessionId];
   // Currently running
   if (live?.status === "in_progress" || session.turnStatus === "in_progress") return "in_progress";
-  // Completed — always goes to "In Review"; only the user can move it to "Completed" manually
-  if (live?.status === "completed" || session.turnStatus === "completed") return "in_review";
+  // Completed or errored — goes to "In Review" for user to inspect
+  if (live?.status === "completed" || live?.status === "error" || session.turnStatus === "completed" || session.turnStatus === "error") return "in_review";
   // Live/connected sessions that recur
   if (session.isLive) return "recurring";
   // Everything else
   return "backlog";
+}
+
+/** Human-readable label for a stopReason. */
+function stopReasonLabel(reason: string | undefined): string | null {
+  switch (reason) {
+    case "error": return "Error";
+    case "max_tokens": return "Max tokens";
+    case "stop_sequence": return "Stop sequence";
+    case undefined:
+    case "end_turn": return null; // normal completion — no badge needed
+    default: return reason;
+  }
 }
 
 // ── Kanban session row (mirrors sidebar session-row exactly) ──
@@ -427,13 +474,19 @@ function KanbanSessionRow({
     });
   };
 
+  // Derive stop reason badge
+  const turnLive = turnInfo ?? undefined;
+  const cardStopReason = turnLive?.stopReason;
+  const badgeLabel = stopReasonLabel(cardStopReason);
+  const isErrorCard = turnLive?.status === "error" || cardStopReason === "error";
+
   const stackClass = stackPosition === "top" ? " kanban-stack-top"
     : stackPosition === "rest" ? " kanban-stack-rest" : "";
 
   return (
     <div
       ref={cardRef}
-      className={`kanban-card-wrap${isDragging ? " kanban-card-dragging" : ""}${isSelected ? " kanban-card-selected" : ""}${stackClass}`}
+      className={`kanban-card-wrap${isDragging ? " kanban-card-dragging" : ""}${isSelected ? " kanban-card-selected" : ""}${isErrorCard ? " kanban-card-error" : ""}${stackClass}`}
       onClickCapture={(e) => {
         if (e.shiftKey) {
           e.stopPropagation();
@@ -520,6 +573,18 @@ function KanbanSessionRow({
             <div className="subagent-empty-placeholder">No sub-agent sessions</div>
           )
       )}
+      {badgeLabel && (
+        <div className={`kanban-stop-reason-badge${isErrorCard ? " kanban-stop-reason-error" : ""}`} title={`Turn ended: ${cardStopReason}`}>
+          {isErrorCard && (
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <circle cx="6" cy="6" r="5.5" stroke="currentColor" strokeWidth="1" />
+              <path d="M6 3.5V6.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              <circle cx="6" cy="8.5" r="0.6" fill="currentColor" />
+            </svg>
+          )}
+          {badgeLabel}
+        </div>
+      )}
     </div>
   );
 }
@@ -555,6 +620,9 @@ function KanbanColumnView({
   onAddCard,
   onSaveNewCard,
   onCancelNewCard,
+  recurringTasks,
+  onSaveNewRecurringCard,
+  onToggleRecurring,
 }: {
   column: ColumnDef;
   sessions: DiskSession[];
@@ -582,7 +650,7 @@ function KanbanColumnView({
   liveSessionIds: Set<string>;
   editingNewCard?: boolean;
   onAddCard?: () => void;
-  onSaveNewCard?: (text: string) => void;
+  onSaveNewCard?: (text: string, images?: ImageAttachment[]) => void;
   onCancelNewCard?: () => void;
   recurringTasks?: Record<string, RecurringTaskConfig>;
   onSaveNewRecurringCard?: (prompt: string, triggerType: "interval" | "filewatcher", config: { intervalMs?: number; watchPaths?: string[] }) => void;
@@ -779,6 +847,7 @@ export function KanbanPanel() {
   const [pendingPrompts, setPendingPrompts] = useState<Record<string, string>>(
     () => state.kanbanPendingPrompts ?? {},
   );
+  const [pendingImages, setPendingImages] = useState<Record<string, ImageAttachment[]>>({});
   const [optimisticBacklog, setOptimisticBacklog] = useState<DiskSession[]>([]);
   const [selectedCards, setSelectedCards] = useState<Set<string>>(new Set());
   const lastClickedCardRef = useRef<{ sessionId: string; columnId: KanbanColumnId } | null>(null);
@@ -816,18 +885,42 @@ export function KanbanPanel() {
     setPendingPrompts(state.kanbanPendingPrompts);
   }, [state.kanbanStateLoaded, state.kanbanColumnOverrides, state.kanbanSortOrders, state.kanbanPendingPrompts]);
 
+  // Ref tracking latest kanban state for flush-on-unmount / beforeunload
+  const latestKanbanRef = useRef({ columnOverrides, sortOrders, pendingPrompts });
+  latestKanbanRef.current = { columnOverrides, sortOrders, pendingPrompts };
+
   // Debounced save to server when kanban state changes
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!kanbanInitialized.current) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null;
       saveKanbanState(columnOverrides, sortOrders as Partial<Record<string, string[]>>, pendingPrompts);
     }, 300);
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
   }, [columnOverrides, sortOrders, pendingPrompts, saveKanbanState]);
+
+  // Flush any pending debounced save on component unmount or page beforeunload.
+  // Without this, changes made within the 300ms debounce window are lost on
+  // page reload or when navigating away from the kanban view.
+  useEffect(() => {
+    const flush = () => {
+      if (saveTimerRef.current && kanbanInitialized.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+        const { columnOverrides: co, sortOrders: so, pendingPrompts: pp } = latestKanbanRef.current;
+        saveKanbanState(co, so as Partial<Record<string, string[]>>, pp);
+      }
+    };
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      window.removeEventListener("beforeunload", flush);
+      flush();
+    };
+  }, [saveKanbanState]);
 
   // Auto-expand sidebar tree when navigating to a sub-agent or teammate session
   useEffect(() => {
@@ -987,7 +1080,7 @@ export function KanbanPanel() {
     }
   }, [state.diskSessions, optimisticBacklog]);
 
-  const handleSaveNewCard = useCallback(async (text: string, targetCol: KanbanColumnId = "backlog") => {
+  const handleSaveNewCard = useCallback(async (text: string, images?: ImageAttachment[], targetCol: KanbanColumnId = "backlog") => {
     setEditingNewCard(null);
 
     // Optimistic: show the card immediately in the target column
@@ -1005,6 +1098,9 @@ export function KanbanPanel() {
     setOptimisticBacklog((prev) => [optimistic, ...prev]);
     if (targetCol === "backlog") {
       setPendingPrompts((prev) => ({ ...prev, [tempId]: text }));
+      if (images?.length) {
+        setPendingImages((prev) => ({ ...prev, [tempId]: images }));
+      }
     }
     setColumnOverrides((prev) => ({ ...prev, [tempId]: targetCol }));
     // Prepend to target column sort order so the new card appears at the top
@@ -1027,6 +1123,12 @@ export function KanbanPanel() {
           delete next[tempId];
           return next;
         });
+        setPendingImages((prev) => {
+          if (!prev[tempId]) return prev;
+          const next = { ...prev, [sessionId]: prev[tempId] };
+          delete next[tempId];
+          return next;
+        });
       }
       setColumnOverrides((prev) => {
         const next = { ...prev, [sessionId]: targetCol };
@@ -1042,7 +1144,7 @@ export function KanbanPanel() {
       // If creating directly in in_progress, resume and send the prompt immediately
       if (targetCol === "in_progress") {
         resumeSession(sessionId);
-        setTimeout(() => send(text), 300);
+        setTimeout(() => send(text, images), 300);
       }
     } catch (err) {
       console.error("Failed to create session:", err);
@@ -1050,6 +1152,7 @@ export function KanbanPanel() {
       setOptimisticBacklog((prev) => prev.filter((s) => s.sessionId !== tempId));
       if (targetCol === "backlog") {
         setPendingPrompts((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
+        setPendingImages((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
       }
       setColumnOverrides((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
     }
@@ -1070,13 +1173,22 @@ export function KanbanPanel() {
   // Ref to track pendingPrompts in the move callback without stale closure
   const pendingPromptsRef = useRef(pendingPrompts);
   pendingPromptsRef.current = pendingPrompts;
+  const pendingImagesRef = useRef(pendingImages);
+  pendingImagesRef.current = pendingImages;
 
   const handleMoveCard = useCallback(
     (dragSessionId: string, sourceCol: KanbanColumnId, targetIndex: number, targetCol: KanbanColumnId) => {
       // When dragging from backlog to in_progress, send the pending prompt
       if (sourceCol === "backlog" && targetCol === "in_progress" && pendingPromptsRef.current[dragSessionId]) {
         const prompt = pendingPromptsRef.current[dragSessionId];
+        const promptImages = pendingImagesRef.current[dragSessionId];
         setPendingPrompts((prev) => {
+          const next = { ...prev };
+          delete next[dragSessionId];
+          return next;
+        });
+        setPendingImages((prev) => {
+          if (!prev[dragSessionId]) return prev;
           const next = { ...prev };
           delete next[dragSessionId];
           return next;
@@ -1085,12 +1197,16 @@ export function KanbanPanel() {
         resumeSession(dragSessionId);
         // Small delay to let the session switch complete before sending
         setTimeout(() => {
-          send(prompt);
+          send(prompt, promptImages);
         }, 300);
       }
 
       // When dragging from in_review back to in_progress, retry with a refined prompt
       if (sourceCol === "in_review" && targetCol === "in_progress") {
+        // Lock the title so the SDK-generated title from the retry prompt is suppressed
+        titleLockedSessions.add(dragSessionId);
+        const session = columnDataRef.current[sourceCol].find((s) => s.sessionId === dragSessionId);
+        const originalTitle = session?.title;
         resumeSession(dragSessionId);
         setTimeout(() => {
           send(
@@ -1101,6 +1217,15 @@ export function KanbanPanel() {
             "- If you got stuck on something, take a step back and try a completely different angle\n\n" +
             "Please retry the task now.",
           );
+          // After the prompt is sent, restore the title server-side and unlock
+          if (originalTitle) {
+            setTimeout(() => {
+              renameSession(dragSessionId, originalTitle);
+              titleLockedSessions.delete(dragSessionId);
+            }, 5000);
+          } else {
+            setTimeout(() => titleLockedSessions.delete(dragSessionId), 5000);
+          }
         }, 300);
       }
 
@@ -1146,7 +1271,7 @@ export function KanbanPanel() {
         return next;
       });
     },
-    [resumeSession, send, stopRecurringTask],
+    [resumeSession, send, stopRecurringTask, renameSession],
   );
 
   const handleCardClick = useCallback(
@@ -1220,13 +1345,20 @@ export function KanbanPanel() {
         for (const id of sessionIds) {
           if (!sentFirst && pendingPromptsRef.current[id]) {
             const prompt = pendingPromptsRef.current[id];
+            const promptImages = pendingImagesRef.current[id];
             setPendingPrompts((prev) => {
               const next = { ...prev };
               delete next[id];
               return next;
             });
+            setPendingImages((prev) => {
+              if (!prev[id]) return prev;
+              const next = { ...prev };
+              delete next[id];
+              return next;
+            });
             resumeSession(id);
-            setTimeout(() => send(prompt), 300);
+            setTimeout(() => send(prompt, promptImages), 300);
             sentFirst = true;
           } else if (!sentFirst) {
             // Check if this session was in the in_review column (retry flow)
@@ -1235,15 +1367,29 @@ export function KanbanPanel() {
               state.liveTurnStatus,
             );
             if (col === "in_review") {
+              // Lock the title so the SDK-generated title from the retry prompt is suppressed
+              titleLockedSessions.add(id);
+              const session = state.diskSessions.find((s) => s.sessionId === id);
+              const originalTitle = session?.title;
               resumeSession(id);
-              setTimeout(() => send(
-                "Your previous attempt didn't fully meet expectations. Please re-examine the task with fresh eyes:\n\n" +
-                "- Ultrathink about the problem — consider edge cases and alternative approaches you may have missed\n" +
-                "- Try a fundamentally different strategy than what you used before\n" +
-                "- Be more thorough and creative in your solution\n" +
-                "- If you got stuck on something, take a step back and try a completely different angle\n\n" +
-                "Please retry the task now.",
-              ), 300);
+              setTimeout(() => {
+                send(
+                  "Your previous attempt didn't fully meet expectations. Please re-examine the task with fresh eyes:\n\n" +
+                  "- Ultrathink about the problem — consider edge cases and alternative approaches you may have missed\n" +
+                  "- Try a fundamentally different strategy than what you used before\n" +
+                  "- Be more thorough and creative in your solution\n" +
+                  "- If you got stuck on something, take a step back and try a completely different angle\n\n" +
+                  "Please retry the task now.",
+                );
+                if (originalTitle) {
+                  setTimeout(() => {
+                    renameSession(id, originalTitle);
+                    titleLockedSessions.delete(id);
+                  }, 5000);
+                } else {
+                  setTimeout(() => titleLockedSessions.delete(id), 5000);
+                }
+              }, 300);
               sentFirst = true;
             }
           }
@@ -1251,7 +1397,7 @@ export function KanbanPanel() {
       }
       clearSelection();
     },
-    [resumeSession, send, clearSelection, columnOverrides, state.diskSessions, state.liveTurnStatus, state.kanbanRecurringTasks, stopRecurringTask],
+    [resumeSession, send, clearSelection, columnOverrides, state.diskSessions, state.liveTurnStatus, state.kanbanRecurringTasks, stopRecurringTask, renameSession],
   );
 
   const handleStartEditing = useCallback((sessionId: string) => {
@@ -1335,7 +1481,7 @@ export function KanbanPanel() {
             {...((col.id === "backlog" || col.id === "in_progress" || col.id === "recurring") ? {
               editingNewCard: editingNewCard === col.id,
               onAddCard: () => setEditingNewCard(col.id),
-              onSaveNewCard: (text: string) => handleSaveNewCard(text, col.id),
+              onSaveNewCard: (text: string, images?: ImageAttachment[]) => handleSaveNewCard(text, images, col.id),
               onCancelNewCard: () => setEditingNewCard(null),
             } : {})}
             {...(col.id === "recurring" ? {

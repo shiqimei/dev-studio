@@ -431,17 +431,6 @@ export class ClaudeAcpAgent implements Agent {
     }
     session.updatedAt = new Date().toISOString();
 
-    // Auto-rename: capture context for title generation after first turn
-    const isFirstTurn = !session.autoRenamed;
-    let userMessageForRename = "";
-    let assistantTextForRename = "";
-    if (isFirstTurn) {
-      const firstText = params.prompt.find((c) => c.type === "text");
-      if (firstText && "text" in firstText) {
-        userMessageForRename = firstText.text.slice(0, 500);
-      }
-    }
-
     if (session.sdkSession) {
       await session.sdkSession.send(promptMessage);
     } else {
@@ -608,21 +597,6 @@ export class ClaudeAcpAgent implements Agent {
               await queue.flush();
               perf.summary();
 
-              // Fire-and-forget auto-rename after first successful turn
-              if (isFirstTurn && userMessageForRename.length > 0) {
-                session.autoRenamed = true;
-                const titleAtTrigger = session.title;
-                this.autoRenameSession(
-                  params.sessionId,
-                  session,
-                  titleAtTrigger,
-                  userMessageForRename,
-                  assistantTextForRename,
-                ).catch((err) => {
-                  this.logger.error("[auto-rename] Unhandled error:", err);
-                });
-              }
-
               return { stopReason: "end_turn", _meta: resultMeta };
             }
             case "error_during_execution":
@@ -654,14 +628,6 @@ export class ClaudeAcpAgent implements Agent {
           break;
         }
         case "stream_event": {
-          // Accumulate assistant text for auto-rename (only first turn, capped at 500 chars)
-          if (isFirstTurn && assistantTextForRename.length < 500) {
-            const evt = (message as any).event;
-            if (evt?.type === "content_block_delta" && evt.delta?.type === "text_delta") {
-              assistantTextForRename += evt.delta.text;
-            }
-          }
-
           const convSpan = perf.start("convert.stream_event");
           const notifications = streamEventToAcpNotifications(
             message,
@@ -1237,77 +1203,6 @@ export class ClaudeAcpAgent implements Agent {
         `[perf] extMethod(${method}) total=${(performance.now() - extT0).toFixed(0)}ms`,
       );
     }
-  }
-
-  /**
-   * Generates and applies an AI-generated session title.
-   * Fire-and-forget — errors are logged but never thrown to the caller.
-   */
-  private async autoRenameSession(
-    sessionId: string,
-    session: ManagedSession,
-    titleAtTrigger: string | null,
-    userMessage: string,
-    assistantText: string,
-  ): Promise<void> {
-    const t0 = performance.now();
-
-    const title = await generateSessionTitle({
-      cwd: session.cwd,
-      userMessage,
-      assistantText,
-      logger: this.logger,
-    });
-
-    if (!title) {
-      console.error(
-        `[auto-rename] ${sessionId.slice(0, 8)} no title generated ${(performance.now() - t0).toFixed(0)}ms`,
-      );
-      return;
-    }
-
-    // Guard: session might have been closed while we were generating
-    if (!this.sessions[sessionId]) {
-      console.error(`[auto-rename] ${sessionId.slice(0, 8)} session closed, skipping`);
-      return;
-    }
-
-    // Guard: user may have manually renamed the session
-    if (session.title !== titleAtTrigger) {
-      console.error(`[auto-rename] ${sessionId.slice(0, 8)} title changed externally, skipping`);
-      return;
-    }
-
-    // Apply the generated title
-    session.title = title;
-
-    // Persist to disk
-    const projectDir = getProjectDir(session.cwd);
-    const diskSuccess = await renameSessionOnDisk(projectDir, sessionId, title);
-    if (!diskSuccess) {
-      await upsertSessionInIndex(projectDir, {
-        sessionId,
-        firstPrompt: title,
-        modified: new Date().toISOString(),
-      });
-    }
-
-    // Notify the client
-    this.client
-      .sessionUpdate({
-        sessionId,
-        update: {
-          sessionUpdate: "session_info_update" as any,
-          title,
-        } as any,
-      })
-      .catch((err) => {
-        this.logger.error("[auto-rename] session_info_update failed:", err);
-      });
-
-    console.error(
-      `[auto-rename] ${sessionId.slice(0, 8)} "${title}" ${(performance.now() - t0).toFixed(0)}ms`,
-    );
   }
 
   close(sessionId: string): void {

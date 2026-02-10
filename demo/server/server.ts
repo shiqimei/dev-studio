@@ -1,7 +1,7 @@
 import path from "node:path";
 import { execSync } from "node:child_process";
 import { createAcpConnection, createNewSession, resumeSession } from "./session.js";
-import { createHaikuRouterPool } from "./haiku-router.js";
+import { createHaikuPool } from "./haiku-pool.js";
 import type { AcpConnection } from "./types.js";
 import { log, bootMs } from "./log.js";
 import { type KanbanState, type RecurringTaskEntry, getProjectDir, readKanbanState, writeKanbanState, cleanKanbanState } from "./kanban.js";
@@ -36,6 +36,9 @@ export function startServer(port: number) {
     outputTokens?: number;
     activity: TurnActivity;
     activityDetail?: string;
+
+    /** Why the turn ended (e.g., "end_turn", "error", "max_tokens"). */
+    stopReason?: string;
   }
   const turnStates: Record<string, TurnState> = {};
 
@@ -393,7 +396,7 @@ export function startServer(port: number) {
     log.info({ boot: bootMs() }, "prewarm: starting ACP connection");
     connectingPromise = (async () => {
       // Warm up Haiku routing pool in parallel with ACP connection
-      const haikuWarmup = haikuRouter.warmup();
+      const haikuWarmup = haikuPool.warmup();
 
       acpConnection = await createAcpConnection(broadcast);
       log.info({ durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "prewarm: ACP connection ready");
@@ -456,6 +459,13 @@ export function startServer(port: number) {
       }
       if (prompt.length === 0) { processingSessions.delete(sessionId); drainQueue(sessionId); return; }
 
+      // Fire-and-forget auto-rename as soon as the user prompt arrives (before the turn starts)
+      // so the sidebar title updates immediately instead of waiting for the full response.
+      if (autoRenameEligible.has(sessionId)) {
+        autoRenameEligible.delete(sessionId);
+        autoRenameSession(sessionId, text);
+      }
+
       // Initialize turn state and content buffer; broadcast turn_start
       const turnStartedAt = Date.now();
       turnStates[sessionId] = {
@@ -493,6 +503,7 @@ export function startServer(port: number) {
         turnState.durationMs = meta?.duration_ms ?? (Date.now() - turnStartedAt);
         turnState.outputTokens = meta?.usage?.outputTokens;
         turnState.costUsd = meta?.total_cost_usd;
+        turnState.stopReason = result.stopReason ?? "end_turn";
       }
 
       turnContentBuffers.delete(sessionId);
@@ -517,6 +528,7 @@ export function startServer(port: number) {
         ts.status = "error";
         ts.endedAt = Date.now();
         ts.durationMs = Date.now() - ts.startedAt;
+        ts.stopReason = "error";
       }
       turnContentBuffers.delete(sessionId);
       broadcast({ type: "error", text: err.message, sessionId });
@@ -616,12 +628,46 @@ export function startServer(port: number) {
     }
   }
 
-  // ── Haiku Router Pool (pre-warmed streaming SDK sessions) ──
-  const haikuRouter = createHaikuRouterPool();
+  // ── Haiku Worker Pool (pre-warmed streaming SDK sessions for routing + auto-rename) ──
+  const haikuPool = createHaikuPool();
 
   /** Use a pre-warmed Haiku worker to decide whether a message relates to the current session. */
   function routeWithHaiku(messageText: string, sessionTitle: string | null, lastTurnSummary: string | null): Promise<boolean> {
-    return haikuRouter.route(messageText, sessionTitle, lastTurnSummary);
+    return haikuPool.route(messageText, sessionTitle, lastTurnSummary);
+  }
+
+  // ── Auto-rename (server-side, uses the Haiku pool for fast title generation) ──
+  /** Sessions eligible for auto-rename (newly created, not resumed). */
+  const autoRenameEligible = new Set<string>();
+  /** Sessions with an in-flight auto-rename (cleared if user manually renames). */
+  const autoRenameInFlight = new Set<string>();
+
+  /**
+   * Fire-and-forget: generate a title via the Haiku pool and apply via sessions/rename.
+   * Called at the start of a turn (before prompt()) so the sidebar updates immediately.
+   */
+  function autoRenameSession(sessionId: string, userMessage: string) {
+    const cwd = process.env.ACP_CWD || process.cwd();
+    autoRenameInFlight.add(sessionId);
+    haikuPool.generateTitle(cwd, userMessage, "").then(async (title) => {
+      if (!title || !acpConnection) return;
+      // Guard: user may have manually renamed during generation
+      if (!autoRenameInFlight.delete(sessionId)) {
+        log.info({ session: sid(sessionId), title }, "auto-rename: cancelled (manual rename during generation)");
+        return;
+      }
+      try {
+        await acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
+        sessionTitleCache.set(sessionId, title);
+        log.info({ session: sid(sessionId), title }, "auto-rename: applied");
+        await broadcastSessions();
+      } catch (err: any) {
+        log.error({ err: err.message, session: sid(sessionId) }, "auto-rename: apply failed");
+      }
+    }).catch((err) => {
+      autoRenameInFlight.delete(sessionId);
+      log.error({ err: err.message, session: sid(sessionId) }, "auto-rename: generate failed");
+    });
   }
 
   // Coalesce concurrent broadcastSessions calls — if one is already in flight,
@@ -673,6 +719,7 @@ export function startServer(port: number) {
                 ...(ts.outputTokens != null && { turnOutputTokens: ts.outputTokens }),
                 ...(ts.costUsd != null && { turnCostUsd: ts.costUsd }),
                 ...(ts.thinkingDurationMs != null && ts.thinkingDurationMs > 0 && { turnThinkingDurationMs: ts.thinkingDurationMs }),
+                ...(ts.stopReason && { turnStopReason: ts.stopReason }),
               }),
             };
           })() : {}),
@@ -767,6 +814,7 @@ export function startServer(port: number) {
 
               if (emptySession) {
                 defaultSessionId = emptySession.sessionId;
+                autoRenameEligible.add(emptySession.sessionId);
                 log.info({ client: clientId, session: sid(defaultSessionId) }, "ws: reusing empty session");
               } else {
                 log.info({ client: clientId }, "ws: no empty session, creating new");
@@ -775,6 +823,7 @@ export function startServer(port: number) {
                 log.info({ client: clientId, session: sid(sessionId), durationMs: Math.round(performance.now() - sessT0) }, "ws: new session created");
                 defaultSessionId = sessionId;
                 liveSessionIds.add(sessionId);
+                autoRenameEligible.add(sessionId);
               }
               resolveFirstSession?.();
             } catch (err: any) {
@@ -935,6 +984,7 @@ export function startServer(port: number) {
               defaultSessionId = sessionId;
               clientState.currentSessionId = sessionId;
               liveSessionIds.add(sessionId);
+              autoRenameEligible.add(sessionId);
               // Send switch only to the requesting client
               ws.send(JSON.stringify({ type: "session_switched", sessionId, turnStatus: getTurnStatusSnapshot(sessionId) }));
               log.info({ client: cid, session: sid(sessionId) }, "ws: ← session_switched");
@@ -1007,6 +1057,8 @@ export function startServer(port: number) {
 
           case "rename_session": {
             const { sessionId, title } = msg;
+            autoRenameEligible.delete(sessionId);
+            autoRenameInFlight.delete(sessionId); // cancel any in-flight auto-rename
             log.info({ client: cid, session: sid(sessionId), title }, "ws: → rename_session");
             const t0 = performance.now();
             const renameResult = await acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
@@ -1027,6 +1079,8 @@ export function startServer(port: number) {
               // Clean up all deleted sessions (parent + any teammate children)
               for (const id of deletedIds) {
                 liveSessionIds.delete(id);
+                autoRenameEligible.delete(id);
+                autoRenameInFlight.delete(id);
                 clearSessionQueue(id);
                 turnContentBuffers.delete(id);
                 delete turnStates[id];
@@ -1208,6 +1262,7 @@ export function startServer(port: number) {
                 log.info({ client: cid, session: sid(newSessionId), durationMs: Math.round(performance.now() - t0) }, "api: newSession (routed) completed");
                 clientState.currentSessionId = newSessionId;
                 liveSessionIds.add(newSessionId);
+                autoRenameEligible.add(newSessionId);
                 defaultSessionId = newSessionId;
 
                 // Switch client to the new session

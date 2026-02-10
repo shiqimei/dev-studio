@@ -176,6 +176,11 @@ const initialState: AppState = {
   latestPlan: null,
   latestTasks: null,
   unreadCompletedSessions: {},
+  // Kanban persistence
+  kanbanColumnOverrides: {},
+  kanbanSortOrders: {},
+  kanbanPendingPrompts: {},
+  kanbanStateLoaded: false,
 };
 
 // ── Reducer helpers ──
@@ -1189,6 +1194,15 @@ function reducer(state: AppState, action: Action): AppState {
         latestTasks: null,
       };
 
+    case "KANBAN_STATE_LOADED":
+      return {
+        ...state,
+        kanbanColumnOverrides: action.columnOverrides,
+        kanbanSortOrders: action.sortOrders,
+        kanbanPendingPrompts: action.pendingPrompts,
+        kanbanStateLoaded: true,
+      };
+
     default:
       return state;
   }
@@ -1202,6 +1216,7 @@ export interface WsActions {
   send: (text: string, images?: ImageAttachment[], files?: FileAttachment[]) => void;
   interrupt: () => void;
   newSession: () => void;
+  createBacklogSession: (title: string) => Promise<string>;
   deselectSession: () => void;
   resumeSession: (sessionId: string) => void;
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
@@ -1212,6 +1227,7 @@ export interface WsActions {
   requestCommands: () => void;
   requestSubagents: (sessionId: string) => void;
   respondToPermission: (requestId: string, optionId: string, optionName: string) => void;
+  saveKanbanState: (columnOverrides: Record<string, string>, sortOrders: Partial<Record<string, string[]>>, pendingPrompts: Record<string, string>) => void;
 }
 
 interface WsContextValue {
@@ -1220,6 +1236,7 @@ interface WsContextValue {
   send: (text: string, images?: ImageAttachment[], files?: FileAttachment[]) => void;
   interrupt: () => void;
   newSession: () => void;
+  createBacklogSession: (title: string) => Promise<string>;
   deselectSession: () => void;
   resumeSession: (sessionId: string) => void;
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
@@ -1230,6 +1247,7 @@ interface WsContextValue {
   requestCommands: () => void;
   requestSubagents: (sessionId: string) => void;
   respondToPermission: (requestId: string, optionId: string, optionName: string) => void;
+  saveKanbanState: (columnOverrides: Record<string, string>, sortOrders: Partial<Record<string, string[]>>, pendingPrompts: Record<string, string>) => void;
 }
 
 const WsActionsContext = createContext<WsActions | null>(null);
@@ -1282,6 +1300,12 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     resolve: (sessionId: string) => void;
     promise: Promise<string>;
     tempId: string;
+  } | null>(null);
+
+  /** Tracks a pending backlog session creation (no UI switch). */
+  const pendingBacklogRef = useRef<{
+    resolve: (sessionId: string) => void;
+    title: string;
   } | null>(null);
 
   const newSession = useCallback(() => {
@@ -1403,6 +1427,18 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     wsRef.current.send(JSON.stringify({ type: "rename_session", sessionId, title }));
   }, []);
 
+  /** Create a new session in the background for the backlog (no UI switch). */
+  const createBacklogSession = useCallback((title: string): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        reject(new Error("WebSocket not connected"));
+        return;
+      }
+      pendingBacklogRef.current = { resolve, title };
+      wsRef.current.send(JSON.stringify({ type: "new_session" }));
+    });
+  }, []);
+
   const cancelQueued = useCallback((queueId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify({ type: "cancel_queued", queueId }));
@@ -1421,6 +1457,15 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const respondToPermission = useCallback((requestId: string, optionId: string, optionName: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify({ type: "permission_response", requestId, optionId, optionName }));
+  }, []);
+
+  const saveKanbanState = useCallback((
+    columnOverrides: Record<string, string>,
+    sortOrders: Partial<Record<string, string[]>>,
+    pendingPrompts: Record<string, string>,
+  ) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "save_kanban_state", columnOverrides, sortOrders, pendingPrompts }));
   }, []);
 
   const fileSearchCallbacks = useRef<Map<string, (files: string[]) => void>>(new Map());
@@ -1560,6 +1605,22 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           return;
         }
         // Optimistic new session: if creation fails, clear pending state
+        // Backlog session creation: intercept session_switched without navigating
+        if (msg.type === "session_switched" && pendingBacklogRef.current) {
+          const { resolve, title } = pendingBacklogRef.current;
+          pendingBacklogRef.current = null;
+          console.log(`[${pageMs()}] handleMsg session_switched ${msg.sessionId.slice(0, 8)} (backlog session created)`);
+          // Rename the session to the user's backlog title
+          wsRef.current?.send(JSON.stringify({ type: "rename_session", sessionId: msg.sessionId, title }));
+          resolve(msg.sessionId);
+          // Don't dispatch SESSION_SWITCHED — the sessions list broadcast will pick it up
+          return;
+        }
+        if (msg.type === "error" && pendingBacklogRef.current) {
+          console.warn(`[${pageMs()}] backlog session creation failed`);
+          pendingBacklogRef.current = null;
+        }
+
         if (msg.type === "error" && pendingNewSessionRef.current) {
           console.warn(`[${pageMs()}] newSession failed, reverting optimistic switch`);
           pendingNewSessionRef.current = null;
@@ -1577,8 +1638,17 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           try { performance.measure("new-session:server-roundtrip", "new-session:start", "new-session:switched"); } catch {}
           console.log(`[${pageMs()}] handleMsg session_switched ${msg.sessionId.slice(0, 8)} (optimistic resolve) serverRoundtrip=${elapsed}ms`);
           pending.resolve(msg.sessionId);
+          currentSessionRef.current = msg.sessionId;
           dispatch({ type: "SESSION_ID_RESOLVED", pendingId: pending.tempId, realId: msg.sessionId });
           return;
+        }
+
+        // Keep currentSessionRef in sync immediately when a session_switched is
+        // processed (not intercepted by backlog/newSession). This ensures messages
+        // arriving in the same event-loop tick (e.g. route_result right after a
+        // routed session_switched) pass the session filter below.
+        if (msg.type === "session_switched") {
+          currentSessionRef.current = msg.sessionId;
         }
 
         // Defense-in-depth: drop session-scoped messages that don't belong to the
@@ -1659,6 +1729,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       send,
       interrupt,
       newSession,
+      createBacklogSession,
       deselectSession,
       resumeSession: resumeSessionCb,
       resumeSubagent: resumeSubagentCb,
@@ -1669,9 +1740,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       requestCommands,
       requestSubagents,
       respondToPermission,
+      saveKanbanState,
     }),
     // All deps are useCallback([]) or useReducer dispatch — stable references
-    [dispatch, send, interrupt, newSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents, respondToPermission],
+    [dispatch, send, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState],
   );
 
   // ── Hash-based URL routing ──
@@ -1965,6 +2037,9 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       break;
     case "session_subagents":
       dispatch({ type: "SESSION_SUBAGENTS", sessionId: msg.sessionId, children: msg.children ?? [] });
+      break;
+    case "kanban_state":
+      dispatch({ type: "KANBAN_STATE_LOADED", columnOverrides: msg.columnOverrides ?? {}, sortOrders: msg.sortOrders ?? {}, pendingPrompts: msg.pendingPrompts ?? {} });
       break;
   }
 }

@@ -310,6 +310,12 @@ export interface AppState {
   latestTasks: TaskItemEntry[] | null;
   /** Sessions whose turn completed while the user was viewing a different session. */
   unreadCompletedSessions: Record<string, true>;
+
+  // Kanban persistence
+  kanbanColumnOverrides: Record<string, string>;
+  kanbanSortOrders: Partial<Record<string, string[]>>;
+  kanbanPendingPrompts: Record<string, string>;
+  kanbanStateLoaded: boolean;
 }
 
 // ── Actions ─────────────────────────────────
@@ -352,4 +358,5 @@ export type Action =
   | { type: "SESSION_SUBAGENTS"; sessionId: string; children: SubagentChild[] }
   | { type: "SESSION_DELETED"; sessionIds: string[] }
   | { type: "SESSION_ID_RESOLVED"; pendingId: string; realId: string }
-  | { type: "SESSION_DESELECTED" };
+  | { type: "SESSION_DESELECTED" }
+  | { type: "KANBAN_STATE_LOADED"; columnOverrides: Record<string, string>; sortOrders: Partial<Record<string, string[]>>; pendingPrompts: Record<string, string> };

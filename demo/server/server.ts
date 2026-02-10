@@ -4,6 +4,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createAcpConnection, createNewSession, resumeSession } from "./session.js";
 import type { AcpConnection } from "./types.js";
 import { log, bootMs } from "./log.js";
+import { type KanbanState, getProjectDir, readKanbanState, writeKanbanState, cleanKanbanState } from "./kanban.js";
 
 export function startServer(port: number) {
   // ── Client tracking ──
@@ -392,6 +393,14 @@ export function startServer(port: number) {
     connectingPromise = (async () => {
       acpConnection = await createAcpConnection(broadcast);
       log.info({ durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "prewarm: ACP connection ready");
+      // Load kanban state from disk
+      try {
+        const projDir = getResolvedProjectDir();
+        kanbanState = await readKanbanState(projDir);
+        if (kanbanState) log.info("kanban: loaded from disk");
+      } catch (err: any) {
+        log.warn({ err: err.message }, "kanban: load error");
+      }
     })();
     return connectingPromise;
   }
@@ -528,6 +537,16 @@ export function startServer(port: number) {
   // ── Session title cache (for Haiku routing) ──
   const sessionTitleCache = new Map<string, string>();
 
+  // ── Kanban state (server-side cache, persisted to disk) ──
+  let kanbanState: KanbanState | null = null;
+  let kanbanSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  const KANBAN_SAVE_DEBOUNCE_MS = 500;
+
+  function getResolvedProjectDir(): string {
+    const cwd = process.env.ACP_CWD || process.cwd();
+    return getProjectDir(cwd);
+  }
+
   /** Use Haiku via the Claude Agent SDK to decide whether a message relates to the current session. */
   async function routeWithHaiku(messageText: string, sessionTitle: string | null): Promise<boolean> {
     if (!sessionTitle) return true; // untitled → stay in current session
@@ -631,6 +650,15 @@ export function startServer(port: number) {
         }
         log.info({ durationMs: Math.round(t1 - t0), sessions: sessions.length, clients: clients.size }, "api: sessions/list completed");
         broadcast({ type: "sessions", sessions });
+        // Lazy cleanup: prune stale kanban entries for sessions that no longer exist
+        if (kanbanState) {
+          const validIds = new Set(sessions.map((s: any) => s.sessionId));
+          const cleaned = cleanKanbanState(kanbanState, validIds);
+          if (cleaned) {
+            kanbanState = cleaned;
+            writeKanbanState(getResolvedProjectDir(), kanbanState).catch(() => {});
+          }
+        }
       } catch (err: any) {
         log.error({ durationMs: Math.round(performance.now() - t0), err: err.message }, "api: sessions/list error");
       }
@@ -737,6 +765,9 @@ export function startServer(port: number) {
           sendSessionMeta(ws, targetSession);
           sendTurnState(ws, targetSession);
           sendQueueState(ws, targetSession);
+          if (kanbanState) {
+            ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState.columnOverrides, sortOrders: kanbanState.sortOrders, pendingPrompts: kanbanState.pendingPrompts }));
+          }
           log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
 
           // Fire-and-forget: don't block the open handler waiting for session list
@@ -762,6 +793,9 @@ export function startServer(port: number) {
             sendSessionMeta(ws, targetSession);
             sendTurnState(ws, targetSession);
             sendQueueState(ws, targetSession);
+            if (kanbanState) {
+              ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState.columnOverrides, sortOrders: kanbanState.sortOrders, pendingPrompts: kanbanState.pendingPrompts }));
+            }
             log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
             broadcastSessions().catch((err) => log.error({ client: clientId, err: err.message }, "ws: broadcastSessions failed"));
           } catch (err: any) {
@@ -975,6 +1009,22 @@ export function startServer(port: number) {
                   }
                 }
               }
+              // Clean up kanban state for deleted sessions
+              if (kanbanState) {
+                for (const id of deletedIds) {
+                  delete kanbanState.columnOverrides[id];
+                  delete kanbanState.pendingPrompts[id];
+                  for (const order of Object.values(kanbanState.sortOrders)) {
+                    if (!order) continue;
+                    const idx = order.indexOf(id);
+                    if (idx !== -1) order.splice(idx, 1);
+                  }
+                }
+                kanbanState.updatedAt = new Date().toISOString();
+                writeKanbanState(getResolvedProjectDir(), kanbanState).catch((err) =>
+                  log.error({ err: err.message }, "kanban: cleanup save error")
+                );
+              }
               // Notify all clients about the deletion immediately so the merge-based
               // SESSIONS reducer won't re-add them from a stale broadcastSessions() result
               sendToAll(JSON.stringify({ type: "session_deleted", sessionIds: deletedIds }));
@@ -1139,6 +1189,28 @@ export function startServer(port: number) {
               ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
               processPrompt(routeSession, msg.text, msg.images, msg.files);
             }
+            break;
+          }
+
+          case "save_kanban_state": {
+            log.info({ client: cid }, "ws: → save_kanban_state");
+            kanbanState = {
+              version: 1,
+              columnOverrides: msg.columnOverrides ?? {},
+              sortOrders: msg.sortOrders ?? {},
+              pendingPrompts: msg.pendingPrompts ?? {},
+              updatedAt: new Date().toISOString(),
+            };
+            if (kanbanSaveTimer) clearTimeout(kanbanSaveTimer);
+            kanbanSaveTimer = setTimeout(async () => {
+              kanbanSaveTimer = null;
+              try {
+                await writeKanbanState(getResolvedProjectDir(), kanbanState!);
+                log.info("kanban: saved to disk");
+              } catch (err: any) {
+                log.error({ err: err.message }, "kanban: save error");
+              }
+            }, KANBAN_SAVE_DEBOUNCE_MS);
             break;
           }
 

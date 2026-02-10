@@ -2897,4 +2897,54 @@ a, [data-streamdown="link"] { cursor: pointer; }
   background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg));
 }
 
+/* ── Kanban backlog add button ────────────── */
+
+.kanban-add-btn {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.kanban-add-btn:hover {
+  color: var(--color-text);
+  background: var(--color-surface);
+  border-color: var(--color-border);
+}
+
+/* ── Kanban inline new card editor ────────── */
+
+.kanban-new-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  box-shadow: 0 0 0 1px var(--color-border);
+  transition: border-color 0.15s;
+}
+
+.kanban-new-card:focus-within {
+  border-color: var(--color-faint);
+}
+
+.kanban-new-card-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 

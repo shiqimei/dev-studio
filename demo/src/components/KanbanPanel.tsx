@@ -11,6 +11,41 @@ import {
 } from "./SessionSidebar";
 import type { DiskSession, TurnStatus, SubagentChild } from "../types";
 
+// ── Inline backlog card editor ──
+
+function BacklogNewCard({ onSave, onCancel }: { onSave: (text: string) => void; onCancel: () => void }) {
+  const [text, setText] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && text.trim()) {
+      e.preventDefault();
+      onSave(text.trim());
+    } else if (e.key === "Escape") {
+      onCancel();
+    }
+  };
+
+  return (
+    <div className="kanban-new-card">
+      <input
+        ref={inputRef}
+        className="kanban-new-card-input"
+        type="text"
+        placeholder="Describe the task..."
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={handleKeyDown}
+        onBlur={() => { if (!text.trim()) onCancel(); }}
+      />
+    </div>
+  );
+}
+
 // ── Column definitions ──
 
 type KanbanColumnId = "backlog" | "in_progress" | "in_review" | "recurring" | "completed";
@@ -237,6 +272,10 @@ function KanbanColumnView({
   resumeSession,
   resumeSubagent,
   liveSessionIds,
+  editingNewCard,
+  onAddCard,
+  onSaveNewCard,
+  onCancelNewCard,
 }: {
   column: ColumnDef;
   sessions: DiskSession[];
@@ -256,6 +295,10 @@ function KanbanColumnView({
   resumeSession: (sessionId: string) => void;
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
   liveSessionIds: Set<string>;
+  editingNewCard?: boolean;
+  onAddCard?: () => void;
+  onSaveNewCard?: (text: string) => void;
+  onCancelNewCard?: () => void;
 }) {
   const [{ isOver, canDrop }, dropRef] = useDrop({
     accept: DRAG_TYPE,
@@ -280,9 +323,19 @@ function KanbanColumnView({
       <div className="kanban-column-header">
         <span className="kanban-column-title">{column.label}</span>
         <span className="kanban-column-count">{sessions.length}</span>
+        {onAddCard && (
+          <button className="kanban-add-btn" onClick={onAddCard} title="Add backlog item">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
       </div>
       <div className="kanban-column-body">
-        {sessions.length === 0 ? (
+        {editingNewCard && onSaveNewCard && onCancelNewCard && (
+          <BacklogNewCard onSave={onSaveNewCard} onCancel={onCancelNewCard} />
+        )}
+        {sessions.length === 0 && !editingNewCard ? (
           <div className="kanban-column-empty">{column.emptyLabel}</div>
         ) : (
           sessions.map((session, idx) => (
@@ -318,15 +371,24 @@ function KanbanColumnView({
 
 export function KanbanPanel() {
   const state = useWsState();
-  const { resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, deselectSession } = useWsActions();
+  const { resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, send, saveKanbanState } = useWsActions();
 
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [subagentsLoaded, setSubagentsLoaded] = useState<Set<string>>(new Set());
   const [subagentsLoading, setSubagentsLoading] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<{ sessionId: string; title: string | null; x: number; y: number } | null>(null);
-  const [columnOverrides, setColumnOverrides] = useState<Record<string, KanbanColumnId>>({});
-  const [sortOrders, setSortOrders] = useState<Partial<Record<KanbanColumnId, string[]>>>({});
+  const [columnOverrides, setColumnOverrides] = useState<Record<string, KanbanColumnId>>(
+    () => (state.kanbanColumnOverrides as Record<string, KanbanColumnId>) ?? {},
+  );
+  const [sortOrders, setSortOrders] = useState<Partial<Record<KanbanColumnId, string[]>>>(
+    () => (state.kanbanSortOrders as Partial<Record<KanbanColumnId, string[]>>) ?? {},
+  );
+  const [editingNewCard, setEditingNewCard] = useState(false);
+  const [pendingPrompts, setPendingPrompts] = useState<Record<string, string>>(
+    () => state.kanbanPendingPrompts ?? {},
+  );
+  const [optimisticBacklog, setOptimisticBacklog] = useState<DiskSession[]>([]);
 
   const activeSessionId = state.switchingToSessionId ?? state.currentSessionId;
 
@@ -345,6 +407,29 @@ export function KanbanPanel() {
       return changed ? next : prev;
     });
   }, [state.liveTurnStatus]);
+
+  // Sync persisted kanban state from server (runs once when loaded)
+  const kanbanInitialized = useRef(false);
+  useEffect(() => {
+    if (!state.kanbanStateLoaded || kanbanInitialized.current) return;
+    kanbanInitialized.current = true;
+    setColumnOverrides(state.kanbanColumnOverrides as Record<string, KanbanColumnId>);
+    setSortOrders(state.kanbanSortOrders as Partial<Record<KanbanColumnId, string[]>>);
+    setPendingPrompts(state.kanbanPendingPrompts);
+  }, [state.kanbanStateLoaded, state.kanbanColumnOverrides, state.kanbanSortOrders, state.kanbanPendingPrompts]);
+
+  // Debounced save to server when kanban state changes
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!kanbanInitialized.current) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      saveKanbanState(columnOverrides, sortOrders as Partial<Record<string, string[]>>, pendingPrompts);
+    }, 300);
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [columnOverrides, sortOrders, pendingPrompts, saveKanbanState]);
 
   // Auto-expand sidebar tree when navigating to a sub-agent or teammate session
   useEffect(() => {
@@ -451,10 +536,17 @@ export function KanbanPanel() {
       recurring: [],
       completed: [],
     };
+    // Merge real sessions with optimistic backlog entries
+    const optimisticIds = new Set(optimisticBacklog.map((s) => s.sessionId));
     for (const session of state.diskSessions) {
+      // Skip real sessions that duplicate an optimistic entry (shouldn't happen, but guard)
+      if (optimisticIds.has(session.sessionId)) continue;
       const overrideCol = columnOverrides[session.sessionId];
       const col = overrideCol ?? categorizeSession(session, state.liveTurnStatus);
       buckets[col].push(session);
+    }
+    for (const session of optimisticBacklog) {
+      buckets.backlog.push(session);
     }
     const byUpdatedAt = (a: DiskSession, b: DiskSession) => {
       const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
@@ -478,14 +570,97 @@ export function KanbanPanel() {
       }
     }
     return buckets;
-  }, [state.diskSessions, state.liveTurnStatus, columnOverrides, sortOrders]);
+  }, [state.diskSessions, state.liveTurnStatus, columnOverrides, sortOrders, optimisticBacklog]);
 
   // Keep a ref to the latest columnData for use in handleMoveCard
   const columnDataRef = useRef(columnData);
   columnDataRef.current = columnData;
 
+  // Retire optimistic entries once the real session appears in diskSessions.
+  // This prevents flicker: the optimistic card stays visible until the server-
+  // broadcast session is ready to take over, so there's never a gap frame.
+  useEffect(() => {
+    if (optimisticBacklog.length === 0) return;
+    const realIds = new Set(state.diskSessions.map((s) => s.sessionId));
+    const stillPending = optimisticBacklog.filter((s) => !realIds.has(s.sessionId));
+    if (stillPending.length !== optimisticBacklog.length) {
+      setOptimisticBacklog(stillPending);
+    }
+  }, [state.diskSessions, optimisticBacklog]);
+
+  const handleSaveNewCard = useCallback(async (text: string) => {
+    setEditingNewCard(false);
+
+    // Optimistic: show the card immediately in the backlog column
+    const tempId = `backlog:${Date.now()}`;
+    const now = new Date().toISOString();
+    const optimistic: DiskSession = {
+      sessionId: tempId,
+      title: text,
+      updatedAt: now,
+      created: now,
+      messageCount: 0,
+      gitBranch: null,
+      projectPath: null,
+    };
+    setOptimisticBacklog((prev) => [optimistic, ...prev]);
+    setPendingPrompts((prev) => ({ ...prev, [tempId]: text }));
+    setColumnOverrides((prev) => ({ ...prev, [tempId]: "backlog" }));
+
+    try {
+      const sessionId = await createBacklogSession(text);
+      // Swap temp ID → real ID on the optimistic entry (keep it visible until
+      // the SESSIONS broadcast arrives with the real session — the cleanup
+      // useEffect above will retire it at that point, preventing flicker).
+      setOptimisticBacklog((prev) =>
+        prev.map((s) => (s.sessionId === tempId ? { ...s, sessionId: sessionId } : s)),
+      );
+      setPendingPrompts((prev) => {
+        const next = { ...prev, [sessionId]: prev[tempId] || text };
+        delete next[tempId];
+        return next;
+      });
+      setColumnOverrides((prev) => {
+        const next = { ...prev, [sessionId]: "backlog" as KanbanColumnId };
+        delete next[tempId];
+        return next;
+      });
+      setSortOrders((prev) => {
+        const backlogOrder = prev.backlog;
+        if (!backlogOrder) return prev;
+        return { ...prev, backlog: backlogOrder.map((id) => (id === tempId ? sessionId : id)) };
+      });
+    } catch (err) {
+      console.error("Failed to create backlog session:", err);
+      // Roll back the optimistic entry
+      setOptimisticBacklog((prev) => prev.filter((s) => s.sessionId !== tempId));
+      setPendingPrompts((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
+      setColumnOverrides((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
+    }
+  }, [createBacklogSession]);
+
+  // Ref to track pendingPrompts in the move callback without stale closure
+  const pendingPromptsRef = useRef(pendingPrompts);
+  pendingPromptsRef.current = pendingPrompts;
+
   const handleMoveCard = useCallback(
     (dragSessionId: string, sourceCol: KanbanColumnId, targetIndex: number, targetCol: KanbanColumnId) => {
+      // When dragging from backlog to in_progress, send the pending prompt
+      if (sourceCol === "backlog" && targetCol === "in_progress" && pendingPromptsRef.current[dragSessionId]) {
+        const prompt = pendingPromptsRef.current[dragSessionId];
+        setPendingPrompts((prev) => {
+          const next = { ...prev };
+          delete next[dragSessionId];
+          return next;
+        });
+        // Switch to the session and send the prompt
+        resumeSession(dragSessionId);
+        // Small delay to let the session switch complete before sending
+        setTimeout(() => {
+          send(prompt);
+        }, 300);
+      }
+
       // Update column override if cross-column
       if (sourceCol !== targetCol) {
         setColumnOverrides((prev) => ({ ...prev, [dragSessionId]: targetCol }));
@@ -522,15 +697,12 @@ export function KanbanPanel() {
         return next;
       });
     },
-    [],
+    [resumeSession, send],
   );
 
   const handleSelectSession = (sessionId: string) => {
-    if (sessionId === activeSessionId) {
-      deselectSession();
-    } else {
-      resumeSession(sessionId);
-    }
+    if (sessionId === activeSessionId) return;
+    resumeSession(sessionId);
   };
 
   const handleMore = (sessionId: string, title: string | null, e: React.MouseEvent) => {
@@ -569,6 +741,12 @@ export function KanbanPanel() {
             resumeSession={resumeSession}
             resumeSubagent={resumeSubagent}
             liveSessionIds={liveSessionIds}
+            {...(col.id === "backlog" ? {
+              editingNewCard,
+              onAddCard: () => setEditingNewCard(true),
+              onSaveNewCard: handleSaveNewCard,
+              onCancelNewCard: () => setEditingNewCard(false),
+            } : {})}
           />
         ))}
       </div>

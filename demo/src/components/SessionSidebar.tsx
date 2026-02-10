@@ -243,20 +243,16 @@ export const SubagentItem = memo(function SubagentItem({
 
 export function SessionContextMenu({
   sessionId,
-  sessionTitle,
   anchorPos,
   onClose,
 }: {
   sessionId: string;
-  sessionTitle: string | null;
+  sessionTitle?: string | null;
   anchorPos: { x: number; y: number };
   onClose: () => void;
 }) {
-  const { deleteSession, renameSession } = useWs();
+  const { deleteSession } = useWs();
   const menuRef = useRef<HTMLDivElement>(null);
-  const [renaming, setRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState(sessionTitle ?? "");
-  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -270,10 +266,6 @@ export function SessionContextMenu({
 
   const [flipped, setFlipped] = useState(false);
 
-  useEffect(() => {
-    if (renaming) inputRef.current?.focus();
-  }, [renaming]);
-
   useLayoutEffect(() => {
     if (menuRef.current) {
       const rect = menuRef.current.getBoundingClientRect();
@@ -282,14 +274,6 @@ export function SessionContextMenu({
       }
     }
   }, [anchorPos]);
-
-  const submitRename = () => {
-    const trimmed = renameValue.trim();
-    if (trimmed && trimmed !== (sessionTitle ?? "")) {
-      renameSession(sessionId, trimmed);
-    }
-    onClose();
-  };
 
   const style: React.CSSProperties = {
     position: "fixed",
@@ -302,39 +286,15 @@ export function SessionContextMenu({
 
   return (
     <div ref={menuRef} className="session-context-menu" style={style}>
-      {renaming ? (
-        <div className="session-rename-input-wrapper">
-          <input
-            ref={inputRef}
-            className="session-rename-input"
-            value={renameValue}
-            onChange={(e) => setRenameValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") submitRename();
-              if (e.key === "Escape") onClose();
-            }}
-            onBlur={submitRename}
-          />
-        </div>
-      ) : (
-        <>
-          <button
-            className="session-context-item"
-            onClick={() => setRenaming(true)}
-          >
-            Rename
-          </button>
-          <button
-            className="session-context-item delete"
-            onClick={() => {
-              deleteSession(sessionId);
-              onClose();
-            }}
-          >
-            Delete
-          </button>
-        </>
-      )}
+      <button
+        className="session-context-item delete"
+        onClick={() => {
+          deleteSession(sessionId);
+          onClose();
+        }}
+      >
+        Delete
+      </button>
     </div>
   );
 }

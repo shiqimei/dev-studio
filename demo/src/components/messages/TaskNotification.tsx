@@ -4,6 +4,7 @@ import { createCodePlugin, type CodeHighlighterPlugin } from "@streamdown/code";
 import { detectLanguage } from "../../lang-detect";
 import { parseTaskResult } from "./ToolCall";
 import { useTheme } from "../../context/ThemeContext";
+import { colorSwatchRehypePlugins } from "../../color-swatch";
 import type { BundledLanguage } from "shiki";
 
 function withAutoDetect(plugin: CodeHighlighterPlugin): CodeHighlighterPlugin {
@@ -59,7 +60,7 @@ export function TaskNotification({ text }: Props) {
       </div>
       {data.body && (
         <div className="task-notification-body">
-          <Streamdown key={shikiTheme} mode="static" isAnimating={false} plugins={sdPlugins}>
+          <Streamdown key={shikiTheme} mode="static" isAnimating={false} plugins={sdPlugins} rehypePlugins={colorSwatchRehypePlugins}>
             {data.body}
           </Streamdown>
         </div>

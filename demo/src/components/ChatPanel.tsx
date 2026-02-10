@@ -51,6 +51,9 @@ export function ChatPanel({ style }: { style?: React.CSSProperties }) {
   }
 
   const isEmpty = state.messages.length === 0;
+  const pendingPrompt = state.currentSessionId
+    ? state.kanbanPendingPrompts?.[state.currentSessionId]
+    : null;
 
   return (
     <div className="kanban-chat-viewer" style={style}>
@@ -88,7 +91,11 @@ export function ChatPanel({ style }: { style?: React.CSSProperties }) {
           </div>
         ) : (
           <div className="kanban-chat-empty">
-            <span className="text-xs text-dim">No messages yet</span>
+            <span className="text-xs text-dim">
+              {pendingPrompt
+                ? "Drag to In Progress to start this task"
+                : "No messages yet"}
+            </span>
           </div>
         )
       ) : (

@@ -4,6 +4,7 @@ import { createCodePlugin, type CodeHighlighterPlugin } from "@streamdown/code";
 import { detectLanguage } from "../../lang-detect";
 import { stripCliXml } from "../../strip-xml";
 import { useTheme } from "../../context/ThemeContext";
+import { colorSwatchRehypePlugins } from "../../color-swatch";
 import type { BundledLanguage } from "shiki";
 
 /** Wrap the code plugin to auto-detect language for untagged code blocks. */
@@ -39,7 +40,7 @@ export const AssistantMessage = memo(function AssistantMessage({ text, done }: P
   if (!clean) return null;
   return (
     <div className="msg assistant">
-      <Streamdown key={shikiTheme} mode="streaming" isAnimating={!done} plugins={plugins}>
+      <Streamdown key={shikiTheme} mode="streaming" isAnimating={!done} plugins={plugins} rehypePlugins={colorSwatchRehypePlugins}>
         {clean}
       </Streamdown>
     </div>

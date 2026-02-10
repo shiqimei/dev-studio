@@ -547,20 +547,70 @@ export function startServer(port: number) {
     return getProjectDir(cwd);
   }
 
+  /** Extract a compact summary of the last conversation turn for routing context. */
+  async function getLastTurnSummary(sessionId: string): Promise<string | null> {
+    if (!acpConnection) return null;
+    try {
+      const result = await acpConnection.connection.extMethod("sessions/getHistory", { sessionId });
+      const entries = (result.entries as any[]) ?? [];
+      if (entries.length === 0) return null;
+
+      let lastUserText: string | null = null;
+      let lastAssistantText: string | null = null;
+
+      // Walk backwards to find the last user message and last assistant response
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const e = entries[i];
+        if (!lastAssistantText && e.type === "assistant") {
+          const content = e.message?.content as any[] | undefined;
+          if (content) {
+            const texts = content
+              .filter((b: any) => b.type === "text" && b.text)
+              .map((b: any) => b.text as string);
+            if (texts.length > 0) {
+              lastAssistantText = texts.join(" ").slice(0, 300);
+            }
+          }
+        }
+        if (!lastUserText && e.type === "user" && !e.isMeta) {
+          const content = e.message?.content as any[] | undefined;
+          if (content) {
+            const texts = content
+              .filter((b: any) => b.type === "text" && b.text)
+              .map((b: any) => b.text as string);
+            if (texts.length > 0) lastUserText = texts.join(" ").slice(0, 300);
+          }
+        }
+        if (lastUserText && lastAssistantText) break;
+      }
+
+      if (!lastUserText && !lastAssistantText) return null;
+      const parts: string[] = [];
+      if (lastUserText) parts.push(`Last user message: "${lastUserText}"`);
+      if (lastAssistantText) parts.push(`Last assistant response: "${lastAssistantText}"`);
+      return parts.join("\n");
+    } catch (err: any) {
+      log.warn({ err: err.message, sessionId: sessionId.slice(0, 8) }, "route: getLastTurnSummary failed");
+      return null;
+    }
+  }
+
   /** Use Haiku via the Claude Agent SDK to decide whether a message relates to the current session. */
-  async function routeWithHaiku(messageText: string, sessionTitle: string | null): Promise<boolean> {
+  async function routeWithHaiku(messageText: string, sessionTitle: string | null, lastTurnSummary: string | null): Promise<boolean> {
     if (!sessionTitle) return true; // untitled → stay in current session
 
     try {
       const t0 = performance.now();
+      const contextBlock = lastTurnSummary ? `\n${lastTurnSummary}\n` : "";
       const q = query({
         prompt:
-          `Session title: "${sessionTitle}"\nNew message: "${messageText.slice(0, 500)}"\n\n` +
+          `Session title: "${sessionTitle}"${contextBlock}\nNew message: "${messageText.slice(0, 500)}"\n\n` +
           `Reply with ONLY "same" if the message relates to the current session topic, or "new" if it's a different topic that should start a fresh session.`,
         options: {
           systemPrompt:
-            "You are a message router. Given a session title and a new user message, " +
-            "determine if the message should continue in the same session or start a new one. " +
+            "You are a message router. Given a session title, the latest conversation exchange, " +
+            "and a new user message, determine if the message should continue in the same session " +
+            "or start a new one. " +
             'Reply with ONLY "same" or "new".',
           model: "claude-haiku-4-5-20251001",
           maxThinkingTokens: 0,
@@ -1131,7 +1181,8 @@ export function startServer(port: number) {
 
             try {
               const sessionTitle = sessionTitleCache.get(routeSession) ?? null;
-              const shouldContinue = await routeWithHaiku(msg.text, sessionTitle);
+              const lastTurnSummary = await getLastTurnSummary(routeSession);
+              const shouldContinue = await routeWithHaiku(msg.text, sessionTitle, lastTurnSummary);
 
               if (shouldContinue) {
                 // Route to current session

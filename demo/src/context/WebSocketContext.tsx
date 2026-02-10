@@ -1658,6 +1658,21 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           const globalTypes = new Set(["sessions", "session_history", "session_switched", "session_title_update", "session_deleted", "session_subagents", "protocol", "permission_request", "permission_resolved"]);
           if (!globalTypes.has(msg.type)) return;
         }
+
+        // Handle route_result here (not in handleMsg) because it needs access
+        // to pendingRouteRef which is component-scoped.
+        if (msg.type === "route_result") {
+          const pending = pendingRouteRef.current;
+          if (pending) {
+            pendingRouteRef.current = null;
+            console.log(`[${pageMs()}] handleMsg route_result session=${msg.sessionId.slice(0, 8)} isNew=${msg.isNew}`);
+            if (msg.isNew) {
+              dispatch({ type: "SEND_MESSAGE", text: pending.text, images: pending.images, files: pending.files, queueId: pending.queueId });
+            }
+          }
+          return;
+        }
+
         handleMsg(msg, dispatch);
       };
     }
@@ -2001,20 +2016,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
     case "session_title_update":
       dispatch({ type: "SESSION_TITLE_UPDATE", sessionId: msg.sessionId, title: msg.title });
       break;
-    case "route_result": {
-      // Server has decided where to route the message (same session or new).
-      // For "same session": user message was already shown optimistically in send().
-      // For "new session": SESSION_SWITCHED cleared messages[], so re-dispatch SEND_MESSAGE.
-      const pending = pendingRouteRef.current;
-      if (pending) {
-        pendingRouteRef.current = null;
-        console.log(`[${pageMs()}] handleMsg route_result session=${msg.sessionId.slice(0, 8)} isNew=${msg.isNew}`);
-        if (msg.isNew) {
-          dispatch({ type: "SEND_MESSAGE", text: pending.text, images: pending.images, files: pending.files, queueId: pending.queueId });
-        }
-      }
-      break;
-    }
+    // route_result is handled in the onmessage handler (needs pendingRouteRef)
     // User message from another client viewing the same session
     case "user_message":
       dispatch({ type: "SEND_MESSAGE", text: msg.text, images: msg.images, files: msg.files, queueId: msg.queueId });

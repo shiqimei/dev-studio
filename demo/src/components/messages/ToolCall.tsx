@@ -5,6 +5,7 @@ import { createCodePlugin, type CodeHighlighterPlugin } from "@streamdown/code";
 import { detectLanguage } from "../../lang-detect";
 import { toolOverview } from "../../jsonl-convert";
 import { useTheme } from "../../context/ThemeContext";
+import { colorSwatchRehypePlugins } from "../../color-swatch";
 import type { BundledLanguage } from "shiki";
 
 function formatDuration(ms: number): string {
@@ -438,7 +439,7 @@ function TaskResultView({ data }: { data: TaskResultData }) {
       )}
       {data.body && (
         <div className="task-result-body">
-          <Streamdown key={shikiTheme} mode="static" isAnimating={false} plugins={sdPlugins}>
+          <Streamdown key={shikiTheme} mode="static" isAnimating={false} plugins={sdPlugins} rehypePlugins={colorSwatchRehypePlugins}>
             {data.body}
           </Streamdown>
         </div>

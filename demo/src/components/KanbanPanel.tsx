@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { useDrag, useDrop } from "react-dnd";
 import { useWsState, useWsActions } from "../context/WebSocketContext";
 import { ChatInput } from "./ChatInput";
+import { cleanTitle } from "../utils";
 import {
   SessionItem,
   SubagentItem,
@@ -15,14 +16,14 @@ import type { DiskSession, TurnStatus, SubagentChild } from "../types";
 
 function BacklogNewCard({ onSave, onCancel }: { onSave: (text: string) => void; onCancel: () => void }) {
   const [text, setText] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && text.trim()) {
+    if (e.key === "Enter" && !e.shiftKey && text.trim()) {
       e.preventDefault();
       onSave(text.trim());
     } else if (e.key === "Escape") {
@@ -32,13 +33,22 @@ function BacklogNewCard({ onSave, onCancel }: { onSave: (text: string) => void; 
 
   return (
     <div className="kanban-new-card">
-      <input
+      <textarea
         ref={inputRef}
         className="kanban-new-card-input"
-        type="text"
         placeholder="Describe the task..."
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        rows={3}
+        onChange={(e) => {
+          setText(e.target.value);
+          // Auto-resize between 3 and 10 rows
+          const el = e.target;
+          el.style.height = "auto";
+          const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 18;
+          const minH = lineHeight * 3;
+          const maxH = lineHeight * 10;
+          el.style.height = `${Math.min(Math.max(el.scrollHeight, minH), maxH)}px`;
+        }}
         onKeyDown={handleKeyDown}
         onBlur={() => { if (!text.trim()) onCancel(); }}
       />
@@ -57,11 +67,11 @@ interface ColumnDef {
 }
 
 const COLUMNS: ColumnDef[] = [
-  { id: "backlog", label: "Backlog", emptyLabel: "No backlog sessions" },
-  { id: "in_progress", label: "In Progress", emptyLabel: "No active sessions" },
-  { id: "in_review", label: "In Review", emptyLabel: "No sessions to review" },
-  { id: "completed", label: "Completed", emptyLabel: "No completed sessions" },
-  { id: "recurring", label: "Recurring", emptyLabel: "No recurring sessions" },
+  { id: "backlog", label: "Backlog", emptyLabel: "No backlog tasks" },
+  { id: "in_progress", label: "In Progress", emptyLabel: "No active tasks" },
+  { id: "in_review", label: "In Review", emptyLabel: "No tasks to review" },
+  { id: "completed", label: "Completed", emptyLabel: "No completed tasks" },
+  { id: "recurring", label: "Recurring", emptyLabel: "No recurring tasks" },
 ];
 
 // ── Drag-and-drop constants ──
@@ -72,6 +82,7 @@ interface KanbanDragItem {
   sessionId: string;
   sourceColumn: KanbanColumnId;
   index: number;
+  selectedIds?: string[];
 }
 
 function categorizeSession(
@@ -100,9 +111,19 @@ function KanbanSessionRow({
   turnInfo,
   isUnread,
   activeSessionId,
+  isSelected,
+  selectedCards,
+  stackPosition,
+  stackCount,
   onSelect,
+  onCardClick,
   onMore,
   onMoveCard,
+  onStackToggle,
+  hideStackBadge,
+  isEditing,
+  onStartEditing,
+  onSaveTitle,
   expandedSessions,
   toggleExpand,
   expandedAgents,
@@ -119,9 +140,19 @@ function KanbanSessionRow({
   turnInfo?: TurnStatus | null;
   isUnread: boolean;
   activeSessionId: string | null;
+  isSelected: boolean;
+  selectedCards: Set<string>;
+  stackPosition: "none" | "top" | "rest";
+  stackCount: number;
   onSelect: () => void;
+  onCardClick: (sessionId: string, columnId: KanbanColumnId, e: React.MouseEvent) => void;
   onMore: (e: React.MouseEvent) => void;
   onMoveCard: (dragSessionId: string, sourceCol: KanbanColumnId, targetIndex: number, targetCol: KanbanColumnId) => void;
+  onStackToggle?: () => void;
+  hideStackBadge?: boolean;
+  isEditing?: boolean;
+  onStartEditing?: () => void;
+  onSaveTitle?: (title: string) => void;
   expandedSessions: Set<string>;
   toggleExpand: (sessionId: string) => void;
   expandedAgents: Set<string>;
@@ -138,15 +169,29 @@ function KanbanSessionRow({
 
   const [{ isDragging }, dragRef] = useDrag({
     type: DRAG_TYPE,
-    item: (): KanbanDragItem => ({ sessionId: session.sessionId, sourceColumn: columnId, index }),
+    item: (): KanbanDragItem => ({
+      sessionId: session.sessionId,
+      sourceColumn: columnId,
+      index,
+      selectedIds: selectedCards.has(session.sessionId) && selectedCards.size > 1
+        ? Array.from(selectedCards)
+        : undefined,
+    }),
     collect: (monitor) => ({ isDragging: monitor.isDragging() }),
   });
 
   const [, dropRef] = useDrop({
     accept: DRAG_TYPE,
+    canDrop: (item: KanbanDragItem) => {
+      // Disable card-level drop for multi-card drags — let column handle it
+      if (item.selectedIds && item.selectedIds.length > 1) return false;
+      return true;
+    },
     hover: (item: KanbanDragItem, monitor) => {
       if (!cardRef.current) return;
       if (item.sessionId === session.sessionId) return;
+      // Skip card-level reordering for multi-card drag (handled at column level)
+      if (item.selectedIds && item.selectedIds.length > 1) return;
 
       const dragIdx = item.index;
       const hoverIdx = index;
@@ -179,6 +224,48 @@ function KanbanSessionRow({
   // Combine drag and drop refs onto the same element
   dragRef(dropRef(cardRef));
 
+  // Inline title editing
+  const [editValue, setEditValue] = useState("");
+  const editInputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (isEditing) {
+      setEditValue(cleanTitle(session.title));
+      setTimeout(() => {
+        const el = editInputRef.current;
+        if (!el) return;
+        el.focus();
+        // Place cursor at end instead of selecting all
+        el.setSelectionRange(el.value.length, el.value.length);
+        // Auto-resize to fit content
+        el.style.height = "auto";
+        const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 18;
+        const minH = lineHeight * 3;
+        const maxH = lineHeight * 10;
+        el.style.height = `${Math.min(Math.max(el.scrollHeight, minH), maxH)}px`;
+      }, 0);
+    }
+  }, [isEditing, session.title]);
+
+  const commitEdit = () => {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== cleanTitle(session.title) && onSaveTitle) {
+      onSaveTitle(trimmed);
+    } else if (onSaveTitle) {
+      onSaveTitle(""); // signal cancel (no change)
+    }
+  };
+
+  const handleEditKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      commitEdit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      if (onSaveTitle) onSaveTitle(""); // cancel
+    }
+  };
+
   const renderSubagentTree = (children: SubagentChild[], parentSessionId: string, depth: number) => {
     return children.map((child) => {
       const hasKids = (child.children?.length ?? 0) > 0;
@@ -209,37 +296,92 @@ function KanbanSessionRow({
     });
   };
 
+  const stackClass = stackPosition === "top" ? " kanban-stack-top"
+    : stackPosition === "rest" ? " kanban-stack-rest" : "";
+
   return (
-    <div ref={cardRef} className={isDragging ? "kanban-card-dragging" : ""}>
-      <div className={`session-row${isActive ? " session-row-active" : ""}`}>
-        <button
-          onClick={(e) => { e.stopPropagation(); toggleExpand(session.sessionId); }}
-          className={`session-chevron-slot${isExpanded ? " expanded" : ""}`}
-          tabIndex={0}
-          title={hasChildren ? `${session.children!.length} sub-agent${session.children!.length > 1 ? "s" : ""}` : "Show sub-agents"}
-        >
-          {isLoadingSubagents ? (
-            <span className="sidebar-spinner" style={{ width: 12, height: 12 }} />
-          ) : (
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-              <path d="M4.5 2.5L7.5 6L4.5 9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+    <div
+      ref={cardRef}
+      className={`kanban-card-wrap${isDragging ? " kanban-card-dragging" : ""}${isSelected ? " kanban-card-selected" : ""}${stackClass}`}
+      onClickCapture={(e) => {
+        if (e.shiftKey) {
+          e.stopPropagation();
+          e.preventDefault();
+          onCardClick(session.sessionId, columnId, e);
+        }
+      }}
+    >
+      {stackPosition === "top" && stackCount > 1 && (
+        <>
+          {!hideStackBadge && (
+            <div
+              className={`kanban-stack-badge${onStackToggle ? " kanban-stack-badge-clickable" : ""}`}
+              onClick={onStackToggle ? (e) => { e.stopPropagation(); onStackToggle(); } : undefined}
+            >
+              {stackCount}
+            </div>
           )}
-        </button>
-        <div className="flex-1 min-w-0">
-          <SessionItem
-            session={session}
-            isActive={isActive}
-            isLive={isLive}
-            turnStatus={session.turnStatus}
-            turnInfo={turnInfo}
-            hasChildren={hasChildren}
-            isUnread={isUnread}
-            onClick={onSelect}
-            onMore={onMore}
+          {/* Peek tabs behind the top card */}
+          {Array.from({ length: Math.min(stackCount - 1, 3) }, (_, i) => (
+            <div
+              key={i}
+              className={`kanban-stack-peek kanban-stack-peek-${i + 1}${onStackToggle ? " kanban-stack-peek-clickable" : ""}`}
+              onClick={onStackToggle ? (e) => { e.stopPropagation(); onStackToggle(); } : undefined}
+            />
+          ))}
+        </>
+      )}
+      {isEditing ? (
+        <div className="kanban-card-editing">
+          <textarea
+            ref={editInputRef}
+            className="kanban-card-edit-input"
+            value={editValue}
+            rows={3}
+            onChange={(e) => {
+              setEditValue(e.target.value);
+              const el = e.target;
+              el.style.height = "auto";
+              const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 18;
+              const minH = lineHeight * 3;
+              const maxH = lineHeight * 10;
+              el.style.height = `${Math.min(Math.max(el.scrollHeight, minH), maxH)}px`;
+            }}
+            onKeyDown={handleEditKeyDown}
+            onBlur={commitEdit}
           />
         </div>
-      </div>
+      ) : (
+        <div className={`session-row${isActive ? " session-row-active" : ""}${isSelected ? " session-row-selected" : ""}`}>
+          <button
+            onClick={(e) => { e.stopPropagation(); toggleExpand(session.sessionId); }}
+            className={`session-chevron-slot${isExpanded ? " expanded" : ""}`}
+            tabIndex={0}
+            title={hasChildren ? `${session.children!.length} sub-agent${session.children!.length > 1 ? "s" : ""}` : "Show sub-agents"}
+          >
+            {isLoadingSubagents ? (
+              <span className="sidebar-spinner" style={{ width: 12, height: 12 }} />
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M4.5 2.5L7.5 6L4.5 9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
+          </button>
+          <div className="flex-1 min-w-0">
+            <SessionItem
+              session={session}
+              isActive={isActive}
+              isLive={isLive}
+              turnStatus={session.turnStatus}
+              turnInfo={turnInfo}
+              hasChildren={hasChildren}
+              isUnread={isUnread}
+              onClick={onSelect}
+              onMore={onMore}
+            />
+          </div>
+        </div>
+      )}
       {isExpanded && (
         hasChildren
           ? renderSubagentTree(session.children!, session.sessionId, 0)
@@ -261,9 +403,15 @@ function KanbanColumnView({
   currentSessionId,
   turnStatus,
   unreadCompletedSessions,
+  selectedCards,
+  onCardClick,
   onSelectSession,
   onMore,
   onMoveCard,
+  onBulkMove,
+  editingCardId,
+  onStartEditing,
+  onSaveTitle,
   expandedSessions,
   toggleExpand,
   expandedAgents,
@@ -284,9 +432,15 @@ function KanbanColumnView({
   currentSessionId: string | null;
   turnStatus: TurnStatus | null;
   unreadCompletedSessions: Record<string, true>;
-  onSelectSession: (sessionId: string) => void;
+  selectedCards: Set<string>;
+  onCardClick: (sessionId: string, columnId: KanbanColumnId, e: React.MouseEvent) => void;
+  onSelectSession: (sessionId: string, columnId: KanbanColumnId) => void;
   onMore: (sessionId: string, title: string | null, e: React.MouseEvent) => void;
   onMoveCard: (dragSessionId: string, sourceCol: KanbanColumnId, targetIndex: number, targetCol: KanbanColumnId) => void;
+  onBulkMove?: (sessionIds: string[], targetCol: KanbanColumnId) => void;
+  editingCardId?: string | null;
+  onStartEditing?: (sessionId: string) => void;
+  onSaveTitle?: (sessionId: string, title: string) => void;
   expandedSessions: Set<string>;
   toggleExpand: (sessionId: string) => void;
   expandedAgents: Set<string>;
@@ -300,16 +454,30 @@ function KanbanColumnView({
   onSaveNewCard?: (text: string) => void;
   onCancelNewCard?: () => void;
 }) {
+  const AUTO_STACK_THRESHOLD = 5;
+  const [autoStackExpanded, setAutoStackExpanded] = useState(false);
+  const shouldAutoStack = column.id === "completed" && sessions.length > AUTO_STACK_THRESHOLD && !autoStackExpanded;
+  const autoStackCount = sessions.length - AUTO_STACK_THRESHOLD;
+
   const [{ isOver, canDrop }, dropRef] = useDrop({
     accept: DRAG_TYPE,
     drop: (item: KanbanDragItem, monitor) => {
       // If a card-level drop target already handled this, skip
       if (monitor.didDrop()) return;
-      // Drop on empty column space — move card to end of this column
-      onMoveCard(item.sessionId, item.sourceColumn, sessions.length, column.id);
+      // Multi-card drag: move all selected cards to this column
+      if (item.selectedIds && item.selectedIds.length > 1 && onBulkMove) {
+        onBulkMove(item.selectedIds, column.id);
+        return;
+      }
+      // Drop on empty column space — for completed column, drop at top by default
+      // (card-level hover reordering already handles intentional positioning)
+      const dropIndex = column.id === "completed" && item.sourceColumn !== "completed"
+        ? 0
+        : sessions.length;
+      onMoveCard(item.sessionId, item.sourceColumn, dropIndex, column.id);
     },
     collect: (monitor) => ({
-      isOver: monitor.isOver({ shallow: true }),
+      isOver: monitor.isOver(),
       canDrop: monitor.canDrop(),
     }),
   });
@@ -323,8 +491,8 @@ function KanbanColumnView({
       <div className="kanban-column-header">
         <span className="kanban-column-title">{column.label}</span>
         <span className="kanban-column-count">{sessions.length}</span>
-        {onAddCard && (
-          <button className="kanban-add-btn" onClick={onAddCard} title="Add backlog item">
+        {onAddCard && !editingNewCard && (
+          <button className="kanban-add-btn" onClick={onAddCard} title="Add a card">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
               <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
@@ -338,31 +506,72 @@ function KanbanColumnView({
         {sessions.length === 0 && !editingNewCard ? (
           <div className="kanban-column-empty">{column.emptyLabel}</div>
         ) : (
-          sessions.map((session, idx) => (
-            <KanbanSessionRow
-              key={session.sessionId}
-              session={session}
-              columnId={column.id}
-              index={idx}
-              isActive={session.sessionId === activeSessionId}
-              isLive={liveSessionIds.has(session.sessionId)}
-              turnInfo={liveTurnStatus[session.sessionId] ?? (session.sessionId === currentSessionId ? turnStatus : null)}
-              isUnread={!!unreadCompletedSessions[session.sessionId]}
-              activeSessionId={activeSessionId}
-              onSelect={() => onSelectSession(session.sessionId)}
-              onMore={(e) => onMore(session.sessionId, session.title, e)}
-              onMoveCard={onMoveCard}
-              expandedSessions={expandedSessions}
-              toggleExpand={toggleExpand}
-              expandedAgents={expandedAgents}
-              toggleAgentExpand={toggleAgentExpand}
-              subagentsLoading={subagentsLoading}
-              resumeSession={resumeSession}
-              resumeSubagent={resumeSubagent}
-            />
-          ))
+          sessions.map((session, idx) => {
+            // Compute stack position: first selected card in column is "top",
+            // all other selected cards are "rest" (collapsed behind top card)
+            const isSel = selectedCards.has(session.sessionId);
+            const selCount = selectedCards.size;
+            let stackPos: "none" | "top" | "rest" = "none";
+            let stackCnt = selCount;
+            let stackToggle: (() => void) | undefined;
+            let hideBadge = false;
+            if (isSel && selCount > 1) {
+              // Selection-based stacking takes priority
+              const firstSelectedIdx = sessions.findIndex((s) => selectedCards.has(s.sessionId));
+              stackPos = idx === firstSelectedIdx ? "top" : "rest";
+            } else if (shouldAutoStack && idx >= AUTO_STACK_THRESHOLD) {
+              // Auto-stack older cards in completed column
+              stackPos = idx === AUTO_STACK_THRESHOLD ? "top" : "rest";
+              stackCnt = autoStackCount;
+              hideBadge = true;
+              if (idx === AUTO_STACK_THRESHOLD) {
+                stackToggle = () => setAutoStackExpanded(true);
+              }
+            }
+            return (
+              <KanbanSessionRow
+                key={session.sessionId}
+                session={session}
+                columnId={column.id}
+                index={idx}
+                isActive={session.sessionId === activeSessionId}
+                isLive={liveSessionIds.has(session.sessionId)}
+                turnInfo={liveTurnStatus[session.sessionId] ?? (session.sessionId === currentSessionId ? turnStatus : null)}
+                isUnread={!!unreadCompletedSessions[session.sessionId]}
+                activeSessionId={activeSessionId}
+                isSelected={isSel}
+                selectedCards={selectedCards}
+                stackPosition={stackPos}
+                stackCount={stackCnt}
+                onSelect={() => onSelectSession(session.sessionId, column.id)}
+                onCardClick={onCardClick}
+                onMore={(e) => onMore(session.sessionId, session.title, e)}
+                onMoveCard={onMoveCard}
+                onStackToggle={stackToggle}
+                hideStackBadge={hideBadge}
+                isEditing={editingCardId === session.sessionId}
+                onStartEditing={onStartEditing ? () => onStartEditing(session.sessionId) : undefined}
+                onSaveTitle={onSaveTitle ? (title) => onSaveTitle(session.sessionId, title) : undefined}
+                expandedSessions={expandedSessions}
+                toggleExpand={toggleExpand}
+                expandedAgents={expandedAgents}
+                toggleAgentExpand={toggleAgentExpand}
+                subagentsLoading={subagentsLoading}
+                resumeSession={resumeSession}
+                resumeSubagent={resumeSubagent}
+              />
+            );
+          })
         )}
       </div>
+      {column.id === "completed" && autoStackExpanded && sessions.length > AUTO_STACK_THRESHOLD && (
+        <div className="kanban-column-footer">
+          <button className="kanban-add-card-link" onClick={() => setAutoStackExpanded(false)}>
+            Show less
+          </button>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -373,6 +582,7 @@ export function KanbanPanel() {
   const state = useWsState();
   const { resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, send, saveKanbanState } = useWsActions();
 
+  const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [subagentsLoaded, setSubagentsLoaded] = useState<Set<string>>(new Set());
@@ -384,13 +594,20 @@ export function KanbanPanel() {
   const [sortOrders, setSortOrders] = useState<Partial<Record<KanbanColumnId, string[]>>>(
     () => (state.kanbanSortOrders as Partial<Record<KanbanColumnId, string[]>>) ?? {},
   );
-  const [editingNewCard, setEditingNewCard] = useState(false);
+  const [editingNewCard, setEditingNewCard] = useState<KanbanColumnId | null>(null);
   const [pendingPrompts, setPendingPrompts] = useState<Record<string, string>>(
     () => state.kanbanPendingPrompts ?? {},
   );
   const [optimisticBacklog, setOptimisticBacklog] = useState<DiskSession[]>([]);
+  const [selectedCards, setSelectedCards] = useState<Set<string>>(new Set());
+  const lastClickedCardRef = useRef<{ sessionId: string; columnId: KanbanColumnId } | null>(null);
 
   const activeSessionId = state.switchingToSessionId ?? state.currentSessionId;
+
+  const clearSelection = useCallback(() => {
+    setSelectedCards(new Set());
+    lastClickedCardRef.current = null;
+  }, []);
 
   // Auto-clear overrides when a session goes in_progress (so it moves to the right column automatically)
   useEffect(() => {
@@ -546,7 +763,8 @@ export function KanbanPanel() {
       buckets[col].push(session);
     }
     for (const session of optimisticBacklog) {
-      buckets.backlog.push(session);
+      const overrideCol = columnOverrides[session.sessionId];
+      buckets[overrideCol ?? "backlog"].push(session);
     }
     const byUpdatedAt = (a: DiskSession, b: DiskSession) => {
       const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
@@ -588,11 +806,11 @@ export function KanbanPanel() {
     }
   }, [state.diskSessions, optimisticBacklog]);
 
-  const handleSaveNewCard = useCallback(async (text: string) => {
-    setEditingNewCard(false);
+  const handleSaveNewCard = useCallback(async (text: string, targetCol: KanbanColumnId = "backlog") => {
+    setEditingNewCard(null);
 
-    // Optimistic: show the card immediately in the backlog column
-    const tempId = `backlog:${Date.now()}`;
+    // Optimistic: show the card immediately in the target column
+    const tempId = `${targetCol}:${Date.now()}`;
     const now = new Date().toISOString();
     const optimistic: DiskSession = {
       sessionId: tempId,
@@ -604,8 +822,15 @@ export function KanbanPanel() {
       projectPath: null,
     };
     setOptimisticBacklog((prev) => [optimistic, ...prev]);
-    setPendingPrompts((prev) => ({ ...prev, [tempId]: text }));
-    setColumnOverrides((prev) => ({ ...prev, [tempId]: "backlog" }));
+    if (targetCol === "backlog") {
+      setPendingPrompts((prev) => ({ ...prev, [tempId]: text }));
+    }
+    setColumnOverrides((prev) => ({ ...prev, [tempId]: targetCol }));
+    // Prepend to target column sort order so the new card appears at the top
+    setSortOrders((prev) => {
+      const order = prev[targetCol] ?? [];
+      return { ...prev, [targetCol]: [tempId, ...order] };
+    });
 
     try {
       const sessionId = await createBacklogSession(text);
@@ -615,29 +840,39 @@ export function KanbanPanel() {
       setOptimisticBacklog((prev) =>
         prev.map((s) => (s.sessionId === tempId ? { ...s, sessionId: sessionId } : s)),
       );
-      setPendingPrompts((prev) => {
-        const next = { ...prev, [sessionId]: prev[tempId] || text };
-        delete next[tempId];
-        return next;
-      });
+      if (targetCol === "backlog") {
+        setPendingPrompts((prev) => {
+          const next = { ...prev, [sessionId]: prev[tempId] || text };
+          delete next[tempId];
+          return next;
+        });
+      }
       setColumnOverrides((prev) => {
-        const next = { ...prev, [sessionId]: "backlog" as KanbanColumnId };
+        const next = { ...prev, [sessionId]: targetCol };
         delete next[tempId];
         return next;
       });
       setSortOrders((prev) => {
-        const backlogOrder = prev.backlog;
-        if (!backlogOrder) return prev;
-        return { ...prev, backlog: backlogOrder.map((id) => (id === tempId ? sessionId : id)) };
+        const order = prev[targetCol];
+        if (!order) return prev;
+        return { ...prev, [targetCol]: order.map((id) => (id === tempId ? sessionId : id)) };
       });
+
+      // If creating directly in in_progress, resume and send the prompt immediately
+      if (targetCol === "in_progress") {
+        resumeSession(sessionId);
+        setTimeout(() => send(text), 300);
+      }
     } catch (err) {
-      console.error("Failed to create backlog session:", err);
+      console.error("Failed to create session:", err);
       // Roll back the optimistic entry
       setOptimisticBacklog((prev) => prev.filter((s) => s.sessionId !== tempId));
-      setPendingPrompts((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
+      if (targetCol === "backlog") {
+        setPendingPrompts((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
+      }
       setColumnOverrides((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
     }
-  }, [createBacklogSession]);
+  }, [createBacklogSession, resumeSession, send]);
 
   // Ref to track pendingPrompts in the move callback without stale closure
   const pendingPromptsRef = useRef(pendingPrompts);
@@ -658,6 +893,21 @@ export function KanbanPanel() {
         // Small delay to let the session switch complete before sending
         setTimeout(() => {
           send(prompt);
+        }, 300);
+      }
+
+      // When dragging from in_review back to in_progress, retry with a refined prompt
+      if (sourceCol === "in_review" && targetCol === "in_progress") {
+        resumeSession(dragSessionId);
+        setTimeout(() => {
+          send(
+            "Your previous attempt didn't fully meet expectations. Please re-examine the task with fresh eyes:\n\n" +
+            "- Ultrathink about the problem — consider edge cases and alternative approaches you may have missed\n" +
+            "- Try a fundamentally different strategy than what you used before\n" +
+            "- Be more thorough and creative in your solution\n" +
+            "- If you got stuck on something, take a step back and try a completely different angle\n\n" +
+            "Please retry the task now.",
+          );
         }, 300);
       }
 
@@ -700,10 +950,138 @@ export function KanbanPanel() {
     [resumeSession, send],
   );
 
-  const handleSelectSession = (sessionId: string) => {
-    if (sessionId === activeSessionId) return;
+  const handleCardClick = useCallback(
+    (sessionId: string, columnId: KanbanColumnId, _e: React.MouseEvent) => {
+      const anchor = lastClickedCardRef.current;
+      if (anchor && anchor.columnId === columnId) {
+        // Shift+click: range-select from anchor to this card
+        const sessions = columnDataRef.current[columnId];
+        const anchorIdx = sessions.findIndex((s) => s.sessionId === anchor.sessionId);
+        const curIdx = sessions.findIndex((s) => s.sessionId === sessionId);
+        if (anchorIdx !== -1 && curIdx !== -1) {
+          const start = Math.min(anchorIdx, curIdx);
+          const end = Math.max(anchorIdx, curIdx);
+          const rangeIds = sessions.slice(start, end + 1).map((s) => s.sessionId);
+          setSelectedCards(new Set(rangeIds));
+          return;
+        }
+      }
+      // No anchor or different column — just select this single card and set as anchor
+      lastClickedCardRef.current = { sessionId, columnId };
+      setSelectedCards(new Set([sessionId]));
+    },
+    [],
+  );
+
+  const handleBulkMove = useCallback(
+    (sessionIds: string[], targetCol: KanbanColumnId) => {
+      // Update column overrides for all cards
+      setColumnOverrides((prev) => {
+        const next = { ...prev };
+        for (const id of sessionIds) {
+          next[id] = targetCol;
+        }
+        return next;
+      });
+      // Update sort orders: remove from all source columns, append to target
+      setSortOrders((prev) => {
+        const next = { ...prev };
+        const idSet = new Set(sessionIds);
+        // Remove from all columns
+        for (const colId of Object.keys(next) as KanbanColumnId[]) {
+          if (next[colId]) {
+            next[colId] = next[colId]!.filter((id) => !idSet.has(id));
+          }
+        }
+        // Append to target
+        if (!next[targetCol]) {
+          next[targetCol] = columnDataRef.current[targetCol].map((s) => s.sessionId);
+        }
+        const targetArr = next[targetCol]!.filter((id) => !idSet.has(id));
+        // For completed column, prepend so new cards appear at top
+        if (targetCol === "completed") {
+          targetArr.unshift(...sessionIds);
+        } else {
+          targetArr.push(...sessionIds);
+        }
+        next[targetCol] = targetArr;
+        return next;
+      });
+      // Handle pending prompts for backlog → in_progress
+      if (targetCol === "in_progress") {
+        let sentFirst = false;
+        for (const id of sessionIds) {
+          if (!sentFirst && pendingPromptsRef.current[id]) {
+            const prompt = pendingPromptsRef.current[id];
+            setPendingPrompts((prev) => {
+              const next = { ...prev };
+              delete next[id];
+              return next;
+            });
+            resumeSession(id);
+            setTimeout(() => send(prompt), 300);
+            sentFirst = true;
+          } else if (!sentFirst) {
+            // Check if this session was in the in_review column (retry flow)
+            const col = columnOverrides[id] ?? categorizeSession(
+              state.diskSessions.find((s) => s.sessionId === id)!,
+              state.liveTurnStatus,
+            );
+            if (col === "in_review") {
+              resumeSession(id);
+              setTimeout(() => send(
+                "Your previous attempt didn't fully meet expectations. Please re-examine the task with fresh eyes:\n\n" +
+                "- Ultrathink about the problem — consider edge cases and alternative approaches you may have missed\n" +
+                "- Try a fundamentally different strategy than what you used before\n" +
+                "- Be more thorough and creative in your solution\n" +
+                "- If you got stuck on something, take a step back and try a completely different angle\n\n" +
+                "Please retry the task now.",
+              ), 300);
+              sentFirst = true;
+            }
+          }
+        }
+      }
+      clearSelection();
+    },
+    [resumeSession, send, clearSelection, columnOverrides, state.diskSessions, state.liveTurnStatus],
+  );
+
+  const handleStartEditing = useCallback((sessionId: string) => {
+    setEditingCardId(sessionId);
+  }, []);
+
+  const handleSaveTitle = useCallback((sessionId: string, title: string) => {
+    setEditingCardId(null);
+    if (title) {
+      renameSession(sessionId, title);
+    }
+  }, [renameSession]);
+
+  const handleSelectSession = (sessionId: string, columnId: KanbanColumnId) => {
+    clearSelection();
+    // Normal click sets the anchor for future shift+click range selection
+    lastClickedCardRef.current = { sessionId, columnId };
+    if (sessionId === activeSessionId) {
+      // Already active — enter inline edit mode
+      setEditingCardId(sessionId);
+      return;
+    }
+    setEditingCardId(null);
     resumeSession(sessionId);
   };
+
+  // Clear selection and editing on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (editingCardId) setEditingCardId(null);
+        if (selectedCards.size > 0) clearSelection();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [selectedCards.size, clearSelection, editingCardId]);
 
   const handleMore = (sessionId: string, title: string | null, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -730,9 +1108,15 @@ export function KanbanPanel() {
             currentSessionId={state.currentSessionId}
             turnStatus={state.turnStatus}
             unreadCompletedSessions={state.unreadCompletedSessions}
+            selectedCards={selectedCards}
+            onCardClick={handleCardClick}
             onSelectSession={handleSelectSession}
             onMore={handleMore}
             onMoveCard={handleMoveCard}
+            onBulkMove={handleBulkMove}
+            editingCardId={editingCardId}
+            onStartEditing={handleStartEditing}
+            onSaveTitle={handleSaveTitle}
             expandedSessions={expandedSessions}
             toggleExpand={toggleExpand}
             expandedAgents={expandedAgents}
@@ -741,11 +1125,11 @@ export function KanbanPanel() {
             resumeSession={resumeSession}
             resumeSubagent={resumeSubagent}
             liveSessionIds={liveSessionIds}
-            {...(col.id === "backlog" ? {
-              editingNewCard,
-              onAddCard: () => setEditingNewCard(true),
-              onSaveNewCard: handleSaveNewCard,
-              onCancelNewCard: () => setEditingNewCard(false),
+            {...((col.id === "backlog" || col.id === "in_progress") ? {
+              editingNewCard: editingNewCard === col.id,
+              onAddCard: () => setEditingNewCard(col.id),
+              onSaveNewCard: (text: string) => handleSaveNewCard(text, col.id),
+              onCancelNewCard: () => setEditingNewCard(null),
             } : {})}
           />
         ))}

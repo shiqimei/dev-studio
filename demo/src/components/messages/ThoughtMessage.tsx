@@ -1,23 +1,21 @@
-import { useState, memo } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 
 interface Props {
   text: string;
   isLatest: boolean;
 }
 
-function hintText(text: string): string {
-  // Extract first 1-2 sentences as a preview
-  const match = text.match(/^(.+?[.!?])\s+(.+?[.!?])?/s);
-  if (match) {
-    const hint = match[2] ? match[1] + " " + match[2] : match[1];
-    return hint.length > 120 ? hint.slice(0, 120) + "..." : hint;
-  }
-  return text.length > 120 ? text.slice(0, 120) + "..." : text;
-}
-
 export const ThoughtMessage = memo(function ThoughtMessage({ text, isLatest }: Props) {
   if (!text) return null;
-  const [open, setOpen] = useState(isLatest);
+  const [open, setOpen] = useState(false);
+  const preRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll collapsed preview to bottom so latest lines are visible
+  useEffect(() => {
+    if (!open && preRef.current) {
+      preRef.current.scrollTop = preRef.current.scrollHeight;
+    }
+  }, [text, open]);
 
   return (
     <div className="tool-call">
@@ -26,11 +24,16 @@ export const ThoughtMessage = memo(function ThoughtMessage({ text, isLatest }: P
         onClick={() => setOpen(!open)}
       >
         <span className="tool-kind thinking">Thinking</span>
-        <span className="tool-title thought-hint">
-          {!open && hintText(text)}
+        <span className="tool-title thought-hint" style={{ fontStyle: "italic" }}>
+          {open ? "Click to collapse" : "Click to expand"}
         </span>
       </div>
-      {open && <div className="tool-content thought-content">{text}</div>}
+      <div
+        ref={preRef}
+        className={`tool-content thought-content ${open ? "thought-expanded" : "thought-collapsed"}`}
+      >
+        {text}
+      </div>
     </div>
   );
 });

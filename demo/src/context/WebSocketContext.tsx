@@ -320,12 +320,24 @@ function reducer(state: AppState, action: Action): AppState {
         };
       }
 
-      // Not busy — optimistic: show the message immediately and start a new turn
+      // Not busy — optimistic: show the message immediately and start a new turn.
+      // Set a preliminary turnStatus so the running bar appears instantly
+      // (before TURN_START arrives from the server).
+      const preliminaryTs: TurnStatus = {
+        status: "in_progress",
+        startedAt: Date.now(),
+        activity: "brewing",
+        approxTokens: 0,
+        thinkingDurationMs: 0,
+      };
       return {
         ...state,
         busy: true,
         currentTurnId: null,
-        turnStatus: null,
+        turnStatus: preliminaryTs,
+        liveTurnStatus: state.currentSessionId
+          ? { ...state.liveTurnStatus, [state.currentSessionId]: preliminaryTs }
+          : state.liveTurnStatus,
         messages: [...finalizeStreaming(state.messages, state.currentTurnId), userTurn],
       };
     }
@@ -764,6 +776,11 @@ function reducer(state: AppState, action: Action): AppState {
         liveTurnStatus: state.currentSessionId && completedStatus
           ? { ...state.liveTurnStatus, [state.currentSessionId]: completedStatus }
           : state.liveTurnStatus,
+        // Don't mark the currently-viewed session as unread — the user is already
+        // watching it complete, so it should go straight to "completed" in the kanban
+        // board rather than getting stuck in "in review". Other sessions that complete
+        // in the background are marked unread via the SESSIONS reducer instead.
+        unreadCompletedSessions: state.unreadCompletedSessions,
         messages: finalizedMessages,
       };
     }
@@ -882,9 +899,8 @@ function reducer(state: AppState, action: Action): AppState {
             thinkingDurationMs: s.turnThinkingDurationMs ?? existing.thinkingDurationMs,
             approxTokens: existing.approxTokens,
           };
-          if (s.sessionId !== state.currentSessionId) {
-            unread[s.sessionId] = true;
-          }
+          // Always mark as needing review (moves to "in review" column)
+          unread[s.sessionId] = true;
         } else if (lts[s.sessionId]?.status === "completed") {
           // Already completed — keep stats for sidebar display. Only clean unread state.
           if (!s.turnStatus) {

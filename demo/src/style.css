@@ -532,6 +532,17 @@ a, [data-streamdown="link"] { cursor: pointer; }
 
 .thought-content {
   font-style: italic;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.thought-collapsed {
+  max-height: calc(1.5em * 3);
+  overflow: hidden;
+}
+
+.thought-expanded {
+  max-height: none;
 }
 
 .msg.system {
@@ -1681,8 +1692,12 @@ a, [data-streamdown="link"] { cursor: pointer; }
 
 /* ── Resize handle active state ───────────── */
 
+#resize-handle {
+  background: var(--color-border);
+}
+
 #resize-handle.active {
-  background: var(--color-dim);
+  background: var(--color-faint);
 }
 
 /* ── Sidebar toggle button ────────────────── */
@@ -2299,7 +2314,7 @@ a, [data-streamdown="link"] { cursor: pointer; }
   font-size: 10px;
   line-height: 1;
   flex-shrink: 0;
-  transform: translateY(1.5px);
+  vertical-align: middle;
 }
 
 .sidebar-in-progress {
@@ -2645,8 +2660,8 @@ a, [data-streamdown="link"] { cursor: pointer; }
 .kanban-board {
   flex: 1;
   display: flex;
-  gap: 1px;
-  background: var(--color-border);
+  gap: 0;
+  background: transparent;
   min-height: 0;
   overflow-x: auto;
 }
@@ -2714,7 +2729,7 @@ a, [data-streamdown="link"] { cursor: pointer; }
 /* ── Kanban card (session-row inside kanban columns) ── */
 
 .kanban-column-body .session-row {
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-surface), white 60%);
   border: 1px solid var(--color-border);
   padding: 2px 0;
   transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
@@ -2726,14 +2741,25 @@ a, [data-streamdown="link"] { cursor: pointer; }
 }
 
 .kanban-column-body .session-row-active {
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 1px var(--color-accent);
-  background: var(--color-accent-dim);
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.035), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
 }
 
 .kanban-column-body .session-row-active:hover {
-  border-color: var(--color-accent);
-  background: var(--color-accent-dim);
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.035), 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+}
+
+.kanban-column-body .session-row-active .session-item-title,
+.kanban-column-body .session-row-active .session-item-meta,
+.kanban-column-body .session-row-active .sidebar-status-star.active,
+.kanban-column-body .session-row-active .sidebar-status-star.idle,
+.kanban-column-body .session-row-active .sidebar-status-star,
+.kanban-column-body .session-row-active .sidebar-in-progress,
+.kanban-column-body .session-row-active .session-chevron-slot {
+  color: #1a1a1a;
 }
 
 /* 2-line clamp for session titles inside kanban cards */
@@ -2792,11 +2818,11 @@ a, [data-streamdown="link"] { cursor: pointer; }
 /* ── Panel resize handle (kanban ↔ chat) ──── */
 
 .panel-resize-handle {
-  width: 3px;
+  width: 1px;
   flex-shrink: 0;
   cursor: col-resize;
-  background: transparent;
-  transition: background 0.15s;
+  background: var(--color-border);
+  transition: background 0.15s, width 0.15s;
   position: relative;
 }
 
@@ -2811,7 +2837,7 @@ a, [data-streamdown="link"] { cursor: pointer; }
 
 .panel-resize-handle:hover,
 .panel-resize-handle.active {
-  background: var(--color-accent);
+  background: var(--color-faint);
 }
 
 .kanban-chat-empty {

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useWsState, useWsActions } from "../context/WebSocketContext";
 import { stripCliXml } from "../strip-xml";
 import { MessageList } from "./MessageList";
+import { TurnStatusBar } from "./TurnStatusBar";
 export function ChatPanel({ style }: { style?: React.CSSProperties }) {
   const state = useWsState();
   const { renameSession } = useWsActions();
@@ -77,9 +78,15 @@ export function ChatPanel({ style }: { style?: React.CSSProperties }) {
         )}
       </div>
       {isEmpty ? (
-        <div className="kanban-chat-empty">
-          <span className="text-xs text-dim">No messages yet</span>
-        </div>
+        state.turnStatus?.status === "in_progress" ? (
+          <div className="kanban-chat-empty">
+            <TurnStatusBar status={state.turnStatus} />
+          </div>
+        ) : (
+          <div className="kanban-chat-empty">
+            <span className="text-xs text-dim">No messages yet</span>
+          </div>
+        )
       ) : (
         <MessageList />
       )}

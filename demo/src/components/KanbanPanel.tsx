@@ -25,8 +25,8 @@ const COLUMNS: ColumnDef[] = [
   { id: "backlog", label: "Backlog", emptyLabel: "No backlog sessions" },
   { id: "in_progress", label: "In Progress", emptyLabel: "No active sessions" },
   { id: "in_review", label: "In Review", emptyLabel: "No sessions to review" },
-  { id: "recurring", label: "Recurring", emptyLabel: "No recurring sessions" },
   { id: "completed", label: "Completed", emptyLabel: "No completed sessions" },
+  { id: "recurring", label: "Recurring", emptyLabel: "No recurring sessions" },
 ];
 
 // ── Drag-and-drop constants ──
@@ -42,18 +42,12 @@ interface KanbanDragItem {
 function categorizeSession(
   session: DiskSession,
   liveTurnStatus: Record<string, TurnStatus>,
-  unreadCompletedSessions: Record<string, true>,
 ): KanbanColumnId {
   const live = liveTurnStatus[session.sessionId];
   // Currently running
   if (live?.status === "in_progress" || session.turnStatus === "in_progress") return "in_progress";
-  // Just completed, unread — needs review
-  if (
-    (live?.status === "completed" || session.turnStatus === "completed") &&
-    unreadCompletedSessions[session.sessionId]
-  ) return "in_review";
-  // Completed and read
-  if (live?.status === "completed" || session.turnStatus === "completed") return "completed";
+  // Completed — always goes to "In Review"; only the user can move it to "Completed" manually
+  if (live?.status === "completed" || session.turnStatus === "completed") return "in_review";
   // Live/connected sessions that recur
   if (session.isLive) return "recurring";
   // Everything else
@@ -459,7 +453,7 @@ export function KanbanPanel() {
     };
     for (const session of state.diskSessions) {
       const overrideCol = columnOverrides[session.sessionId];
-      const col = overrideCol ?? categorizeSession(session, state.liveTurnStatus, state.unreadCompletedSessions);
+      const col = overrideCol ?? categorizeSession(session, state.liveTurnStatus);
       buckets[col].push(session);
     }
     const byUpdatedAt = (a: DiskSession, b: DiskSession) => {
@@ -484,7 +478,7 @@ export function KanbanPanel() {
       }
     }
     return buckets;
-  }, [state.diskSessions, state.liveTurnStatus, state.unreadCompletedSessions, columnOverrides, sortOrders]);
+  }, [state.diskSessions, state.liveTurnStatus, columnOverrides, sortOrders]);
 
   // Keep a ref to the latest columnData for use in handleMoveCard
   const columnDataRef = useRef(columnData);

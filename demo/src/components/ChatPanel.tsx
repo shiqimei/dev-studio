@@ -79,8 +79,12 @@ export function ChatPanel({ style }: { style?: React.CSSProperties }) {
       </div>
       {isEmpty ? (
         state.turnStatus?.status === "in_progress" ? (
-          <div className="kanban-chat-empty">
-            <TurnStatusBar status={state.turnStatus} />
+          <div className="chat-scroll-wrap">
+            <div className="chat-scroll-list px-5 py-4">
+              <div className="chat-content flex flex-col gap-1">
+                <TurnStatusBar status={state.turnStatus} />
+              </div>
+            </div>
           </div>
         ) : (
           <div className="kanban-chat-empty">

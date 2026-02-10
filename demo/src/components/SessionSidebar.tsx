@@ -47,7 +47,7 @@ function formatTokens(n: number): string {
 }
 
 /** Compact completed label matching CompletedBar format: "* Brewed for Xs · Xk tokens" */
-function SidebarCompletedLabel({ turnInfo }: { turnInfo: TurnStatus }) {
+function SidebarCompletedLabel({ turnInfo, isUnread }: { turnInfo: TurnStatus; isUnread?: boolean }) {
   const duration = turnInfo.durationMs ?? 0;
   const tokens = turnInfo.outputTokens ?? turnInfo.approxTokens;
   const thinkingMs = turnInfo.thinkingDurationMs ?? 0;
@@ -56,7 +56,7 @@ function SidebarCompletedLabel({ turnInfo }: { turnInfo: TurnStatus }) {
   if (tokens && tokens > 0) parts.push(`${formatTokens(tokens)} tokens`);
   if (thinkingMs >= 1000) parts.push(`thought for ${formatDuration(thinkingMs)}`);
 
-  return <><span className="sidebar-status-star idle">*</span> Brewed for {parts.join(" · ")}</>;
+  return <><span className={`sidebar-status-star ${isUnread ? "active-blue" : "idle"}`}>*</span> Brewed for {parts.join(" · ")}</>;
 }
 
 /** Compact in-progress label for sidebar: "Reading... (5s)" */
@@ -135,7 +135,7 @@ export const SessionItem = memo(function SessionItem({
             )
           ) : isCompleted ? (
             <span className="truncate" style={isUnread ? { color: "var(--color-blue)" } : undefined}>
-              {turnInfo ? <SidebarCompletedLabel turnInfo={turnInfo} /> : "* Brewed"}
+              {turnInfo ? <SidebarCompletedLabel turnInfo={turnInfo} isUnread={isUnread} /> : "* Brewed"}
             </span>
           ) : (
             <span className="truncate">

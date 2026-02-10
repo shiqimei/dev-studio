@@ -2329,6 +2329,10 @@ a, [data-streamdown="link"] { cursor: pointer; }
   color: var(--color-faint);
 }
 
+.sidebar-status-star.active-blue {
+  color: var(--color-blue);
+}
+
 /* ── Sidebar loading spinner ─────────────── */
 
 .sidebar-spinner {
@@ -2754,10 +2758,7 @@ a, [data-streamdown="link"] { cursor: pointer; }
 
 .kanban-column-body .session-row-active .session-item-title,
 .kanban-column-body .session-row-active .session-item-meta,
-.kanban-column-body .session-row-active .sidebar-status-star.active,
 .kanban-column-body .session-row-active .sidebar-status-star.idle,
-.kanban-column-body .session-row-active .sidebar-status-star,
-.kanban-column-body .session-row-active .sidebar-in-progress,
 .kanban-column-body .session-row-active .session-chevron-slot {
   color: #1a1a1a;
 }

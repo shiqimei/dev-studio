@@ -424,7 +424,7 @@ export function ChatInput() {
   const showAutocomplete = slashOpen || mentionOpen;
 
   return (
-    <div className="px-5 pt-3 pb-8 shrink-0 relative">
+    <div className="px-5 pb-8 shrink-0 relative">
       <div className="chat-content">
       {/* Pinned queued messages */}
       {queuedEntries.length > 0 && (

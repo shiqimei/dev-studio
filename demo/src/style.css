@@ -1813,6 +1813,15 @@ a, [data-streamdown="link"] { cursor: pointer; }
   letter-spacing: 0.08em;
 }
 
+.header-project-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  flex-shrink: 0;
+}
+
 .sidebar-new-btn {
   width: 26px;
   height: 26px;
@@ -2022,6 +2031,7 @@ a, [data-streamdown="link"] { cursor: pointer; }
   display: flex;
   align-items: stretch;
   min-width: 0;
+  border-radius: 8px;
   transition: background 0.15s;
 }
 
@@ -2619,3 +2629,245 @@ a, [data-streamdown="link"] { cursor: pointer; }
   font-size: 12px;
   text-align: center;
 }
+
+/* ── Kanban board ─────────────────────────── */
+
+.kanban-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.kanban-board {
+  flex: 1;
+  display: flex;
+  gap: 1px;
+  background: var(--color-border);
+  min-height: 0;
+  overflow-x: auto;
+}
+
+.kanban-column {
+  flex: 1;
+  min-width: 240px;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  min-height: 0;
+}
+
+.kanban-column-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 8px;
+  flex-shrink: 0;
+}
+
+.kanban-column-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-muted);
+}
+
+.kanban-column-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-dim);
+  background: var(--color-surface);
+  padding: 0 6px;
+  border-radius: 9999px;
+  line-height: 18px;
+}
+
+.kanban-column-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-width: none;
+}
+
+.kanban-column-body::-webkit-scrollbar {
+  display: none;
+}
+
+.kanban-column-empty {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-faint);
+  text-align: center;
+  padding: 24px 12px;
+}
+
+/* ── Kanban card (session-row inside kanban columns) ── */
+
+.kanban-column-body .session-row {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  padding: 2px 0;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.kanban-column-body .session-row:hover {
+  background: var(--color-overlay);
+  border-color: var(--color-faint);
+}
+
+.kanban-column-body .session-row-active {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+  background: var(--color-accent-dim);
+}
+
+.kanban-column-body .session-row-active:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-dim);
+}
+
+/* 2-line clamp for session titles inside kanban cards */
+.kanban-column-body .session-item-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+  font-size: 12px;
+}
+
+/* Reduce session title size in the title+chevron row */
+.kanban-column-body .session-item-btn {
+  padding: 6px 8px 6px 0;
+}
+
+/* Subagent rows inside kanban don't need card borders */
+.kanban-column-body .subagent-empty-placeholder {
+  border: none;
+  padding-left: 36px;
+}
+
+/* ── Kanban input area ────────────────────── */
+
+.kanban-bottom-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  pointer-events: none;
+  padding: 0 16px;
+  background: var(--color-bg);
+}
+
+.kanban-bottom-overlay > * {
+  pointer-events: auto;
+}
+
+.kanban-input-area {
+  background: transparent;
+}
+
+/* ── Kanban chat viewer (right panel) ─────── */
+
+.kanban-chat-viewer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-bg);
+}
+
+/* ── Panel resize handle (kanban ↔ chat) ──── */
+
+.panel-resize-handle {
+  width: 3px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  position: relative;
+}
+
+.panel-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -2px;
+  right: -2px;
+}
+
+.panel-resize-handle:hover,
+.panel-resize-handle.active {
+  background: var(--color-accent);
+}
+
+.kanban-chat-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-welcome-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 20px;
+}
+
+.chat-welcome-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.chat-welcome-subtitle {
+  font-size: 13px;
+  color: var(--color-dim);
+  margin-bottom: 16px;
+}
+
+
+/* ── Kanban drag-and-drop feedback ───────── */
+
+.kanban-card-dragging {
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+
+.kanban-column-drop-active {
+  background: color-mix(in srgb, var(--color-accent) 6%, var(--color-bg));
+  transition: background 0.2s ease;
+}
+
+.kanban-column-drop-active .kanban-column-title {
+  color: var(--color-accent);
+}
+
+.kanban-column-drop-reject {
+  background: color-mix(in srgb, var(--color-red) 3%, var(--color-bg));
+  transition: background 0.2s ease;
+}
+
+[data-theme="dawn"] .kanban-column-drop-active,
+[data-theme="github-light"] .kanban-column-drop-active {
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg));
+}
+
+

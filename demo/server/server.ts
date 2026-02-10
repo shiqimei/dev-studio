@@ -1,5 +1,6 @@
 import path from "node:path";
 import { execSync } from "node:child_process";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createAcpConnection, createNewSession, resumeSession } from "./session.js";
 import type { AcpConnection } from "./types.js";
 import { log, bootMs } from "./log.js";
@@ -96,6 +97,7 @@ export function startServer(port: number) {
     message_queued:       "queue/enqueue",
     queue_drain_start:    "queue/drainStart",
     queue_cancelled:      "queue/cancelled",
+    route_result:         "route/result",
   };
 
   // Map tool kind/name to a turn activity
@@ -523,6 +525,53 @@ export function startServer(port: number) {
     messageQueues.delete(sessionId);
   }
 
+  // ── Session title cache (for Haiku routing) ──
+  const sessionTitleCache = new Map<string, string>();
+
+  /** Use Haiku via the Claude Agent SDK to decide whether a message relates to the current session. */
+  async function routeWithHaiku(messageText: string, sessionTitle: string | null): Promise<boolean> {
+    if (!sessionTitle) return true; // untitled → stay in current session
+
+    try {
+      const t0 = performance.now();
+      const q = query({
+        prompt:
+          `Session title: "${sessionTitle}"\nNew message: "${messageText.slice(0, 500)}"\n\n` +
+          `Reply with ONLY "same" if the message relates to the current session topic, or "new" if it's a different topic that should start a fresh session.`,
+        options: {
+          systemPrompt:
+            "You are a message router. Given a session title and a new user message, " +
+            "determine if the message should continue in the same session or start a new one. " +
+            'Reply with ONLY "same" or "new".',
+          model: "claude-haiku-4-5-20251001",
+          maxThinkingTokens: 0,
+          maxTurns: 1,
+          maxBudgetUsd: 0.01,
+          tools: [],
+          settingSources: [],
+          mcpServers: {},
+          hooks: {},
+          persistSession: false,
+          cwd: process.cwd(),
+        },
+      });
+
+      let answer = "";
+      for await (const message of q) {
+        if (message.type === "result" && message.subtype === "success") {
+          answer = message.result?.trim().toLowerCase() ?? "";
+        }
+      }
+
+      const isSame = !answer.startsWith("new");
+      log.info({ durationMs: Math.round(performance.now() - t0), answer, isSame }, "route: Haiku decision");
+      return isSame;
+    } catch (err: any) {
+      log.warn({ err: err.message }, "route: Haiku SDK query failed, defaulting to same session");
+      return true;
+    }
+  }
+
   // Coalesce concurrent broadcastSessions calls — if one is already in flight,
   // callers share the same promise instead of issuing parallel requests.
   let broadcastSessionsPromise: Promise<void> | null = null;
@@ -558,15 +607,28 @@ export function startServer(port: number) {
           ...(s._meta?.children ? { children: s._meta.children } : {}),
           ...(s._meta?.teamName ? { teamName: s._meta.teamName } : {}),
           isLive: liveSessionIds.has(s.sessionId),
-          ...(turnStates[s.sessionId] ? {
-            turnStatus: turnStates[s.sessionId].status,
-            ...(turnStates[s.sessionId].status === "in_progress" ? {
-              turnStartedAt: turnStates[s.sessionId].startedAt,
-              turnActivity: turnStates[s.sessionId].activity,
-              turnActivityDetail: turnStates[s.sessionId].activityDetail,
-            } : {}),
-          } : {}),
+          ...(turnStates[s.sessionId] ? (() => {
+            const ts = turnStates[s.sessionId];
+            return {
+              turnStatus: ts.status,
+              ...(ts.status === "in_progress" ? {
+                turnStartedAt: ts.startedAt,
+                turnActivity: ts.activity,
+                turnActivityDetail: ts.activityDetail,
+              } : {
+                ...(ts.startedAt && { turnStartedAt: ts.startedAt }),
+                ...(ts.durationMs != null && { turnDurationMs: ts.durationMs }),
+                ...(ts.outputTokens != null && { turnOutputTokens: ts.outputTokens }),
+                ...(ts.costUsd != null && { turnCostUsd: ts.costUsd }),
+                ...(ts.thinkingDurationMs != null && ts.thinkingDurationMs > 0 && { turnThinkingDurationMs: ts.thinkingDurationMs }),
+              }),
+            };
+          })() : {}),
         }));
+        // Update session title cache for Haiku routing
+        for (const s of sessions) {
+          if (s.title) sessionTitleCache.set(s.sessionId, s.title);
+        }
         log.info({ durationMs: Math.round(t1 - t0), sessions: sessions.length, clients: clients.size }, "api: sessions/list completed");
         broadcast({ type: "sessions", sessions });
       } catch (err: any) {
@@ -1010,6 +1072,73 @@ export function startServer(port: number) {
           case "list_sessions": {
             log.info({ client: cid }, "ws: → list_sessions");
             await broadcastSessions();
+            break;
+          }
+
+          case "route_message": {
+            if (!clientState.currentSessionId) {
+              log.warn({ client: cid }, "ws: route_message but no currentSessionId");
+              return;
+            }
+            const routeSession = clientState.currentSessionId;
+            log.info({ client: cid, session: sid(routeSession), textLen: msg.text?.length ?? 0 }, "ws: → route_message");
+
+            try {
+              const sessionTitle = sessionTitleCache.get(routeSession) ?? null;
+              const shouldContinue = await routeWithHaiku(msg.text, sessionTitle);
+
+              if (shouldContinue) {
+                // Route to current session
+                log.info({ client: cid, session: sid(routeSession), route: "same" }, "ws: route_message → same session");
+                ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
+
+                // Broadcast user message to other clients viewing this session
+                const userMsgJson = JSON.stringify({
+                  type: "user_message",
+                  sessionId: routeSession,
+                  text: msg.text,
+                  images: msg.images,
+                  files: msg.files,
+                  queueId: msg.queueId,
+                });
+                for (const [otherWs, otherState] of clients) {
+                  if (otherWs !== ws && otherState.currentSessionId === routeSession) {
+                    try { otherWs.send(userMsgJson); } catch {}
+                  }
+                }
+
+                if (processingSessions.has(routeSession)) {
+                  const queueId = msg.queueId || `sq-${++queueIdCounter}`;
+                  getQueue(routeSession).push({ id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
+                  log.info({ session: sid(routeSession), queueId, queueLen: getQueue(routeSession).length }, "queue: enqueued (routed)");
+                  broadcast({ type: "message_queued", queueId, sessionId: routeSession });
+                } else {
+                  processPrompt(routeSession, msg.text, msg.images, msg.files);
+                }
+              } else {
+                // Create a new session and route there
+                log.info({ client: cid, session: sid(routeSession), route: "new" }, "ws: route_message → new session");
+                const t0 = performance.now();
+                const { sessionId: newSessionId } = await createNewSession(acpConnection.connection, broadcast);
+                log.info({ client: cid, session: sid(newSessionId), durationMs: Math.round(performance.now() - t0) }, "api: newSession (routed) completed");
+                clientState.currentSessionId = newSessionId;
+                liveSessionIds.add(newSessionId);
+                defaultSessionId = newSessionId;
+
+                // Switch client to the new session
+                ws.send(JSON.stringify({ type: "session_history", sessionId: newSessionId, entries: [] }));
+                ws.send(JSON.stringify({ type: "session_switched", sessionId: newSessionId, turnStatus: null }));
+                ws.send(JSON.stringify({ type: "route_result", sessionId: newSessionId, isNew: true }));
+
+                broadcastSessions().catch(() => {});
+                processPrompt(newSessionId, msg.text, msg.images, msg.files);
+              }
+            } catch (err: any) {
+              log.error({ client: cid, err: err.message }, "ws: route_message error");
+              // Fallback: route to current session
+              ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
+              processPrompt(routeSession, msg.text, msg.images, msg.files);
+            }
             break;
           }
 

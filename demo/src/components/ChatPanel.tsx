@@ -2,14 +2,14 @@ import { useState, useRef, useEffect } from "react";
 import { useWsState, useWsActions } from "../context/WebSocketContext";
 import { stripCliXml } from "../strip-xml";
 import { MessageList } from "./MessageList";
-import { ChatInput } from "./ChatInput";
-
-export function ChatPanel() {
+export function ChatPanel({ style }: { style?: React.CSSProperties }) {
   const state = useWsState();
   const { renameSession } = useWsActions();
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const hasSession = !!state.currentSessionId;
 
   const currentSession = state.diskSessions.find(
     (s) => s.sessionId === state.currentSessionId,
@@ -37,10 +37,22 @@ export function ChatPanel() {
     setEditing(false);
   };
 
+  // Welcome screen when no session is selected
+  if (!hasSession) {
+    return (
+      <div className="kanban-chat-viewer" style={style}>
+        <div className="chat-welcome-screen">
+          <h2 className="chat-welcome-title">What do you want to build?</h2>
+          <p className="chat-welcome-subtitle">Select a session or send a message to start a new one</p>
+        </div>
+      </div>
+    );
+  }
+
   const isEmpty = state.messages.length === 0;
 
   return (
-    <div className="flex-1 flex flex-col min-w-0">
+    <div className="kanban-chat-viewer" style={style}>
       <div className="chat-title-header">
         {editing ? (
           <input
@@ -65,21 +77,11 @@ export function ChatPanel() {
         )}
       </div>
       {isEmpty ? (
-        <div className="welcome-screen">
-          <div className="welcome-centered">
-            <div className="welcome-greeting">What do you want to build next?</div>
-            <div className="welcome-hint">
-              Send a message to get started, or type{" "}
-              <span className="welcome-kbd">/</span> for commands
-            </div>
-            <ChatInput />
-          </div>
+        <div className="kanban-chat-empty">
+          <span className="text-xs text-dim">No messages yet</span>
         </div>
       ) : (
-        <>
-          <MessageList />
-          <ChatInput />
-        </>
+        <MessageList />
       )}
     </div>
   );

@@ -175,6 +175,14 @@ export interface DiskSession {
   turnActivity?: TurnActivity;
   /** Activity detail (only present when turnStatus is "in_progress"). */
   turnActivityDetail?: string;
+  /** Turn duration in ms (present when turnStatus is "completed"). */
+  turnDurationMs?: number;
+  /** Output tokens (present when turnStatus is "completed"). */
+  turnOutputTokens?: number;
+  /** Cost in USD (present when turnStatus is "completed"). */
+  turnCostUsd?: number;
+  /** Thinking duration in ms (present when turnStatus is "completed"). */
+  turnThinkingDurationMs?: number;
 }
 
 export interface TaskItemEntry {
@@ -343,4 +351,5 @@ export type Action =
   | { type: "COMMANDS"; commands: SlashCommand[]; models?: string[]; currentModel?: string | null }
   | { type: "SESSION_SUBAGENTS"; sessionId: string; children: SubagentChild[] }
   | { type: "SESSION_DELETED"; sessionIds: string[] }
-  | { type: "SESSION_ID_RESOLVED"; pendingId: string; realId: string };
+  | { type: "SESSION_ID_RESOLVED"; pendingId: string; realId: string }
+  | { type: "SESSION_DESELECTED" };

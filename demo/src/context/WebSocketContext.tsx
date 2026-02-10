@@ -870,13 +870,17 @@ function reducer(state: AppState, action: Action): AppState {
           // Back to in_progress — no longer unread-completed
           delete unread[s.sessionId];
         } else if (lts[s.sessionId]?.status === "in_progress") {
-          // Transition: was in_progress, now completed — compute approximate stats
+          // Transition: was in_progress, now completed — use server metrics when available
           const existing = lts[s.sessionId];
           lts[s.sessionId] = {
             status: "completed",
             startedAt: existing.startedAt,
             endedAt: Date.now(),
-            durationMs: Date.now() - existing.startedAt,
+            durationMs: s.turnDurationMs ?? (Date.now() - existing.startedAt),
+            outputTokens: s.turnOutputTokens,
+            costUsd: s.turnCostUsd,
+            thinkingDurationMs: s.turnThinkingDurationMs ?? existing.thinkingDurationMs,
+            approxTokens: existing.approxTokens,
           };
           if (s.sessionId !== state.currentSessionId) {
             unread[s.sessionId] = true;
@@ -886,8 +890,19 @@ function reducer(state: AppState, action: Action): AppState {
           if (!s.turnStatus) {
             delete unread[s.sessionId];
           }
+        } else if (s.turnStatus === "completed" && s.turnDurationMs != null) {
+          // Seed from server-provided completion metrics
+          lts[s.sessionId] = {
+            status: "completed",
+            startedAt: s.turnStartedAt ?? 0,
+            endedAt: Date.now(),
+            durationMs: s.turnDurationMs,
+            outputTokens: s.turnOutputTokens,
+            costUsd: s.turnCostUsd,
+            thinkingDurationMs: s.turnThinkingDurationMs,
+          };
         } else {
-          // No liveTurnStatus entry and not in_progress — nothing to track
+          // No liveTurnStatus entry and no server completion data — nothing to track
         }
       }
       return { ...state, diskSessions: merged, diskSessionsLoaded: true, liveTurnStatus: lts, unreadCompletedSessions: unread, _recentlyDeletedIds: [] };
@@ -1140,6 +1155,24 @@ function reducer(state: AppState, action: Action): AppState {
       };
     }
 
+    case "SESSION_DESELECTED":
+      return {
+        ...state,
+        currentSessionId: null,
+        switchingToSessionId: null,
+        messages: [],
+        tasks: {},
+        currentTurnId: null,
+        turnToolCallIds: [],
+        turnStatus: null,
+        busy: false,
+        queuedMessages: [],
+        pendingQueuedEntries: [],
+        peekStatus: {},
+        latestPlan: null,
+        latestTasks: null,
+      };
+
     default:
       return state;
   }
@@ -1153,6 +1186,7 @@ export interface WsActions {
   send: (text: string, images?: ImageAttachment[], files?: FileAttachment[]) => void;
   interrupt: () => void;
   newSession: () => void;
+  deselectSession: () => void;
   resumeSession: (sessionId: string) => void;
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
   deleteSession: (sessionId: string) => void;
@@ -1170,6 +1204,7 @@ interface WsContextValue {
   send: (text: string, images?: ImageAttachment[], files?: FileAttachment[]) => void;
   interrupt: () => void;
   newSession: () => void;
+  deselectSession: () => void;
   resumeSession: (sessionId: string) => void;
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
   deleteSession: (sessionId: string) => void;
@@ -1233,37 +1268,6 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     tempId: string;
   } | null>(null);
 
-  const send = useCallback((text: string, images?: ImageAttachment[], files?: FileAttachment[]) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    const queueId = `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // Show message in UI immediately (optimistic)
-    dispatch({ type: "SEND_MESSAGE", text, images, files, queueId });
-
-    const payload = JSON.stringify({
-      type: "prompt",
-      text,
-      queueId,
-      ...(images?.length ? { images } : {}),
-      ...(files?.length ? { files } : {}),
-    });
-
-    // If a new session is still being created, defer the WS send until it's ready
-    if (pendingNewSessionRef.current) {
-      console.log(`[${pageMs()}] send: deferring prompt until session ready`);
-      pendingNewSessionRef.current.promise.then(() => {
-        console.log(`[${pageMs()}] send: session ready, sending deferred prompt`);
-        wsRef.current?.send(payload);
-      });
-    } else {
-      wsRef.current.send(payload);
-    }
-  }, []);
-
-  const interrupt = useCallback(() => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(JSON.stringify({ type: "interrupt" }));
-  }, []);
-
   const newSession = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     const t0 = performance.now();
@@ -1279,6 +1283,74 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     console.log(`[${pageMs()}] newSession: optimistic switch to ${tempId}, sending request to server`);
     dispatch({ type: "SESSION_SWITCHED", sessionId: tempId, turnStatus: null });
     wsRef.current.send(JSON.stringify({ type: "new_session" }));
+  }, []);
+
+  /** Tracks a pending route_message so the client can show the user message
+   *  after the server responds with a route_result. */
+  const pendingRouteRef = useRef<{
+    text: string;
+    images?: ImageAttachment[];
+    files?: FileAttachment[];
+    queueId: string;
+  } | null>(null);
+
+  const send = useCallback((text: string, images?: ImageAttachment[], files?: FileAttachment[]) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+    const queueId = `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    if (currentSessionRef.current && !currentSessionRef.current.startsWith("pending:")) {
+      // Session selected: route through Haiku to decide whether to continue here or create new
+      pendingRouteRef.current = { text, images, files, queueId };
+      // Show user message optimistically (same as non-routing path).
+      // If Haiku routes to a new session, SESSION_SWITCHED clears messages[]
+      // and route_result re-dispatches SEND_MESSAGE into the new session.
+      dispatch({ type: "SEND_MESSAGE", text, images, files, queueId });
+      console.log(`[${pageMs()}] send: routing via Haiku for session ${currentSessionRef.current.slice(0, 8)}`);
+      wsRef.current.send(JSON.stringify({
+        type: "route_message",
+        text,
+        queueId,
+        ...(images?.length ? { images } : {}),
+        ...(files?.length ? { files } : {}),
+      }));
+    } else {
+      // No session selected: create a new session and send prompt directly
+      if (!currentSessionRef.current && !pendingNewSessionRef.current) {
+        newSession();
+      }
+      // Show message in UI immediately (optimistic)
+      dispatch({ type: "SEND_MESSAGE", text, images, files, queueId });
+
+      const payload = JSON.stringify({
+        type: "prompt",
+        text,
+        queueId,
+        ...(images?.length ? { images } : {}),
+        ...(files?.length ? { files } : {}),
+      });
+
+      // If a new session is still being created, defer the WS send until it's ready
+      if (pendingNewSessionRef.current) {
+        console.log(`[${pageMs()}] send: deferring prompt until session ready`);
+        pendingNewSessionRef.current.promise.then(() => {
+          console.log(`[${pageMs()}] send: session ready, sending deferred prompt`);
+          wsRef.current?.send(payload);
+        });
+      } else {
+        wsRef.current.send(payload);
+      }
+    }
+  }, [newSession]);
+
+  const deselectSession = useCallback(() => {
+    if (pendingNewSessionRef.current) pendingNewSessionRef.current = null;
+    dispatch({ type: "SESSION_DESELECTED" });
+  }, []);
+
+  const interrupt = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "interrupt" }));
   }, []);
 
   const resumeSessionCb = useCallback((sessionId: string) => {
@@ -1571,6 +1643,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       send,
       interrupt,
       newSession,
+      deselectSession,
       resumeSession: resumeSessionCb,
       resumeSubagent: resumeSubagentCb,
       deleteSession: deleteSessionCb,
@@ -1840,6 +1913,20 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
     case "session_title_update":
       dispatch({ type: "SESSION_TITLE_UPDATE", sessionId: msg.sessionId, title: msg.title });
       break;
+    case "route_result": {
+      // Server has decided where to route the message (same session or new).
+      // For "same session": user message was already shown optimistically in send().
+      // For "new session": SESSION_SWITCHED cleared messages[], so re-dispatch SEND_MESSAGE.
+      const pending = pendingRouteRef.current;
+      if (pending) {
+        pendingRouteRef.current = null;
+        console.log(`[${pageMs()}] handleMsg route_result session=${msg.sessionId.slice(0, 8)} isNew=${msg.isNew}`);
+        if (msg.isNew) {
+          dispatch({ type: "SEND_MESSAGE", text: pending.text, images: pending.images, files: pending.files, queueId: pending.queueId });
+        }
+      }
+      break;
+    }
     // User message from another client viewing the same session
     case "user_message":
       dispatch({ type: "SEND_MESSAGE", text: msg.text, images: msg.images, files: msg.files, queueId: msg.queueId });

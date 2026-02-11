@@ -19,6 +19,9 @@ export function useAutoScroll<T extends HTMLElement>(...deps: unknown[]) {
     const el = ref.current;
     if (el && autoScroll.current) {
       el.scrollTop = el.scrollHeight;
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+      });
     }
   }, deps);
 
@@ -26,7 +29,15 @@ export function useAutoScroll<T extends HTMLElement>(...deps: unknown[]) {
     autoScroll.current = true;
     setIsAtBottom(true);
     const el = ref.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+      // Follow-up scroll after the browser paints — catches layout shifts
+      // from lazy content (images, fonts, etc.) that make the initial
+      // scrollHeight slightly short of the true bottom.
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+      });
+    }
   }, []);
 
   return { ref, onScroll, scrollToBottom, isAtBottom };

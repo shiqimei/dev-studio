@@ -1,24 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useWs } from "../context/WebSocketContext";
-import { useTheme, THEMES } from "../context/ThemeContext";
 import { shortPath } from "../utils";
 
 const isElectron = navigator.userAgent.includes("Electron");
 const isMac = navigator.platform.startsWith("Mac");
-
-const MOD = isMac ? "\u2318" : "Ctrl";
-const KEYBINDINGS: { keys: string; description: string }[] = [
-  { keys: "Enter", description: "Send message" },
-  { keys: "Shift+Enter", description: "New line" },
-  { keys: "Escape", description: "Interrupt agent" },
-  { keys: `${MOD}+Z`, description: "Undo" },
-  { keys: `${MOD}+Shift+Z`, description: "Redo" },
-  { keys: `${MOD}+Shift+P`, description: "Toggle protocol debug" },
-  { keys: "/", description: "Slash commands" },
-  { keys: "@", description: "Mention file" },
-];
-
-type SettingsTab = "theme" | "keybindings";
 
 export function Header() {
   const { state, dispatch } = useWs();
@@ -37,22 +22,6 @@ export function Header() {
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
-
-  const { theme, setTheme } = useTheme();
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("theme");
-  const settingsRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!settingsOpen) return;
-    function handleClickOutside(e: MouseEvent) {
-      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
-        setSettingsOpen(false);
-      }
-    }
-    document.addEventListener("click", handleClickOutside, true);
-    return () => document.removeEventListener("click", handleClickOutside, true);
-  }, [settingsOpen]);
 
   const activeSessionId = state.switchingToSessionId ?? state.currentSessionId;
   const activeSession = state.diskSessions.find((s) => s.sessionId === activeSessionId);
@@ -93,47 +62,6 @@ export function Header() {
           {state.debugCollapsed ? "Protocol \u25C0" : "Protocol \u25B6"}
         </button>
       )}
-
-      <div ref={settingsRef} className="relative shrink-0 app-region-no-drag">
-        <button
-          onClick={() => setSettingsOpen((prev) => !prev)}
-          className="w-6 h-6 flex items-center justify-center rounded-md text-dim hover:text-text hover:bg-[var(--color-overlay)] transition-colors cursor-pointer"
-          title="Settings"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </svg>
-        </button>
-        {settingsOpen && (
-          <div className="theme-popover" style={{ top: "100%", bottom: "auto", right: 0, left: "auto", marginTop: 4, marginBottom: 0, width: 280 }}>
-            <div className="popover-tabs">
-              <button className={`popover-tab${settingsTab === "theme" ? " active" : ""}`} onClick={() => setSettingsTab("theme")}>Theme</button>
-              <button className={`popover-tab${settingsTab === "keybindings" ? " active" : ""}`} onClick={() => setSettingsTab("keybindings")}>Keybindings</button>
-            </div>
-            {settingsTab === "theme" && THEMES.map((t) => (
-              <button key={t.id} className="theme-option" onClick={() => { setTheme(t.id); setSettingsOpen(false); }}>
-                <span className="theme-swatch" style={{ background: t.swatch }} />
-                <span className="theme-option-info">
-                  <span className="theme-option-name">{t.label}</span>
-                  <span className="theme-option-desc"> {t.description}</span>
-                </span>
-                <span className="theme-check">{theme === t.id ? "\u2713" : ""}</span>
-              </button>
-            ))}
-            {settingsTab === "keybindings" && (
-              <div className="keybindings-list">
-                {KEYBINDINGS.map((kb) => (
-                  <div key={kb.keys} className="keybinding-row">
-                    <kbd className="keybinding-keys">{kb.keys}</kbd>
-                    <span className="keybinding-desc">{kb.description}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
     </header>
   );
 }

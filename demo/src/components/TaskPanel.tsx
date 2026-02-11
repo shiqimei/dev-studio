@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useWs } from "../context/WebSocketContext";
+import { killTaskPrompt } from "../kanban-prompts";
 import { formatElapsed } from "../utils";
 
 export function TaskPanel() {
@@ -19,13 +20,7 @@ export function TaskPanel() {
 
   function killTask(task: (typeof bgTasks)[0]) {
     if (task.status !== "running") return;
-    const desc =
-      task.toolKind === "bash"
-        ? "Kill the background bash process: " + task.title
-        : task.toolKind === "agent"
-          ? "Kill the background agent task: " + task.title
-          : "Kill the background task: " + task.title;
-    send(desc);
+    send(killTaskPrompt(task.toolKind, task.title));
   }
 
   return (

@@ -252,6 +252,11 @@ export function MessageList() {
   const { resumeSubagent } = useWsActions();
   const { ref, onScroll, scrollToBottom, isAtBottom } = useAutoScroll<HTMLDivElement>(state.messages, state.turnStatus);
 
+  // Force scroll to bottom when switching sessions (clicking a new card)
+  useLayoutEffect(() => {
+    scrollToBottom();
+  }, [state.currentSessionId, scrollToBottom]);
+
   // Force scroll to bottom when the user sends a message, even if they had scrolled up
   const lastMsg = state.messages[state.messages.length - 1];
   const lastUserMsgId = lastMsg?.type === "message" && lastMsg.role === "user" ? lastMsg.id : undefined;
@@ -302,16 +307,26 @@ export function MessageList() {
       <div className="chat-content flex flex-col gap-1">
       {turnGroups.map((group, gi) => {
         const isLatestGroup = gi === turnGroups.length - 1;
+        const isFirstGroup = gi === 0;
         // Only render expanded when the latest group is actively streaming
         const isStreaming = isLatestGroup && state.turnStatus?.status === "in_progress";
 
         return (
           <Fragment key={group.id}>
             {group.userEntry && (
-              <UserMessage
-                entry={group.userEntry}
-                isLatest={isLatestGroup && group.entries.length === 0}
-              />
+              isFirstGroup && !isLatestGroup ? (
+                <div className="sticky-first-message">
+                  <UserMessage
+                    entry={group.userEntry}
+                    isLatest={false}
+                  />
+                </div>
+              ) : (
+                <UserMessage
+                  entry={group.userEntry}
+                  isLatest={isLatestGroup && group.entries.length === 0}
+                />
+              )
             )}
 
             {isStreaming ? (

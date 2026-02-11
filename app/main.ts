@@ -22,6 +22,7 @@ const VITE_PORT = 5688;
 
 let backend: ChildProcess | null = null;
 let vite: ViteDevServer | null = null;
+let mainWindow: BrowserWindow | null = null;
 
 async function waitForPort(port: number, timeoutMs = 10_000): Promise<void> {
   const start = Date.now();
@@ -85,6 +86,7 @@ function createWindow(): BrowserWindow {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      preload: path.join(ROOT, "app/preload.cjs"),
     },
   });
 
@@ -118,6 +120,11 @@ app.whenReady().then(async () => {
       }
     }
 
+    const sendOpenSettings = () => {
+      const win = mainWindow ?? BrowserWindow.getAllWindows()[0];
+      win?.webContents.send("open-settings");
+    };
+
     const template: Electron.MenuItemConstructorOptions[] = [
       ...(isMac
         ? [
@@ -125,6 +132,12 @@ app.whenReady().then(async () => {
               label: appName,
               submenu: [
                 { role: "about" as const, label: `About ${appName}` },
+                { type: "separator" as const },
+                {
+                  label: "Settings...",
+                  accelerator: "CmdOrCtrl+,",
+                  click: sendOpenSettings,
+                },
                 { type: "separator" as const },
                 { role: "services" as const },
                 { type: "separator" as const },
@@ -139,7 +152,19 @@ app.whenReady().then(async () => {
         : []),
       {
         label: "File",
-        submenu: [isMac ? { role: "close" as const } : { role: "quit" as const }],
+        submenu: [
+          ...(!isMac
+            ? [
+                {
+                  label: "Settings...",
+                  accelerator: "CmdOrCtrl+,",
+                  click: sendOpenSettings,
+                },
+                { type: "separator" as const },
+              ]
+            : []),
+          isMac ? { role: "close" as const } : { role: "quit" as const },
+        ],
       },
       {
         label: "Edit",
@@ -192,7 +217,10 @@ app.whenReady().then(async () => {
     vite = await startVite();
 
     // 3. Open window
-    createWindow();
+    mainWindow = createWindow();
+    mainWindow.on("closed", () => {
+      mainWindow = null;
+    });
   } catch (err) {
     console.error("Failed to start:", err);
     await cleanup();

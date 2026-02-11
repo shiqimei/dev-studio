@@ -4,13 +4,20 @@ import { createAcpConnection, createNewSession, resumeSession } from "./session.
 import { createHaikuPool } from "./haiku-pool.js";
 import type { AcpConnection } from "./types.js";
 import { log, bootMs } from "./log.js";
-import { type KanbanState, type RecurringTaskEntry, getProjectDir, readKanbanState, writeKanbanState, cleanKanbanState } from "./kanban.js";
-import { startRecurringTask, stopRecurringTask, stopAllRecurringTasks } from "./recurring.js";
+import { type KanbanState, getProjectDir, readKanbanState, writeKanbanState, cleanKanbanState } from "./kanban.js";
 
 export function startServer(port: number) {
   // ── Client tracking ──
   let nextClientId = 1;
-  interface ClientState { id: number; currentSessionId: string | null; connectedAt: number }
+  // ── Preflight route cache (per-client, caches routing decision as user types) ──
+  interface PreflightRouteCache {
+    text: string;         // The text that was routed
+    sessionId: string;    // The session it was routed for
+    isSameSession: boolean; // The routing decision
+    timestamp: number;    // When the result was cached
+  }
+
+  interface ClientState { id: number; currentSessionId: string | null; connectedAt: number; preflightCache?: PreflightRouteCache; preflightSeq?: number }
   const clients = new Map<{ send: (data: string) => void }, ClientState>();
   const liveSessionIds = new Set<string>();
   /** Default session for reconnecting clients (set when first session is created). */
@@ -103,6 +110,7 @@ export function startServer(port: number) {
     queue_drain_start:    "queue/drainStart",
     queue_cancelled:      "queue/cancelled",
     route_result:         "route/result",
+    preflight_route_result: "route/preflight",
   };
 
   // Map tool kind/name to a turn activity
@@ -406,19 +414,6 @@ export function startServer(port: number) {
         kanbanState = await readKanbanState(projDir);
         if (kanbanState) {
           log.info("kanban: loaded from disk");
-          // Restore active recurring tasks
-          if (kanbanState.recurringTasks) {
-            const cwd = process.env.ACP_CWD || process.cwd();
-            for (const [sessionId, config] of Object.entries(kanbanState.recurringTasks)) {
-              if (config.active) {
-                try {
-                  startRecurringTask(sessionId, config, port, cwd);
-                } catch (err: any) {
-                  log.warn({ session: sessionId.slice(0, 8), err: err.message }, "recurring: restore failed");
-                }
-              }
-            }
-          }
         }
       } catch (err: any) {
         log.warn({ err: err.message }, "kanban: load error");
@@ -439,9 +434,37 @@ export function startServer(port: number) {
       if (!liveSessionIds.has(sessionId)) {
         const resumeT0 = performance.now();
         log.info({ session: sid(sessionId) }, "api: resumeSession started");
-        await resumeSession(acpConnection.connection, sessionId);
-        log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - resumeT0) }, "api: resumeSession completed");
-        liveSessionIds.add(sessionId);
+        try {
+          await resumeSession(acpConnection.connection, sessionId);
+          log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - resumeT0) }, "api: resumeSession completed");
+          liveSessionIds.add(sessionId);
+        } catch (resumeErr: any) {
+          // Session's conversation is gone (e.g. server restart) — auto-recover by
+          // creating a replacement session and transparently retrying the prompt.
+          if (!isSessionGoneError(resumeErr)) throw resumeErr;
+
+          log.warn({ session: sid(sessionId), err: resumeErr.message }, "api: session gone, auto-creating replacement");
+          const { sessionId: newId } = await createNewSession(acpConnection!.connection, broadcast);
+          liveSessionIds.add(newId);
+          autoRenameEligible.add(newId);
+
+          // Switch all clients viewing the dead session to the replacement
+          for (const [ws, cs] of clients) {
+            if (cs.currentSessionId === sessionId) {
+              cs.currentSessionId = newId;
+              try { ws.send(JSON.stringify({ type: "session_switched", sessionId: newId, turnStatus: null })); } catch {}
+            }
+          }
+          if (defaultSessionId === sessionId) defaultSessionId = newId;
+
+          cleanupStaleSession(sessionId);
+          await broadcastSessions();
+
+          // Retry prompt on the new session (newId is already live, so resume is skipped)
+          processingSessions.delete(sessionId);
+          processPrompt(newId, text, images, files);
+          return;
+        }
         await broadcastSessions();
       }
       const prompt: Array<{ type: string; text?: string; data?: string; mimeType?: string; resource?: { uri: string; text: string; mimeType: string } }> = [];
@@ -521,7 +544,62 @@ export function startServer(port: number) {
       await broadcastSessions();
       log.info({ session: sid(sessionId), broadcastMs: Math.round(performance.now() - sessionsT0), totalMs: Math.round(performance.now() - promptT0) }, "api: prompt completed");
     } catch (err: any) {
-      log.error({ session: sid(sessionId), durationMs: Math.round(performance.now() - promptT0), err: err.message }, "api: prompt error");
+      // If the prompt() call itself hit a stale session (conversation vanished while
+      // liveSessionIds still listed it), auto-recover instead of surfacing the error.
+      if (isSessionGoneError(err) && acpConnection) {
+        log.warn({ session: sid(sessionId), err: err.message }, "api: prompt hit stale session, auto-recovering");
+        try {
+          const { sessionId: newId } = await createNewSession(acpConnection.connection, broadcast);
+          liveSessionIds.add(newId);
+          autoRenameEligible.add(newId);
+
+          for (const [ws, cs] of clients) {
+            if (cs.currentSessionId === sessionId) {
+              cs.currentSessionId = newId;
+              try { ws.send(JSON.stringify({ type: "session_switched", sessionId: newId, turnStatus: null })); } catch {}
+            }
+          }
+          if (defaultSessionId === sessionId) defaultSessionId = newId;
+
+          // Clean up turn state from the failed attempt
+          if (turnStates[sessionId]) {
+            delete turnStates[sessionId];
+          }
+          turnContentBuffers.delete(sessionId);
+
+          cleanupStaleSession(sessionId);
+          await broadcastSessions();
+
+          processingSessions.delete(sessionId);
+          processPrompt(newId, text, images, files);
+          return;
+        } catch (recoverErr: any) {
+          log.error({ session: sid(sessionId), err: recoverErr.message }, "api: prompt stale recovery failed");
+        }
+
+        // Recovery failed or succeeded-but-returned above. Either way, don't
+        // expose the raw "No conversation found" internal error to the user.
+        // Just silently end the turn so the card reverts to its previous state.
+        if (turnStates[sessionId]) {
+          delete turnStates[sessionId];
+        }
+        turnContentBuffers.delete(sessionId);
+        liveSessionIds.delete(sessionId);
+        broadcast({ type: "turn_end", stopReason: "error", sessionId });
+        broadcastSessions().catch(() => {});
+        return;
+      }
+
+      // Build a detailed error string for the UI (API errors often have nested details)
+      const details: string[] = [err.message ?? String(err)];
+      if (err.status) details.push(`status=${err.status}`);
+      if (err.code) details.push(`code=${err.code}`);
+      if (err.type) details.push(`type=${err.type}`);
+      if (err.error?.message && err.error.message !== err.message) details.push(err.error.message);
+      if (err.cause) details.push(`cause=${err.cause.message ?? err.cause}`);
+      const detailedText = details.length > 1 ? details.join(" — ") : details[0];
+
+      log.error({ session: sid(sessionId), durationMs: Math.round(performance.now() - promptT0), err: detailedText, stack: err.stack }, "api: prompt error");
       // Update turn state to error
       if (turnStates[sessionId]) {
         const ts = turnStates[sessionId];
@@ -531,7 +609,7 @@ export function startServer(port: number) {
         ts.stopReason = "error";
       }
       turnContentBuffers.delete(sessionId);
-      broadcast({ type: "error", text: err.message, sessionId });
+      broadcast({ type: "error", text: detailedText, sessionId });
       broadcast({ type: "turn_end", stopReason: "error", sessionId });
     } finally {
       processingSessions.delete(sessionId);
@@ -565,6 +643,26 @@ export function startServer(port: number) {
   function clearSessionQueue(sessionId: string | null) {
     if (!sessionId) return;
     messageQueues.delete(sessionId);
+  }
+
+  /** Detect "session gone" errors from the ACP SDK (conversation no longer exists). */
+  function isSessionGoneError(err: any): boolean {
+    const msg = err?.message ?? "";
+    return /No conversation found|Session not found/i.test(msg) || err?.code === -32603;
+  }
+
+  /** Clean up all server-side state for a dead session and delete it from disk. */
+  function cleanupStaleSession(sessionId: string) {
+    liveSessionIds.delete(sessionId);
+    clearSessionQueue(sessionId);
+    delete turnStates[sessionId];
+    turnContentBuffers.delete(sessionId);
+    sessionMetas.delete(sessionId);
+    autoRenameEligible.delete(sessionId);
+    autoRenameInFlight.delete(sessionId);
+    sessionTitleCache.delete(sessionId);
+    // Delete stale session from disk (fire-and-forget)
+    acpConnection?.connection.extMethod("sessions/delete", { sessionId }).catch(() => {});
   }
 
   // ── Session title cache (for Haiku routing) ──
@@ -636,6 +734,30 @@ export function startServer(port: number) {
     return haikuPool.route(messageText, sessionTitle, lastTurnSummary);
   }
 
+  // ── Route whitelist (skip Haiku routing for prompts that are clearly continuations) ──
+
+  const ROUTE_WHITELIST_PATTERNS: RegExp[] = [
+    // Slash commands (e.g., /commit, /help, /review-pr 123)
+    /^\/\S/,
+    // Affirmative/negative responses (may have trailing explanation)
+    /^(yes|yeah|yep|yup|no|nope|nah|ok|okay|sure|go ahead|do it|looks good|lgtm|approved|sounds good|perfect|great|correct|right|exactly|agreed)\b/i,
+    // Action continuations
+    /^(continue|proceed|go on|try again|retry|undo|revert|cancel|stop|wait|hold on|never ?mind)\b/i,
+    // Acknowledgements
+    /^(thanks|thank you|thx|ty)\b/i,
+  ];
+
+  /**
+   * Returns true if the prompt should bypass Haiku routing and stay in the current session.
+   * These are prompts that are unambiguously continuations of the current conversation
+   * (e.g., confirmations, slash commands, retry requests).
+   */
+  function isRouteWhitelisted(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) return true;
+    return ROUTE_WHITELIST_PATTERNS.some((pat) => pat.test(trimmed));
+  }
+
   // ── Auto-rename (server-side, uses the Haiku pool for fast title generation) ──
   /** Sessions eligible for auto-rename (newly created, not resumed). */
   const autoRenameEligible = new Set<string>();
@@ -650,7 +772,12 @@ export function startServer(port: number) {
     const cwd = process.env.ACP_CWD || process.cwd();
     autoRenameInFlight.add(sessionId);
     haikuPool.generateTitle(cwd, userMessage, "").then(async (title) => {
-      if (!title || !acpConnection) return;
+      if (!title) {
+        log.warn({ session: sid(sessionId) }, "auto-rename: generateTitle returned null, skipping");
+        autoRenameInFlight.delete(sessionId);
+        return;
+      }
+      if (!acpConnection) return;
       // Guard: user may have manually renamed during generation
       if (!autoRenameInFlight.delete(sessionId)) {
         log.info({ session: sid(sessionId), title }, "auto-rename: cancelled (manual rename during generation)");
@@ -661,6 +788,12 @@ export function startServer(port: number) {
         sessionTitleCache.set(sessionId, title);
         log.info({ session: sid(sessionId), title }, "auto-rename: applied");
         await broadcastSessions();
+        // Guard: if broadcastSessions() coalesced with a stale in-flight call
+        // (e.g., the post-turn broadcast that read the raw user prompt before
+        // sessions/rename updated the title), the SESSIONS reducer on the client
+        // may have overwritten our nice title. Re-send session_title_update AFTER
+        // broadcastSessions resolves so it's always the last update the client sees.
+        broadcast({ type: "session_title_update", sessionId, title });
       } catch (err: any) {
         log.error({ err: err.message, session: sid(sessionId) }, "auto-rename: apply failed");
       }
@@ -847,7 +980,7 @@ export function startServer(port: number) {
           sendSessionMeta(ws, targetSession);
           sendTurnState(ws, targetSession);
           sendQueueState(ws, targetSession);
-          ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState?.columnOverrides ?? {}, sortOrders: kanbanState?.sortOrders ?? {}, pendingPrompts: kanbanState?.pendingPrompts ?? {}, recurringTasks: kanbanState?.recurringTasks ?? {} }));
+          ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState?.columnOverrides ?? {}, sortOrders: kanbanState?.sortOrders ?? {}, pendingPrompts: kanbanState?.pendingPrompts ?? {} }));
           log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
 
           // Fire-and-forget: don't block the open handler waiting for session list
@@ -873,7 +1006,7 @@ export function startServer(port: number) {
             sendSessionMeta(ws, targetSession);
             sendTurnState(ws, targetSession);
             sendQueueState(ws, targetSession);
-            ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState?.columnOverrides ?? {}, sortOrders: kanbanState?.sortOrders ?? {}, pendingPrompts: kanbanState?.pendingPrompts ?? {}, recurringTasks: kanbanState?.recurringTasks ?? {} }));
+            ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState?.columnOverrides ?? {}, sortOrders: kanbanState?.sortOrders ?? {}, pendingPrompts: kanbanState?.pendingPrompts ?? {} }));
             log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
             broadcastSessions().catch((err) => log.error({ client: clientId, err: err.message }, "ws: broadcastSessions failed"));
           } catch (err: any) {
@@ -1022,8 +1155,29 @@ export function startServer(port: number) {
               }).catch(() => {});
               log.info({ client: cid, session: sid(msg.sessionId), totalMs: Math.round(performance.now() - t0) }, "ws: ← session_switched");
             } catch (err: any) {
-              log.error({ client: cid, msgType: msg.type, err: err.message, durationMs: Math.round(performance.now() - t0) }, "ws: switch/resume error");
-              ws.send(JSON.stringify({ type: "error", text: `Failed to load session: ${err.message}` }));
+              if (isSessionGoneError(err)) {
+                // Session's conversation is gone — auto-create a replacement and switch to it
+                log.warn({ client: cid, session: sid(msg.sessionId), err: err.message }, "ws: session gone on switch, auto-creating replacement");
+                try {
+                  const { sessionId: newId } = await createNewSession(acpConnection.connection, broadcast);
+                  liveSessionIds.add(newId);
+                  autoRenameEligible.add(newId);
+                  if (defaultSessionId === msg.sessionId) defaultSessionId = newId;
+                  cleanupStaleSession(msg.sessionId);
+
+                  clientState.currentSessionId = newId;
+                  ws.send(JSON.stringify({ type: "session_switched", sessionId: newId, turnStatus: null }));
+                  sendSessionMeta(ws, newId);
+                  await broadcastSessions();
+                  log.info({ client: cid, oldSession: sid(msg.sessionId), newSession: sid(newId), totalMs: Math.round(performance.now() - t0) }, "ws: ← session replaced (stale)");
+                } catch (createErr: any) {
+                  // Don't expose internal errors to the user — just log and silently fail
+                  log.error({ client: cid, err: createErr.message }, "ws: failed to create replacement session");
+                }
+              } else {
+                log.error({ client: cid, msgType: msg.type, err: err.message, durationMs: Math.round(performance.now() - t0) }, "ws: switch/resume error");
+                ws.send(JSON.stringify({ type: "error", text: `Failed to load session: ${err.message}` }));
+              }
             }
             break;
           }
@@ -1092,16 +1246,11 @@ export function startServer(port: number) {
                   }
                 }
               }
-              // Stop any recurring tasks for deleted sessions
-              for (const id of deletedIds) {
-                stopRecurringTask(id);
-              }
               // Clean up kanban state for deleted sessions
               if (kanbanState) {
                 for (const id of deletedIds) {
                   delete kanbanState.columnOverrides[id];
                   delete kanbanState.pendingPrompts[id];
-                  if (kanbanState.recurringTasks) delete kanbanState.recurringTasks[id];
                   for (const order of Object.values(kanbanState.sortOrders)) {
                     if (!order) continue;
                     const idx = order.indexOf(id);
@@ -1133,9 +1282,18 @@ export function startServer(port: number) {
               const cmdSessionId = clientState.currentSessionId;
               if (cmdSessionId && !liveSessionIds.has(cmdSessionId)) {
                 log.info({ client: cid, session: sid(cmdSessionId) }, "ws: resuming session for get_commands");
-                await resumeSession(acpConnection.connection, cmdSessionId);
-                liveSessionIds.add(cmdSessionId);
-                broadcastSessions().catch(() => {});
+                try {
+                  await resumeSession(acpConnection.connection, cmdSessionId);
+                  liveSessionIds.add(cmdSessionId);
+                  broadcastSessions().catch(() => {});
+                } catch (resumeErr: any) {
+                  if (isSessionGoneError(resumeErr)) {
+                    // Session gone — silently skip resume; commands still work without a live session
+                    log.warn({ client: cid, session: sid(cmdSessionId), err: resumeErr.message }, "ws: get_commands resume skipped (session gone)");
+                  } else {
+                    log.warn({ client: cid, session: sid(cmdSessionId), err: resumeErr.message }, "ws: get_commands resume failed");
+                  }
+                }
               }
               const result = await acpConnection.connection.extMethod("sessions/getAvailableCommands", {});
               const cmdCount = (result.commands as unknown[])?.length ?? 0;
@@ -1221,6 +1379,36 @@ export function startServer(port: number) {
             const routeSession = clientState.currentSessionId;
             log.info({ client: cid, session: sid(routeSession), textLen: msg.text?.length ?? 0 }, "ws: → route_message");
 
+            // Whitelist check: skip Haiku routing for prompts that are clearly continuations
+            if (isRouteWhitelisted(msg.text)) {
+              log.info({ client: cid, session: sid(routeSession), route: "whitelisted" }, "ws: route_message → same session (whitelisted)");
+              ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
+
+              const userMsgJson = JSON.stringify({
+                type: "user_message",
+                sessionId: routeSession,
+                text: msg.text,
+                images: msg.images,
+                files: msg.files,
+                queueId: msg.queueId,
+              });
+              for (const [otherWs, otherState] of clients) {
+                if (otherWs !== ws && otherState.currentSessionId === routeSession) {
+                  try { otherWs.send(userMsgJson); } catch {}
+                }
+              }
+
+              if (processingSessions.has(routeSession)) {
+                const queueId = msg.queueId || `sq-${++queueIdCounter}`;
+                getQueue(routeSession).push({ id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
+                log.info({ session: sid(routeSession), queueId, queueLen: getQueue(routeSession).length }, "queue: enqueued (whitelisted)");
+                broadcast({ type: "message_queued", queueId, sessionId: routeSession });
+              } else {
+                processPrompt(routeSession, msg.text, msg.images, msg.files);
+              }
+              break;
+            }
+
             try {
               const sessionTitle = sessionTitleCache.get(routeSession) ?? null;
               const lastTurnSummary = await getLastTurnSummary(routeSession);
@@ -1282,99 +1470,85 @@ export function startServer(port: number) {
             break;
           }
 
-          case "create_recurring_task": {
-            log.info({ client: cid, triggerType: msg.triggerType }, "ws: → create_recurring_task");
-            try {
-              const t0 = performance.now();
-              const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
-              log.info({ client: cid, session: sid(sessionId), durationMs: Math.round(performance.now() - t0) }, "recurring: session created");
-              liveSessionIds.add(sessionId);
+          case "preflight_route": {
+            // Preflight routing: called as user types (debounced) to pre-cache routing decision.
+            // Responds with preflight_route_result but does NOT process the prompt.
+            if (!clientState.currentSessionId) break;
+            const pfSession = clientState.currentSessionId;
+            const pfSeq = msg.seq ?? 0;
 
-              // Rename the session to the prompt text (truncated)
-              const title = (msg.prompt as string).slice(0, 80);
-              await acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
+            // Skip if a newer preflight request has already arrived (stale request)
+            if (clientState.preflightSeq != null && pfSeq < clientState.preflightSeq) {
+              log.debug({ client: cid, seq: pfSeq, latestSeq: clientState.preflightSeq }, "preflight: skipping stale request");
+              break;
+            }
+            clientState.preflightSeq = pfSeq;
 
-              // Store recurring config in kanban state
-              const entry: RecurringTaskEntry = {
-                type: msg.triggerType,
-                ...(msg.triggerType === "interval" ? { intervalMs: msg.intervalMs ?? 30000 } : {}),
-                ...(msg.triggerType === "filewatcher" ? { watchPaths: msg.watchPaths ?? [] } : {}),
-                prompt: msg.prompt,
-                active: true,
+            // Whitelist check: immediately return "same session" without calling Haiku
+            if (isRouteWhitelisted(msg.text)) {
+              clientState.preflightCache = {
+                text: msg.text,
+                sessionId: pfSession,
+                isSameSession: true,
+                timestamp: Date.now(),
               };
-              if (!kanbanState) {
-                kanbanState = { version: 1, columnOverrides: {}, sortOrders: {}, pendingPrompts: {}, updatedAt: new Date().toISOString() };
-              }
-              kanbanState.columnOverrides[sessionId] = "recurring";
-              if (!kanbanState.recurringTasks) kanbanState.recurringTasks = {};
-              kanbanState.recurringTasks[sessionId] = entry;
-              kanbanState.updatedAt = new Date().toISOString();
-              writeKanbanState(getResolvedProjectDir(), kanbanState).catch((err) =>
-                log.error({ err: err.message }, "kanban: recurring save error"),
-              );
-
-              // Start the background subprocess
-              const cwd = process.env.ACP_CWD || process.cwd();
-              startRecurringTask(sessionId, entry, port, cwd);
-
-              // Notify all clients
-              ws.send(JSON.stringify({ type: "recurring_task_created", sessionId }));
-              sendToAll(JSON.stringify({
-                type: "kanban_state",
-                columnOverrides: kanbanState.columnOverrides,
-                sortOrders: kanbanState.sortOrders ?? {},
-                pendingPrompts: kanbanState.pendingPrompts ?? {},
-                recurringTasks: kanbanState.recurringTasks ?? {},
+              log.info({ client: cid, session: sid(pfSession), route: "whitelisted", seq: pfSeq }, "ws: ← preflight_route_result (whitelisted)");
+              ws.send(JSON.stringify({
+                type: "preflight_route_result",
+                sessionId: pfSession,
+                isSameSession: true,
+                text: msg.text,
+                seq: pfSeq,
               }));
-              broadcastSessions().catch(() => {});
+              break;
+            }
+
+            log.info({ client: cid, session: sid(pfSession), textLen: msg.text?.length ?? 0, seq: pfSeq }, "ws: → preflight_route");
+
+            try {
+              const sessionTitle = sessionTitleCache.get(pfSession) ?? null;
+              const lastTurnSummary = await getLastTurnSummary(pfSession);
+
+              // Check if this request is still current (newer request may have arrived during await)
+              if (clientState.preflightSeq !== pfSeq) {
+                log.debug({ client: cid, seq: pfSeq, latestSeq: clientState.preflightSeq }, "preflight: superseded during routing");
+                break;
+              }
+
+              const shouldContinue = await routeWithHaiku(msg.text, sessionTitle, lastTurnSummary);
+
+              // Check again after routing completes
+              if (clientState.preflightSeq !== pfSeq) {
+                log.debug({ client: cid, seq: pfSeq, latestSeq: clientState.preflightSeq }, "preflight: superseded after routing");
+                break;
+              }
+
+              // Cache the result for use when the user hits Send
+              clientState.preflightCache = {
+                text: msg.text,
+                sessionId: pfSession,
+                isSameSession: shouldContinue,
+                timestamp: Date.now(),
+              };
+
+              log.info({ client: cid, session: sid(pfSession), route: shouldContinue ? "same" : "new", seq: pfSeq }, "ws: ← preflight_route_result");
+              ws.send(JSON.stringify({
+                type: "preflight_route_result",
+                sessionId: pfSession,
+                isSameSession: shouldContinue,
+                text: msg.text,
+                seq: pfSeq,
+              }));
             } catch (err: any) {
-              log.error({ client: cid, err: err.message }, "ws: create_recurring_task error");
-              ws.send(JSON.stringify({ type: "error", text: err.message }));
+              log.warn({ client: cid, err: err.message, seq: pfSeq }, "preflight: error (non-fatal)");
+              // Don't respond on error — the send-time route_message fallback handles it
             }
             break;
           }
 
-          case "toggle_recurring_task": {
-            const { sessionId: toggleId, active } = msg;
-            log.info({ client: cid, session: sid(toggleId), active }, "ws: → toggle_recurring_task");
-            if (kanbanState?.recurringTasks?.[toggleId]) {
-              kanbanState.recurringTasks[toggleId].active = active;
-              kanbanState.updatedAt = new Date().toISOString();
-              if (active) {
-                const entry = kanbanState.recurringTasks[toggleId];
-                const cwd = process.env.ACP_CWD || process.cwd();
-                startRecurringTask(toggleId, entry, port, cwd);
-              } else {
-                stopRecurringTask(toggleId);
-              }
-              writeKanbanState(getResolvedProjectDir(), kanbanState).catch(() => {});
-              sendToAll(JSON.stringify({
-                type: "kanban_state",
-                columnOverrides: kanbanState.columnOverrides,
-                sortOrders: kanbanState.sortOrders ?? {},
-                pendingPrompts: kanbanState.pendingPrompts ?? {},
-                recurringTasks: kanbanState.recurringTasks ?? {},
-              }));
-            }
-            break;
-          }
-
-          case "stop_recurring_task": {
-            const { sessionId: stopId } = msg;
-            log.info({ client: cid, session: sid(stopId) }, "ws: → stop_recurring_task");
-            stopRecurringTask(stopId);
-            if (kanbanState?.recurringTasks) {
-              delete kanbanState.recurringTasks[stopId];
-              kanbanState.updatedAt = new Date().toISOString();
-              writeKanbanState(getResolvedProjectDir(), kanbanState).catch(() => {});
-              sendToAll(JSON.stringify({
-                type: "kanban_state",
-                columnOverrides: kanbanState.columnOverrides,
-                sortOrders: kanbanState.sortOrders ?? {},
-                pendingPrompts: kanbanState.pendingPrompts ?? {},
-                recurringTasks: kanbanState.recurringTasks ?? {},
-              }));
-            }
+          case "request_haiku_metrics": {
+            const metrics = haikuPool.getMetrics();
+            try { ws.send(JSON.stringify({ type: "haiku_metrics", metrics })); } catch {}
             break;
           }
 
@@ -1385,7 +1559,6 @@ export function startServer(port: number) {
               columnOverrides: msg.columnOverrides ?? {},
               sortOrders: msg.sortOrders ?? {},
               pendingPrompts: msg.pendingPrompts ?? {},
-              recurringTasks: kanbanState?.recurringTasks,
               updatedAt: new Date().toISOString(),
             };
             if (kanbanSaveTimer) clearTimeout(kanbanSaveTimer);
@@ -1398,91 +1571,6 @@ export function startServer(port: number) {
                 log.error({ err: err.message }, "kanban: save error");
               }
             }, KANBAN_SAVE_DEBOUNCE_MS);
-            break;
-          }
-
-          case "create_recurring_task": {
-            log.info({ client: cid, triggerType: msg.triggerType }, "ws: → create_recurring_task");
-            try {
-              const t0 = performance.now();
-              const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
-              liveSessionIds.add(sessionId);
-
-              // Rename session to the prompt text (truncated)
-              const title = (msg.prompt as string).slice(0, 80);
-              await acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
-
-              // Build config
-              const config: RecurringTaskEntry = {
-                type: msg.triggerType ?? "interval",
-                prompt: msg.prompt,
-                active: true,
-                ...(msg.triggerType === "filewatcher"
-                  ? { watchPaths: msg.watchPaths ?? [] }
-                  : { intervalMs: msg.intervalMs ?? 30000 }),
-              };
-
-              // Store in kanban state
-              if (!kanbanState) {
-                kanbanState = { version: 1, columnOverrides: {}, sortOrders: {}, pendingPrompts: {}, recurringTasks: {}, updatedAt: new Date().toISOString() };
-              }
-              kanbanState.columnOverrides[sessionId] = "recurring";
-              if (!kanbanState.recurringTasks) kanbanState.recurringTasks = {};
-              kanbanState.recurringTasks[sessionId] = config;
-              kanbanState.updatedAt = new Date().toISOString();
-              writeKanbanState(getResolvedProjectDir(), kanbanState).catch((err) =>
-                log.error({ err: err.message }, "kanban: recurring save error"),
-              );
-
-              // Start the background process
-              const cwd = process.env.ACP_CWD || process.cwd();
-              startRecurringTask(sessionId, config, port, cwd);
-
-              // Respond with the new session ID
-              ws.send(JSON.stringify({ type: "recurring_task_created", sessionId }));
-              // Broadcast updated recurring tasks + sessions
-              sendToAll(JSON.stringify({ type: "recurring_tasks_state", tasks: kanbanState.recurringTasks }));
-              await broadcastSessions();
-              log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - t0) }, "ws: recurring task created");
-            } catch (err: any) {
-              log.error({ client: cid, err: err.message }, "ws: create_recurring_task error");
-              ws.send(JSON.stringify({ type: "error", text: err.message }));
-            }
-            break;
-          }
-
-          case "toggle_recurring_task": {
-            const { sessionId, active } = msg;
-            log.info({ client: cid, session: sid(sessionId), active }, "ws: → toggle_recurring_task");
-            if (kanbanState?.recurringTasks?.[sessionId]) {
-              kanbanState.recurringTasks[sessionId].active = active;
-              kanbanState.updatedAt = new Date().toISOString();
-              if (active) {
-                const cwd = process.env.ACP_CWD || process.cwd();
-                startRecurringTask(sessionId, kanbanState.recurringTasks[sessionId], port, cwd);
-              } else {
-                stopRecurringTask(sessionId);
-              }
-              writeKanbanState(getResolvedProjectDir(), kanbanState).catch((err) =>
-                log.error({ err: err.message }, "kanban: toggle save error"),
-              );
-              sendToAll(JSON.stringify({ type: "recurring_tasks_state", tasks: kanbanState.recurringTasks }));
-            }
-            break;
-          }
-
-          case "stop_recurring_task": {
-            const { sessionId } = msg;
-            log.info({ client: cid, session: sid(sessionId) }, "ws: → stop_recurring_task");
-            stopRecurringTask(sessionId);
-            if (kanbanState?.recurringTasks) {
-              delete kanbanState.recurringTasks[sessionId];
-              kanbanState.updatedAt = new Date().toISOString();
-              writeKanbanState(getResolvedProjectDir(), kanbanState).catch((err) =>
-                log.error({ err: err.message }, "kanban: stop save error"),
-              );
-              sendToAll(JSON.stringify({ type: "recurring_tasks_state", tasks: kanbanState.recurringTasks }));
-            }
             break;
           }
 
@@ -1511,9 +1599,7 @@ export function startServer(port: number) {
     log.error({ err: err.message }, "prewarm failed");
   });
 
-  // Graceful shutdown: stop all recurring task subprocesses
   const shutdown = () => {
-    stopAllRecurringTasks();
     process.exit(0);
   };
   process.on("SIGTERM", shutdown);

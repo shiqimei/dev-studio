@@ -3,6 +3,7 @@ import { DndProvider } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import { WebSocketProvider, useWsState } from "./context/WebSocketContext";
 import { Header } from "./components/Header";
+import { SettingsModal } from "./components/SettingsModal";
 import { TaskBar } from "./components/TaskBar";
 import { TaskPanel } from "./components/TaskPanel";
 import { ChatPanel } from "./components/ChatPanel";
@@ -71,6 +72,7 @@ function Layout() {
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Header />
+      <SettingsModal />
       <TaskBar />
       <TaskPanel />
       <DndProvider backend={HTML5Backend}>

@@ -29,6 +29,7 @@ import type {
   SubagentType,
 } from "../types";
 import { classifyTool } from "../utils";
+import { isSystemPrompt } from "../kanban-prompts";
 import { jsonlToEntries, prettyToolName, extractAgentId } from "../jsonl-convert";
 
 /** Map raw subagent_type string to our SubagentType enum. */
@@ -187,7 +188,6 @@ const initialState: AppState = {
   kanbanColumnOverrides: {},
   kanbanSortOrders: {},
   kanbanPendingPrompts: {},
-  kanbanRecurringTasks: {},
   kanbanStateLoaded: false,
 };
 
@@ -861,20 +861,30 @@ function reducer(state: AppState, action: Action): AppState {
       // sessions-index.json during concurrent new session creation).
       const incomingIds = new Set(action.sessions.map((s) => s.sessionId));
       const recentlyDeleted = new Set(state._recentlyDeletedIds);
-      // Build a lookup of existing children so we can preserve optimistically-inserted
-      // subagent children when the server broadcast doesn't include them.
-      const existingChildrenBySession = new Map<string, SubagentChild[]>();
+      // Build a lookup of existing sessions so we can preserve fields that
+      // stale sessions/list responses might overwrite with null.
+      const existingBySession = new Map<string, (typeof state.diskSessions)[number]>();
       for (const s of state.diskSessions) {
-        if (s.children?.length) existingChildrenBySession.set(s.sessionId, s.children);
+        existingBySession.set(s.sessionId, s);
       }
       const merged = action.sessions
         .filter((s) => !recentlyDeleted.has(s.sessionId))
         .map((s) => {
-          // Preserve existing children if the incoming session doesn't include them
-          if (!s.children?.length && existingChildrenBySession.has(s.sessionId)) {
-            return { ...s, children: existingChildrenBySession.get(s.sessionId)! };
+          const existing = existingBySession.get(s.sessionId);
+          if (!existing) return s;
+          let result = s;
+          // Preserve existing title when the incoming session has null title.
+          // This prevents a stale sessions/list (fetched before the ACP agent
+          // or Haiku pool sets the title) from wiping a title that was already
+          // delivered via session_title_update.
+          if (!result.title && existing.title) {
+            result = { ...result, title: existing.title };
           }
-          return s;
+          // Preserve existing children if the incoming session doesn't include them
+          if (!result.children?.length && existing.children?.length) {
+            result = { ...result, children: existing.children };
+          }
+          return result;
         });
       // Preserve existing sessions that are missing from the incoming list
       // but were NOT recently deleted (they were probably missed due to a race condition)
@@ -1214,8 +1224,28 @@ function reducer(state: AppState, action: Action): AppState {
         kanbanColumnOverrides: action.columnOverrides,
         kanbanSortOrders: action.sortOrders,
         kanbanPendingPrompts: action.pendingPrompts,
-        kanbanRecurringTasks: action.recurringTasks,
         kanbanStateLoaded: true,
+      };
+
+    case "KANBAN_UPDATE_PENDING_PROMPT": {
+      if (!action.text) {
+        const next = { ...state.kanbanPendingPrompts };
+        delete next[action.sessionId];
+        return { ...state, kanbanPendingPrompts: next };
+      }
+      return {
+        ...state,
+        kanbanPendingPrompts: { ...state.kanbanPendingPrompts, [action.sessionId]: action.text },
+      };
+    }
+
+    case "SET_OPTIMISTIC_TURN_STATUS":
+      return {
+        ...state,
+        liveTurnStatus: {
+          ...state.liveTurnStatus,
+          [action.sessionId]: action.status,
+        },
       };
 
     default:
@@ -1228,7 +1258,7 @@ function reducer(state: AppState, action: Action): AppState {
 
 export interface WsActions {
   dispatch: React.Dispatch<Action>;
-  send: (text: string, images?: ImageAttachment[], files?: FileAttachment[]) => void;
+  send: (text: string, images?: ImageAttachment[], files?: FileAttachment[], options?: { skipRouting?: boolean }) => void;
   interrupt: () => void;
   newSession: () => void;
   createBacklogSession: (title: string) => Promise<string>;
@@ -1243,15 +1273,15 @@ export interface WsActions {
   requestSubagents: (sessionId: string) => void;
   respondToPermission: (requestId: string, optionId: string, optionName: string) => void;
   saveKanbanState: (columnOverrides: Record<string, string>, sortOrders: Partial<Record<string, string[]>>, pendingPrompts: Record<string, string>) => void;
-  createRecurringTask: (prompt: string, triggerType: "interval" | "filewatcher", config: { intervalMs?: number; watchPaths?: string[] }) => Promise<string>;
-  toggleRecurringTask: (sessionId: string, active: boolean) => void;
-  stopRecurringTask: (sessionId: string) => void;
+  updatePendingPrompt: (sessionId: string, text: string) => void;
+  preflightRoute: (text: string) => void;
+  requestHaikuMetrics: () => void;
 }
 
 interface WsContextValue {
   state: AppState;
   dispatch: React.Dispatch<Action>;
-  send: (text: string, images?: ImageAttachment[], files?: FileAttachment[]) => void;
+  send: (text: string, images?: ImageAttachment[], files?: FileAttachment[], options?: { skipRouting?: boolean }) => void;
   interrupt: () => void;
   newSession: () => void;
   createBacklogSession: (title: string) => Promise<string>;
@@ -1266,9 +1296,9 @@ interface WsContextValue {
   requestSubagents: (sessionId: string) => void;
   respondToPermission: (requestId: string, optionId: string, optionName: string) => void;
   saveKanbanState: (columnOverrides: Record<string, string>, sortOrders: Partial<Record<string, string[]>>, pendingPrompts: Record<string, string>) => void;
-  createRecurringTask: (prompt: string, triggerType: "interval" | "filewatcher", config: { intervalMs?: number; watchPaths?: string[] }) => Promise<string>;
-  toggleRecurringTask: (sessionId: string, active: boolean) => void;
-  stopRecurringTask: (sessionId: string) => void;
+  updatePendingPrompt: (sessionId: string, text: string) => void;
+  preflightRoute: (text: string) => void;
+  requestHaikuMetrics: () => void;
 }
 
 const WsActionsContext = createContext<WsActions | null>(null);
@@ -1355,13 +1385,163 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     queueId: string;
   } | null>(null);
 
-  const send = useCallback((text: string, images?: ImageAttachment[], files?: FileAttachment[]) => {
+  // ── Preflight routing state (as-you-type session routing prediction) ──
+  /** Cached preflight routing result from the server. */
+  const preflightCacheRef = useRef<{
+    text: string;
+    sessionId: string;
+    isSameSession: boolean;
+    seq: number;
+    receivedAt: number;
+  } | null>(null);
+  /** Monotonically increasing sequence number for preflight requests. */
+  const preflightSeqRef = useRef(0);
+  /** Debounce timer for preflight routing. */
+  const preflightTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  /** Text of the last preflight request that was actually sent (for similarity check). */
+  const preflightLastSentTextRef = useRef<string>("");
+
+  // ── Preflight routing constants ──
+  const PREFLIGHT_DEBOUNCE_MS = 400;
+  const PREFLIGHT_MIN_CHARS = 15;
+  const PREFLIGHT_MIN_WORDS = 3;
+  const PREFLIGHT_CACHE_TTL_MS = 30_000; // 30s — stale cache is worse than no cache
+  /** If new text is just an extension of previously-routed text (prefix match + small delta), skip re-routing. */
+  const PREFLIGHT_SIMILARITY_DELTA = 20; // chars
+
+  /** Trigger a preflight routing request (debounced, called as user types). */
+  const preflightRoute = useCallback((text: string) => {
+    // Clear any pending debounce timer
+    if (preflightTimerRef.current) clearTimeout(preflightTimerRef.current);
+
+    // Guard: no session, no WS, or session is pending
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (!currentSessionRef.current || currentSessionRef.current.startsWith("pending:")) return;
+
+    const trimmed = text.trim();
+
+    // Skip for short text — likely continuation like "continue", "yes", "do it"
+    const wordCount = trimmed.split(/\s+/).length;
+    if (trimmed.length < PREFLIGHT_MIN_CHARS || wordCount < PREFLIGHT_MIN_WORDS) {
+      // Short text → assume same session, clear any stale cache
+      preflightCacheRef.current = null;
+      return;
+    }
+
+    // Similarity check: if new text is just a small extension of the last-routed text,
+    // the routing decision is unlikely to change — skip the API call.
+    const lastSent = preflightLastSentTextRef.current;
+    if (lastSent && trimmed.startsWith(lastSent) && (trimmed.length - lastSent.length) < PREFLIGHT_SIMILARITY_DELTA) {
+      return;
+    }
+    // Also skip if the last-routed text starts with the new text (user deleted some chars at end)
+    if (lastSent && lastSent.startsWith(trimmed) && (lastSent.length - trimmed.length) < PREFLIGHT_SIMILARITY_DELTA) {
+      return;
+    }
+
+    // Debounce: fire after the user pauses typing
+    preflightTimerRef.current = setTimeout(() => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      if (!currentSessionRef.current || currentSessionRef.current.startsWith("pending:")) return;
+
+      const seq = ++preflightSeqRef.current;
+      preflightLastSentTextRef.current = trimmed;
+
+      console.log(`[${pageMs()}] preflight: sending seq=${seq} len=${trimmed.length} session=${currentSessionRef.current.slice(0, 8)}`);
+      wsRef.current.send(JSON.stringify({
+        type: "preflight_route",
+        text: trimmed,
+        seq,
+      }));
+    }, PREFLIGHT_DEBOUNCE_MS);
+  }, []);
+
+  const send = useCallback((text: string, images?: ImageAttachment[], files?: FileAttachment[], options?: { skipRouting?: boolean }) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+    // Cancel any pending preflight debounce — we're sending now
+    if (preflightTimerRef.current) clearTimeout(preflightTimerRef.current);
 
     const queueId = `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     if (currentSessionRef.current && !currentSessionRef.current.startsWith("pending:")) {
-      // Session selected: route through Haiku to decide whether to continue here or create new
+      const trimmed = text.trim();
+      const cache = preflightCacheRef.current;
+      const wordCount = trimmed.split(/\s+/).length;
+
+      // Fast path 0: Explicit skip-routing (e.g. kanban drag-to-run) → send directly, no Haiku routing
+      if (options?.skipRouting) {
+        console.log(`[${pageMs()}] send: skipRouting → direct prompt (no route)`);
+        dispatch({ type: "SEND_MESSAGE", text, images, files, queueId });
+        wsRef.current.send(JSON.stringify({
+          type: "prompt",
+          text,
+          queueId,
+          ...(images?.length ? { images } : {}),
+          ...(files?.length ? { files } : {}),
+        }));
+        preflightCacheRef.current = null;
+        return;
+      }
+
+      // Fast path 1: Short text (< threshold) → stay in current session, no routing needed
+      if (trimmed.length < PREFLIGHT_MIN_CHARS || wordCount < PREFLIGHT_MIN_WORDS) {
+        console.log(`[${pageMs()}] send: short text (${trimmed.length} chars, ${wordCount} words) → same session (no route)`);
+        dispatch({ type: "SEND_MESSAGE", text, images, files, queueId });
+        wsRef.current.send(JSON.stringify({
+          type: "prompt",
+          text,
+          queueId,
+          ...(images?.length ? { images } : {}),
+          ...(files?.length ? { files } : {}),
+        }));
+        preflightCacheRef.current = null;
+        return;
+      }
+
+      // Fast path 2: System prompts (kanban actions) → always same session, skip routing
+      if (isSystemPrompt(trimmed)) {
+        console.log(`[${pageMs()}] send: system prompt → same session (no route)`);
+        dispatch({ type: "SEND_MESSAGE", text, images, files, queueId });
+        wsRef.current.send(JSON.stringify({
+          type: "prompt",
+          text,
+          queueId,
+          ...(images?.length ? { images } : {}),
+          ...(files?.length ? { files } : {}),
+        }));
+        preflightCacheRef.current = null;
+        return;
+      }
+
+      // Fast path 3: Valid preflight cache hit → use cached routing decision (0ms latency!)
+      if (
+        cache &&
+        cache.sessionId === currentSessionRef.current &&
+        cache.isSameSession &&
+        (Date.now() - cache.receivedAt) < PREFLIGHT_CACHE_TTL_MS
+      ) {
+        console.log(`[${pageMs()}] send: preflight cache HIT → same session (0ms routing)`);
+        dispatch({ type: "SEND_MESSAGE", text, images, files, queueId });
+        wsRef.current.send(JSON.stringify({
+          type: "prompt",
+          text,
+          queueId,
+          ...(images?.length ? { images } : {}),
+          ...(files?.length ? { files } : {}),
+        }));
+        preflightCacheRef.current = null;
+        return;
+      }
+
+      // Fast path 4: Preflight says "new session" — still need full route_message
+      // because route_message handles new session creation + session switching.
+      // But we log the preflight hint for debugging.
+      if (cache && cache.sessionId === currentSessionRef.current && !cache.isSameSession) {
+        console.log(`[${pageMs()}] send: preflight hint → new session (confirming via route_message)`);
+      }
+
+      // Default path: route through Haiku (existing behavior)
       pendingRouteRef.current = { text, images, files, queueId };
       // Show user message optimistically (same as non-routing path).
       // If Haiku routes to a new session, SESSION_SWITCHED clears messages[]
@@ -1375,6 +1555,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         ...(images?.length ? { images } : {}),
         ...(files?.length ? { files } : {}),
       }));
+      preflightCacheRef.current = null;
     } else {
       // No session selected: create a new session and send prompt directly
       if (!currentSessionRef.current && !pendingNewSessionRef.current) {
@@ -1406,6 +1587,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
   const deselectSession = useCallback(() => {
     if (pendingNewSessionRef.current) pendingNewSessionRef.current = null;
+    // Clear preflight routing state
+    if (preflightTimerRef.current) clearTimeout(preflightTimerRef.current);
+    preflightCacheRef.current = null;
+    preflightLastSentTextRef.current = "";
     dispatch({ type: "SESSION_DESELECTED" });
   }, []);
 
@@ -1418,6 +1603,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     // Cancel pending new session if user navigates away
     if (pendingNewSessionRef.current) pendingNewSessionRef.current = null;
+    // Clear preflight routing state from previous session
+    if (preflightTimerRef.current) clearTimeout(preflightTimerRef.current);
+    preflightCacheRef.current = null;
+    preflightLastSentTextRef.current = "";
     console.log(`[${pageMs()}] switch requesting ${sessionId.slice(0, 8)}`);
     (window as any).__switchStart = performance.now();
     dispatch({ type: "SESSION_SWITCH_PENDING", sessionId });
@@ -1489,37 +1678,13 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     wsRef.current.send(JSON.stringify({ type: "save_kanban_state", columnOverrides, sortOrders, pendingPrompts }));
   }, []);
 
-  /** Pending recurring task creation resolve callback. */
-  const pendingRecurringRef = useRef<{ resolve: (sessionId: string) => void } | null>(null);
-
-  const createRecurringTask = useCallback((
-    prompt: string,
-    triggerType: "interval" | "filewatcher",
-    config: { intervalMs?: number; watchPaths?: string[] },
-  ): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        reject(new Error("WebSocket not connected"));
-        return;
-      }
-      pendingRecurringRef.current = { resolve };
-      wsRef.current.send(JSON.stringify({
-        type: "create_recurring_task",
-        prompt,
-        triggerType,
-        ...config,
-      }));
-    });
+  const updatePendingPrompt = useCallback((sessionId: string, text: string) => {
+    dispatch({ type: "KANBAN_UPDATE_PENDING_PROMPT", sessionId, text });
   }, []);
 
-  const toggleRecurringTask = useCallback((sessionId: string, active: boolean) => {
+  const requestHaikuMetrics = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(JSON.stringify({ type: "toggle_recurring_task", sessionId, active }));
-  }, []);
-
-  const stopRecurringTaskAction = useCallback((sessionId: string) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(JSON.stringify({ type: "stop_recurring_task", sessionId }));
+    wsRef.current.send(JSON.stringify({ type: "request_haiku_metrics" }));
   }, []);
 
   const fileSearchCallbacks = useRef<Map<string, (files: string[]) => void>>(new Map());
@@ -1675,16 +1840,6 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           pendingBacklogRef.current = null;
         }
 
-        // Resolve pending recurring task creation
-        if (msg.type === "recurring_task_created" && pendingRecurringRef.current) {
-          pendingRecurringRef.current.resolve(msg.sessionId);
-          pendingRecurringRef.current = null;
-          return;
-        }
-        if (msg.type === "error" && pendingRecurringRef.current) {
-          pendingRecurringRef.current = null;
-        }
-
         if (msg.type === "error" && pendingNewSessionRef.current) {
           console.warn(`[${pageMs()}] newSession failed, reverting optimistic switch`);
           pendingNewSessionRef.current = null;
@@ -1721,6 +1876,24 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         if (msg.sessionId && currentSessionRef.current && msg.sessionId !== currentSessionRef.current) {
           const globalTypes = new Set(["sessions", "session_history", "session_switched", "session_title_update", "session_deleted", "session_subagents", "protocol", "permission_request", "permission_resolved"]);
           if (!globalTypes.has(msg.type)) return;
+        }
+
+        // Handle preflight_route_result — update the cache ref silently (no dispatch).
+        if (msg.type === "preflight_route_result") {
+          // Only accept if seq matches the latest request (discard stale responses)
+          if (msg.seq === preflightSeqRef.current) {
+            preflightCacheRef.current = {
+              text: msg.text,
+              sessionId: msg.sessionId,
+              isSameSession: msg.isSameSession,
+              seq: msg.seq,
+              receivedAt: Date.now(),
+            };
+            console.log(`[${pageMs()}] preflight: result seq=${msg.seq} same=${msg.isSameSession} session=${msg.sessionId.slice(0, 8)}`);
+          } else {
+            console.log(`[${pageMs()}] preflight: stale result seq=${msg.seq} (current=${preflightSeqRef.current}), discarding`);
+          }
+          return;
         }
 
         // Handle route_result here (not in handleMsg) because it needs access
@@ -1786,6 +1959,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       disposed = true;
       clearTimeout(reconnectTimer);
       clearTimeout(connectTimeout);
+      if (preflightTimerRef.current) clearTimeout(preflightTimerRef.current);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
       document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -1820,12 +1994,12 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       requestSubagents,
       respondToPermission,
       saveKanbanState,
-      createRecurringTask,
-      toggleRecurringTask,
-      stopRecurringTask: stopRecurringTaskAction,
+      updatePendingPrompt,
+      preflightRoute,
+      requestHaikuMetrics,
     }),
     // All deps are useCallback([]) or useReducer dispatch — stable references
-    [dispatch, send, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, createRecurringTask, toggleRecurringTask, stopRecurringTaskAction],
+    [dispatch, send, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, updatePendingPrompt, preflightRoute, requestHaikuMetrics],
   );
 
   // ── Hash-based URL routing ──
@@ -2110,7 +2284,11 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       dispatch({ type: "SESSION_SUBAGENTS", sessionId: msg.sessionId, children: msg.children ?? [] });
       break;
     case "kanban_state":
-      dispatch({ type: "KANBAN_STATE_LOADED", columnOverrides: msg.columnOverrides ?? {}, sortOrders: msg.sortOrders ?? {}, pendingPrompts: msg.pendingPrompts ?? {}, recurringTasks: msg.recurringTasks ?? {} });
+      dispatch({ type: "KANBAN_STATE_LOADED", columnOverrides: msg.columnOverrides ?? {}, sortOrders: msg.sortOrders ?? {}, pendingPrompts: msg.pendingPrompts ?? {} });
+      break;
+
+    case "haiku_metrics":
+      window.dispatchEvent(new CustomEvent("haiku-metrics", { detail: msg.metrics }));
       break;
   }
 }

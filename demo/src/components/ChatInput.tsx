@@ -1,5 +1,5 @@
 import { useRef, useCallback, useState, useEffect } from "react";
-import { useWs } from "../context/WebSocketContext";
+import { useWs, titleLockedSessions } from "../context/WebSocketContext";
 import { toSupportedImage } from "../utils";
 import type { ImageAttachment, FileAttachment, SlashCommand } from "../types";
 
@@ -27,10 +27,16 @@ function basename(path: string): string {
 }
 
 export function ChatInput() {
-  const { state, send, interrupt, cancelQueued, searchFiles, requestCommands } = useWs();
+  const { state, send, interrupt, cancelQueued, searchFiles, requestCommands, preflightRoute, updatePendingPrompt, renameSession, dispatch } = useWs();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [files, setFiles] = useState<FileAttachment[]>([]);
+
+  // ── Backlog card editing ──
+  // When the current session is a backlog card with a pending prompt,
+  // we pre-populate the input and auto-sync edits back to the card title.
+  const isBacklogEditRef = useRef(false);
+  const renameDebouncerRef = useRef<ReturnType<typeof setTimeout>>();
 
   // ── Undo/redo history ──
   const undoStack = useRef<string[]>([]);
@@ -48,13 +54,15 @@ export function ChatInput() {
   }, []);
 
   // ── Restore draft from localStorage on session switch ──
-  // Skip when currentSessionId is null (initial mount before session is resolved)
-  // to avoid clearing the textarea and causing a flicker.
+  // If the session has a pending prompt (backlog card), use that instead of
+  // the localStorage draft so the user can continue editing the card title.
   useEffect(() => {
     if (!state.currentSessionId) return;
     const el = inputRef.current;
     if (!el) return;
-    const draft = loadDraft(state.currentSessionId);
+    const pendingPrompt = state.kanbanPendingPrompts[state.currentSessionId];
+    const draft = pendingPrompt || loadDraft(state.currentSessionId);
+    isBacklogEditRef.current = !!pendingPrompt;
     el.value = draft;
     lastSnapshotRef.current = draft;
     undoStack.current = [];
@@ -62,7 +70,7 @@ export function ChatInput() {
     // Recalc height
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 210) + "px";
-  }, [state.currentSessionId]);
+  }, [state.currentSessionId]); // intentionally not depending on kanbanPendingPrompts to avoid re-running on every edit
 
   // ── Lazy command loading (gate on connected + empty commands) ──
 
@@ -82,6 +90,18 @@ export function ChatInput() {
   const handleSend = useCallback(() => {
     const text = inputRef.current?.value.trim() ?? "";
     if (!text && images.length === 0 && files.length === 0) return;
+
+    // When sending from a backlog card, clear the pending prompt and lock the title
+    // so the SDK doesn't overwrite it. The SEND_MESSAGE action will set liveTurnStatus
+    // to in_progress, which triggers KanbanPanel's auto-clear to move the card.
+    if (isBacklogEditRef.current && state.currentSessionId) {
+      updatePendingPrompt(state.currentSessionId, "");
+      titleLockedSessions.add(state.currentSessionId);
+      setTimeout(() => titleLockedSessions.delete(state.currentSessionId!), 5000);
+      isBacklogEditRef.current = false;
+      if (renameDebouncerRef.current) clearTimeout(renameDebouncerRef.current);
+    }
+
     send(text, images.length > 0 ? images : undefined, files.length > 0 ? files : undefined);
     if (inputRef.current) {
       inputRef.current.value = "";
@@ -95,7 +115,7 @@ export function ChatInput() {
     setFiles([]);
     setSlashOpen(false);
     setMentionOpen(false);
-  }, [send, images, files, state.currentSessionId]);
+  }, [send, images, files, state.currentSessionId, updatePendingPrompt]);
 
   // ── Detect slash commands and @mentions on input ──
   const slashAnchorRef = useRef(-1);
@@ -141,10 +161,11 @@ export function ChatInput() {
     setMentionOpen(false);
   }, [state.commands, searchFiles]);
 
-  // Clean up debounce on unmount
+  // Clean up debounce timers on unmount
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (renameDebouncerRef.current) clearTimeout(renameDebouncerRef.current);
     };
   }, []);
 
@@ -308,9 +329,28 @@ export function ChatInput() {
     pushUndo();
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 210) + "px";
-    saveDraft(state.currentSessionId, el.value);
+
+    // When editing a backlog card, sync changes to the card title and pending prompt
+    if (isBacklogEditRef.current && state.currentSessionId) {
+      const text = el.value;
+      updatePendingPrompt(state.currentSessionId, text);
+      // Optimistic title update in sidebar/kanban
+      dispatch({ type: "SESSION_TITLE_UPDATE", sessionId: state.currentSessionId, title: text });
+      // Debounced rename to persist on server
+      if (renameDebouncerRef.current) clearTimeout(renameDebouncerRef.current);
+      renameDebouncerRef.current = setTimeout(() => {
+        if (state.currentSessionId) {
+          renameSession(state.currentSessionId, text);
+        }
+      }, 300);
+    } else {
+      saveDraft(state.currentSessionId, el.value);
+    }
+
     checkAutocomplete();
-  }, [checkAutocomplete, pushUndo, state.currentSessionId]);
+    // Trigger preflight session routing as user types (debounced internally)
+    preflightRoute(el.value);
+  }, [checkAutocomplete, pushUndo, state.currentSessionId, preflightRoute, updatePendingPrompt, renameSession, dispatch]);
 
   const onFocus = useCallback(() => {
     if (state.commands.length === 0 && state.connected) {

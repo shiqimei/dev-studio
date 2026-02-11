@@ -69,11 +69,21 @@ function SidebarInProgressLabel({ turnInfo }: { turnInfo: TurnStatus }) {
 
   const elapsed = now - turnInfo.startedAt;
   const activity = turnInfo.activity ?? "brewing";
+
+  // Initial "brewing" state: show animated thinking dots without duration
+  if (activity === "brewing") {
+    return (
+      <span className="truncate">
+        Thinking<span className="thinking-dots"><span>.</span><span>.</span><span>.</span></span>
+      </span>
+    );
+  }
+
   const label = ACTIVITY_LABELS[activity];
 
   return (
     <span className="truncate">
-      {label}... {formatDuration(elapsed)}
+      {label}... ({formatDuration(elapsed)})
     </span>
   );
 }

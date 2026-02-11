@@ -114,6 +114,20 @@ function createWorker(): Worker {
   return { push, close, readResponse, busy: false, warmedUp: false, uses: 0 };
 }
 
+// ── Metrics ──
+
+export interface HaikuMetricEntry {
+  timestamp: number;
+  operation: "route" | "title";
+  durationMs: number;
+  inputLength: number;
+  outputLength: number;
+  output: string;  // truncated to 200 chars
+  success: boolean;
+}
+
+const METRICS_BUFFER_SIZE = 200;
+
 // ── Pool ──
 
 export interface HaikuPool {
@@ -125,6 +139,8 @@ export interface HaikuPool {
   route(messageText: string, sessionTitle: string | null, lastTurnSummary: string | null): Promise<boolean>;
   /** Generate a concise session title from user message and assistant response. */
   generateTitle(cwd: string, userMessage: string, assistantText: string): Promise<string | null>;
+  /** Get collected metrics for all Haiku calls. */
+  getMetrics(): HaikuMetricEntry[];
   /** Gracefully shut down all workers. */
   shutdown(): void;
 }
@@ -132,6 +148,18 @@ export interface HaikuPool {
 export function createHaikuPool(): HaikuPool {
   const workers: Worker[] = [];
   let warmupPromise: Promise<void> | null = null;
+
+  // ── Metrics ring buffer ──
+  const metricsBuffer: HaikuMetricEntry[] = [];
+
+  function recordMetric(entry: HaikuMetricEntry) {
+    if (metricsBuffer.length >= METRICS_BUFFER_SIZE) metricsBuffer.shift();
+    metricsBuffer.push(entry);
+  }
+
+  function getMetrics(): HaikuMetricEntry[] {
+    return [...metricsBuffer];
+  }
 
   // ── Warmup ──
 
@@ -256,23 +284,43 @@ export function createHaikuPool(): HaikuPool {
       const t0 = performance.now();
       const prompt = buildRoutePrompt(messageText, sessionTitle, lastTurnSummary);
       const answer = await queryPool(prompt);
+      const durationMs = Math.round(performance.now() - t0);
       const isSame = !answer.toLowerCase().startsWith("new");
-      log.info({ durationMs: Math.round(performance.now() - t0), answer, isSame }, "route: Haiku decision (pooled)");
+      log.info({ durationMs, answer, isSame }, "route: Haiku decision (pooled)");
+      recordMetric({
+        timestamp: Date.now(),
+        operation: "route",
+        durationMs,
+        inputLength: prompt.length,
+        outputLength: answer.length,
+        output: answer.slice(0, 200),
+        success: true,
+      });
       return isSame;
     } catch (err: any) {
       log.warn({ err: err.message }, "route: Haiku pooled query failed, defaulting to same session");
+      recordMetric({
+        timestamp: Date.now(),
+        operation: "route",
+        durationMs: 0,
+        inputLength: messageText.length,
+        outputLength: 0,
+        output: err.message?.slice(0, 200) ?? "error",
+        success: false,
+      });
       return true;
     }
   }
 
   // ── Title generation ──
 
-  const MAX_TITLE_LENGTH = 32;
+  const MAX_TITLE_LENGTH = 50;
 
   function buildTitlePrompt(projectName: string, userMessage: string, assistantText: string): string {
     let prompt =
-      `Generate a concise session title in ≤${MAX_TITLE_LENGTH} characters. ` +
+      `Generate a short session title (3-6 words, max ${MAX_TITLE_LENGTH} chars). ` +
       `Use imperative verb phrases (e.g. Fix login bug, Add dark mode, Refactor auth). ` +
+      `Keep it short and self-contained — avoid dangling prepositions or articles at the end. ` +
       `No quotes, no trailing punctuation. Output ONLY the title, nothing else.\n\n` +
       `Project: ${projectName}\n\nUser message:\n${userMessage.slice(0, 500)}`;
     if (assistantText.length > 0) {
@@ -303,12 +351,39 @@ export function createHaikuPool(): HaikuPool {
         title = title.slice(1, -1);
       }
       if (title.endsWith(".")) title = title.slice(0, -1);
-      title = title.slice(0, MAX_TITLE_LENGTH).trim();
+      if (title.length > MAX_TITLE_LENGTH) {
+        // Truncate at word boundary, then strip dangling prepositions/articles
+        title = title.slice(0, MAX_TITLE_LENGTH);
+        const lastSpace = title.lastIndexOf(" ");
+        if (lastSpace > 0) title = title.slice(0, lastSpace);
+        // Strip trailing filler words that look "cut" (e.g. "Add support for" → "Add support")
+        title = title.replace(/\s+(?:for|to|in|on|at|of|the|a|an|with|and|or|from|by|as|into)$/i, "");
+      }
+      title = title.trim();
 
-      log.info({ durationMs: Math.round(performance.now() - t0), title }, "haiku-pool: generated title");
+      const durationMs = Math.round(performance.now() - t0);
+      log.info({ durationMs, title }, "haiku-pool: generated title");
+      recordMetric({
+        timestamp: Date.now(),
+        operation: "title",
+        durationMs,
+        inputLength: prompt.length,
+        outputLength: raw.length,
+        output: (title || raw).slice(0, 200),
+        success: true,
+      });
       return title || null;
     } catch (err: any) {
       log.warn({ err: err.message }, "haiku-pool: generateTitle failed");
+      recordMetric({
+        timestamp: Date.now(),
+        operation: "title",
+        durationMs: 0,
+        inputLength: userMessage.length,
+        outputLength: 0,
+        output: err.message?.slice(0, 200) ?? "error",
+        success: false,
+      });
       return null;
     }
   }
@@ -323,5 +398,5 @@ export function createHaikuPool(): HaikuPool {
     workers.length = 0;
   }
 
-  return { warmup, query: queryPool, route, generateTitle, shutdown };
+  return { warmup, query: queryPool, route, generateTitle, getMetrics, shutdown };
 }

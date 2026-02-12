@@ -1,22 +1,12 @@
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { createAcpConnection, createNewSession, resumeSession } from "./session.js";
-import { createHaikuPool } from "./haiku-pool.js";
-import { createOpusPool } from "./opus-pool.js";
-import type { AcpConnection } from "./types.js";
+import { getOrCreateDaemon } from "./daemon.js";
+import type { AgentsDaemon } from "./daemon-types.js";
 import { log, bootMs } from "./log.js";
 import type { KanbanOp } from "./kanban.js";
-import { getProjectDir } from "./kanban.js";
 import * as kanbanDb from "./kanban-db.js";
 
 export function startServer(port: number) {
-  // ── HMR epoch ──
-  // Monotonic counter shared across HMR reloads via globalThis. When Bun hot-
-  // reloads this module, the old module's async closures (e.g. processPrompt)
-  // still run to completion. The epoch lets those closures detect that a newer
-  // module has taken over and skip stale writes to the shared SQLite DB.
-  const serverEpoch = ((globalThis as any).__devStudioServerEpoch = ((globalThis as any).__devStudioServerEpoch ?? 0) + 1);
-
   // ── Initialize SQLite DB synchronously before serving requests ──
   try {
     kanbanDb.init();
@@ -26,21 +16,27 @@ export function startServer(port: number) {
     log.warn({ err: err.message }, "db: early init error");
   }
 
-  // ── Client tracking ──
+  // ── Get or create the daemon (survives HMR via globalThis) ──
+  const daemon = getOrCreateDaemon();
+
+  // ── Client tracking (ephemeral, rebuilt on each HMR reload) ──
   let nextClientId = 1;
-  // ── Preflight route cache (per-client, caches routing decision as user types) ──
+
   interface PreflightRouteCache {
-    text: string;         // The text that was routed
-    sessionId: string;    // The session it was routed for
-    isSameSession: boolean; // The routing decision
-    timestamp: number;    // When the result was cached
+    text: string;
+    sessionId: string;
+    isSameSession: boolean;
+    timestamp: number;
   }
 
-  interface ClientState { id: number; currentSessionId: string | null; connectedAt: number; preflightCache?: PreflightRouteCache; preflightSeq?: number }
+  interface ClientState {
+    id: number;
+    currentSessionId: string | null;
+    connectedAt: number;
+    preflightCache?: PreflightRouteCache;
+    preflightSeq?: number;
+  }
   const clients = new Map<{ send: (data: string) => void }, ClientState>();
-  const liveSessionIds = new Set<string>();
-  /** Default session for reconnecting clients (set when first session is created). */
-  let defaultSessionId: string | null = null;
 
   /** Short session ID for logs. */
   function sid(sessionId: string | null | undefined): string {
@@ -48,114 +44,14 @@ export function startServer(port: number) {
     return sessionId.slice(0, 8);
   }
 
-  // ── Turn state (server-side, survives client disconnect/reconnect) ──
-  type TurnActivity = "brewing" | "thinking" | "responding" | "reading" | "editing" | "running" | "searching" | "delegating" | "planning" | "compacting";
-  interface TurnState {
-    status: "in_progress" | "completed" | "error";
-    startedAt: number;
-    endedAt?: number;
-    durationMs?: number;
-    approxTokens: number;
-    thinkingDurationMs: number;
-    thinkingLastChunkAt?: number;
-    costUsd?: number;
-    outputTokens?: number;
-    activity: TurnActivity;
-    activityDetail?: string;
+  // ── Client delivery helpers ──
 
-    /** Why the turn ended (e.g., "end_turn", "error", "max_tokens"). */
-    stopReason?: string;
-  }
-  const turnStates: Record<string, TurnState> = {};
-
-  // ── Message queue (per-session) ──
-  type QueuedMessage = { id: string; text: string; images?: Array<{ data: string; mimeType: string }>; files?: Array<{ path: string; name: string }>; addedAt: number };
-  const messageQueues = new Map<string, QueuedMessage[]>();
-  const processingSessions = new Set<string>();
-  let queueIdCounter = 0;
-
-  // ── Per-session state (survives client disconnect/reconnect) ──
-  // Stores metadata that new clients need on connect but that only arrives once.
-  interface SessionMeta {
-    sessionInfo?: { sessionId: string; models: string[]; modes: { id: string; name?: string }[] };
-    systemMessages: string[];  // System text messages (e.g. "Connected to...", init metadata)
-    commands?: { name: string; description: string; inputHint?: string }[];
-  }
-  const sessionMetas = new Map<string, SessionMeta>();
-
-  function getSessionMeta(sessionId: string): SessionMeta {
-    let meta = sessionMetas.get(sessionId);
-    if (!meta) { meta = { systemMessages: [] }; sessionMetas.set(sessionId, meta); }
-    return meta;
-  }
-
-  // ── Turn content buffer (per-session) ──
-  // Accumulates streaming messages for the in-progress turn so that clients
-  // joining mid-turn can replay all content they missed (tmux-style attach).
-  const turnContentBuffers = new Map<string, object[]>();
-  const BUFFERABLE_TYPES = new Set(["text", "thought", "tool_call", "tool_call_update", "plan", "permission_request", "permission_resolved", "error"]);
-
-  function getQueue(sessionId: string | null): QueuedMessage[] {
-    if (!sessionId) return [];
-    let q = messageQueues.get(sessionId);
-    if (!q) { q = []; messageQueues.set(sessionId, q); }
-    return q;
-  }
-
-  // Low-level: send raw string to all WS clients (no filtering, no instrumentation)
   function sendToAll(data: string) {
     for (const ws of clients.keys()) {
       try { ws.send(data); } catch {}
     }
   }
 
-  // Emit a protocol entry to the debug panel (bypasses sessionId filter)
-  function emitProto(dir: "send" | "recv", msg: unknown) {
-    sendToAll(JSON.stringify({ type: "protocol", dir, ts: Date.now(), msg }));
-  }
-
-  // Server-originated events that have NO ACP equivalent.
-  // Broadcasts that relay ACP responses (disk_sessions, session_list, session_history,
-  // session_info) are NOT listed — the ACP instrumented stream already shows them.
-  const SERVER_EVENT_MAP: Record<string, string> = {
-    session_switched:     "sessions/switched",
-    session_title_update: "sessions/titleUpdate",
-    turn_start:           "session/turnStart",
-    turn_activity:        "session/turnActivity",
-    turn_end:             "session/turnEnd",
-    error:                "app/error",
-    system:               "app/system",
-    message_queued:       "queue/enqueue",
-    queue_drain_start:    "queue/drainStart",
-    queue_cancelled:      "queue/cancelled",
-    route_result:         "route/result",
-    preflight_route_result: "route/preflight",
-  };
-
-  // Map tool kind/name to a turn activity
-  function toolActivity(kind: string | undefined, toolName: string | undefined): { activity: TurnActivity; detail?: string } {
-    const k = kind?.toLowerCase() ?? "";
-    const n = toolName ?? "";
-    if (k === "thinking" || k === "thought") return { activity: "thinking" };
-    if (n === "Task" || n === "task" || k === "task") return { activity: "delegating", detail: n };
-    if (n === "TodoWrite" || k === "plan") return { activity: "planning" };
-    if (n === "Bash" || k === "bash") return { activity: "running", detail: "Running command" };
-    if (n === "Read" || n === "mcp__acp__Read") return { activity: "reading", detail: n };
-    if (n === "Glob" || n === "Grep" || n === "WebSearch" || n === "WebFetch") return { activity: "searching", detail: n };
-    if (n === "Write" || n === "Edit" || n === "mcp__acp__Write" || n === "mcp__acp__Edit" || n === "NotebookEdit") return { activity: "editing", detail: n };
-    // Default for unknown tools
-    if (n) return { activity: "brewing", detail: n };
-    return { activity: "brewing" };
-  }
-
-  function setActivity(ts: TurnState, activity: TurnActivity, detail?: string) {
-    if (ts.activity === activity && ts.activityDetail === detail) return false;
-    ts.activity = activity;
-    ts.activityDetail = detail;
-    return true;
-  }
-
-  /** Send data to all clients viewing a specific session. */
   function sendToSession(sessionId: string, data: string) {
     for (const [ws, clientState] of clients) {
       if (clientState.currentSessionId === sessionId) {
@@ -164,826 +60,64 @@ export function startServer(port: number) {
     }
   }
 
-  /** Send per-session metadata state to a single client (session_info, system messages, commands). */
-  function sendSessionMeta(ws: { send(data: string): void }, sessionId: string) {
-    const meta = sessionMetas.get(sessionId);
-    if (!meta) return;
-    if (meta.sessionInfo) {
-      ws.send(JSON.stringify(meta.sessionInfo));
-    }
-    for (const text of meta.systemMessages) {
-      ws.send(JSON.stringify({ type: "system", sessionId, text }));
-    }
-    if (meta.commands) {
-      ws.send(JSON.stringify({ type: "commands", sessionId, commands: meta.commands }));
-    }
-  }
-
-  /** Build a TurnStatus snapshot for a session (included in session_switched). */
-  function getTurnStatusSnapshot(sessionId: string): object | null {
-    const ts = turnStates[sessionId];
-    if (!ts || ts.status !== "in_progress") return null;
-    return {
-      status: "in_progress",
-      startedAt: ts.startedAt,
-      activity: ts.activity,
-      activityDetail: ts.activityDetail,
-      approxTokens: ts.approxTokens,
-      thinkingDurationMs: ts.thinkingDurationMs,
-    };
-  }
-
-  /** Send in-progress turn state + buffered content to a single client (tmux-style attach).
-   *  Completed turns are handled via augmentHistoryWithTurnStats (inline in history). */
-  function sendTurnState(ws: { send(data: string): void }, sessionId: string) {
-    const ts = turnStates[sessionId];
-    if (!ts || ts.status !== "in_progress") return;
-
-    // Replay buffered streaming chunks FIRST (text, thoughts, tool calls)
-    const buf = turnContentBuffers.get(sessionId);
-    if (buf && buf.length > 0) {
-      ws.send(JSON.stringify({ type: "turn_content_replay", sessionId, messages: buf }));
-    }
-
-    // Send turn state AFTER replay so TURN_START isn't reset by replayed SEND_MESSAGE
-    ws.send(JSON.stringify({ type: "turn_start", startedAt: ts.startedAt, sessionId }));
-    ws.send(JSON.stringify({
-      type: "turn_activity",
-      activity: ts.activity,
-      detail: ts.activityDetail,
-      approxTokens: ts.approxTokens,
-      thinkingDurationMs: ts.thinkingDurationMs,
-    }));
-  }
-
-  /** Send queued messages to a single client (tmux-style reconnect). */
-  function sendQueueState(ws: { send(data: string): void }, sessionId: string) {
-    const q = messageQueues.get(sessionId);
-    if (!q || q.length === 0) return;
-    for (const item of q) {
-      ws.send(JSON.stringify({ type: "message_queued", queueId: item.id, sessionId }));
-    }
-  }
-
-  /** Augment history entries: append turn_duration for every completed turn that lacks one. */
-  function augmentHistoryWithTurnStats(sessionId: string, entries: unknown[]): unknown[] {
-    if (entries.length === 0) return entries;
-
-    const result: unknown[] = [];
-    let turnStartTs: string | null = null; // timestamp of the user message starting current turn
-    let turnTextChars = 0; // accumulated text chars in current turn (for approx token count)
-
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i] as Record<string, unknown>;
-      result.push(e);
-
-      // Track turn starts (non-meta user entries)
-      if (e.type === "user" && !e.isMeta) {
-        turnStartTs = (e.timestamp as string) ?? null;
-        turnTextChars = 0;
-      }
-
-      // Accumulate text chars from assistant content blocks
-      if (e.type === "assistant") {
-        const msg = e.message as Record<string, unknown> | undefined;
-        const content = msg?.content as Array<Record<string, unknown>> | undefined;
-        if (content) {
-          for (const block of content) {
-            if ((block.type === "text" || block.type === "thinking") && typeof block.text === "string") {
-              turnTextChars += block.text.length;
-            }
-          }
-        }
-      }
-
-      // Already has a turn_duration → reset turn tracking
-      if (e.type === "system" && e.subtype === "turn_duration") {
-        turnStartTs = null;
-        turnTextChars = 0;
-        continue;
-      }
-
-      // At end of entries or next entry starts a new turn → inject duration for current turn
-      const next = entries[i + 1] as Record<string, unknown> | undefined;
-      const isEndOfTurn = !next || (next.type === "user" && !next.isMeta);
-      const nextIsDuration = next?.type === "system" && next?.subtype === "turn_duration";
-
-      if (isEndOfTurn && !nextIsDuration && turnStartTs && e.type === "assistant") {
-        const approxTokens = Math.ceil(turnTextChars / 4);
-        // Check turnStates for server-known stats first
-        const ts = turnStates[sessionId];
-
-        // Skip injecting turn_duration for the last entry if the turn is still in_progress
-        // (the live TurnStatusBar handles that case; injecting here causes a false completed bar)
-        if (!next && ts?.status === "in_progress") {
-          turnStartTs = null;
-        } else if (ts?.status === "completed" && ts.durationMs && !next) {
-          // Last turn — use server stats if available
-          result.push({
-            type: "system",
-            subtype: "turn_duration",
-            durationMs: ts.durationMs,
-            outputTokens: ts.outputTokens ?? approxTokens,
-            thinkingDurationMs: ts.thinkingDurationMs,
-            costUsd: ts.costUsd,
-          });
-        } else if (turnStartTs && e.timestamp) {
-          // Compute approximate duration and tokens from content
-          const start = new Date(turnStartTs).getTime();
-          const end = new Date(e.timestamp as string).getTime();
-          const durationMs = end - start;
-          if (durationMs > 0) {
-            result.push({
-              type: "system",
-              subtype: "turn_duration",
-              durationMs,
-              ...(approxTokens > 0 && { outputTokens: approxTokens }),
-            });
-          }
-        }
-        turnStartTs = null;
-      }
-    }
-
-    return result;
-  }
-
-  function broadcast(msg: object) {
-    const m = msg as any;
-
-    // Suppress SDK-driven session_title_update while auto-rename is in flight.
-    // autoRenameInFlight is cleared BEFORE autoRenameSession sends its own
-    // session_title_update, so only the SDK's competing updates are suppressed.
-    if (m.type === "session_title_update" && m.sessionId && autoRenameInFlight.has(m.sessionId)) {
-      log.debug({ session: sid(m.sessionId), title: m.title }, "broadcast: suppressed session_title_update (auto-rename in flight)");
-      return;
-    }
-
-    // Determine which session this message belongs to
-    const msgSessionId = m.sessionId ?? null;
-
-    // ── Accumulate turn stats + track activity from streaming messages ──
-    // (do this before filtering so stats accumulate even for background sessions)
-    let activityChanged = false;
-
-    // Handle set_activity: update turn state only, don't forward to clients
-    if (m.type === "set_activity" && msgSessionId && turnStates[msgSessionId]?.status === "in_progress") {
-      activityChanged = setActivity(turnStates[msgSessionId], m.activity, m.detail);
-      if (activityChanged) {
-        const ts = turnStates[msgSessionId];
-        sendToSession(msgSessionId, JSON.stringify({
-          type: "turn_activity",
-          activity: ts.activity,
-          detail: ts.activityDetail,
-          approxTokens: ts.approxTokens,
-          thinkingDurationMs: ts.thinkingDurationMs,
-        }));
-      }
-      return;
-    }
-
-    if (msgSessionId && turnStates[msgSessionId]?.status === "in_progress") {
-      const ts = turnStates[msgSessionId];
-      if (m.type === "text" && m.text) {
-        ts.approxTokens += Math.ceil(m.text.length / 4);
-        activityChanged = setActivity(ts, "responding");
-      } else if (m.type === "thought" && m.text) {
-        ts.approxTokens += Math.ceil(m.text.length / 4);
-        const now = Date.now();
-        if (ts.thinkingLastChunkAt) {
-          ts.thinkingDurationMs += now - ts.thinkingLastChunkAt;
-        }
-        ts.thinkingLastChunkAt = now;
-        activityChanged = setActivity(ts, "thinking");
-      } else if (m.type === "tool_call") {
-        const toolName = m._meta?.claudeCode?.toolName ?? m.kind;
-        const { activity, detail } = toolActivity(m.kind, toolName);
-        activityChanged = setActivity(ts, activity, detail);
-        if (ts.thinkingLastChunkAt) {
-          ts.thinkingDurationMs += Date.now() - ts.thinkingLastChunkAt;
-          ts.thinkingLastChunkAt = undefined;
-        }
-      } else if (m.type === "tool_call_update" && m.status === "completed") {
-        activityChanged = setActivity(ts, "responding");
-      } else if (m.type !== "thought" && ts.thinkingLastChunkAt) {
-        ts.thinkingDurationMs += Date.now() - ts.thinkingLastChunkAt;
-        ts.thinkingLastChunkAt = undefined;
-      }
-    }
-
-    // Emit proto entry for server-originated events (not ACP relays)
-    const method = m.type && SERVER_EVENT_MAP[m.type];
-    if (method) {
-      emitProto("recv", { method, params: m });
-    }
-
-    // ── Capture per-session state (survives turn boundaries) ──
-    if (msgSessionId) {
-      if (m.type === "session_info") {
-        getSessionMeta(msgSessionId).sessionInfo = { type: "session_info", sessionId: msgSessionId, models: m.models, currentModel: m.currentModel, modes: m.modes } as any;
-      } else if (m.type === "system" && m.text) {
-        const meta = getSessionMeta(msgSessionId);
-        if (!meta.systemMessages.includes(m.text)) meta.systemMessages.push(m.text);
-      } else if (m.type === "commands") {
-        getSessionMeta(msgSessionId).commands = m.commands;
-      }
-    }
-
-    // Buffer content messages for late-joining clients (mid-turn replay)
-    if (msgSessionId && turnStates[msgSessionId]?.status === "in_progress" && BUFFERABLE_TYPES.has(m.type)) {
-      const buf = turnContentBuffers.get(msgSessionId);
-      if (buf) buf.push(msg);
-    }
-
-    // Send to clients — filter session-specific messages per client
-    const json = JSON.stringify(msg);
-    if (msgSessionId) {
-      sendToSession(msgSessionId, json);
-      // Send turn_activity update only when activity actually changed
-      if (activityChanged) {
-        const ts = turnStates[msgSessionId];
-        sendToSession(msgSessionId, JSON.stringify({
-          type: "turn_activity",
-          activity: ts.activity,
-          detail: ts.activityDetail,
-          approxTokens: ts.approxTokens,
-          thinkingDurationMs: ts.thinkingDurationMs,
-        }));
-      }
-    } else {
-      // Global message: send to all
-      sendToAll(json);
-    }
-  }
-
-  let acpConnection: AcpConnection | null = null;
-  let connectingPromise: Promise<void> | null = null;
-
-  // Promise that resolves when the first session is created (defaultSessionId is set).
-  // All WebSocket clients wait on this before sending session_switched.
-  let resolveFirstSession: (() => void) | null = null;
-  const firstSessionReady = new Promise<void>((r) => { resolveFirstSession = r; });
-
-  // Eagerly pre-warm the ACP connection at server startup so the first
-  // WebSocket client doesn't have to wait for agent spawn + initialize.
-  function prewarmAcpConnection(): Promise<void> {
-    if (acpConnection || connectingPromise) return connectingPromise ?? Promise.resolve();
-    const t0 = performance.now();
-    log.info({ boot: bootMs() }, "prewarm: starting ACP connection");
-    connectingPromise = (async () => {
-      // Warm up worker pools in parallel with ACP connection
-      const haikuWarmup = haikuPool.warmup();
-      const opusWarmup = opusPool.warmup();
-
-      acpConnection = await createAcpConnection(broadcast);
-      log.info({ durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "prewarm: ACP connection ready");
-      // Initialize kanban SQLite DB + migrate from JSON if needed
-      try {
-        kanbanDb.migrateFromJson(getResolvedProjectDir());
-        // Recover sessions that were in_progress when the server last shut down.
-        // Try to reconnect each one — their JSONL is still on disk. Only move
-        // to in_review (with a "server_restart" badge) if resumption fails.
-        const snap = kanbanDb.getKanbanSnapshot();
-        const interrupted: string[] = [];
-        for (const [sessionId, col] of Object.entries(snap.columnOverrides)) {
-          if (col === "in_progress") interrupted.push(sessionId);
-        }
-        if (interrupted.length > 0) {
-          log.info({ count: interrupted.length, sessions: interrupted.map(sid) }, "kanban: attempting to reconnect interrupted sessions");
-          const reconnected: string[] = [];
-          const failed: string[] = [];
-          for (const sessionId of interrupted) {
-            try {
-              await resumeSession(acpConnection!.connection, sessionId);
-              liveSessionIds.add(sessionId);
-              reconnected.push(sessionId);
-              log.info({ session: sid(sessionId) }, "kanban: session reconnected");
-            } catch (err: any) {
-              log.warn({ session: sid(sessionId), err: err.message }, "kanban: failed to reconnect session");
-              failed.push(sessionId);
-            }
-          }
-          // Only move genuinely-dead sessions to in_review
-          if (failed.length > 0) {
-            const ops: KanbanOp[] = failed.map((sessionId) => ({
-              op: "set_column" as const, sessionId, column: "in_review",
-            }));
-            kanbanDb.applyKanbanOps(ops);
-            for (const sessionId of failed) {
-              turnStates[sessionId] = {
-                status: "error",
-                startedAt: 0,
-                approxTokens: 0,
-                thinkingDurationMs: 0,
-                stopReason: "server_restart",
-              };
-            }
-          }
-          log.info({ reconnected: reconnected.length, failed: failed.length, reconnectedSessions: reconnected.map(sid), failedSessions: failed.map(sid) }, "kanban: session reconnection complete");
-        }
-      } catch (err: any) {
-        log.warn({ err: err.message }, "kanban-db: init error");
-      }
-      // Wait for worker pools (likely already done since ACP connect is slower)
-      await Promise.all([haikuWarmup, opusWarmup]);
-    })();
-    return connectingPromise;
-  }
-
-  async function processPrompt(sessionId: string, text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>) {
-    if (!acpConnection) return;
-    processingSessions.add(sessionId);
-    const promptT0 = performance.now();
-    log.info({ session: sid(sessionId), textLen: text.length, images: images?.length ?? 0, files: files?.length ?? 0 }, "api: prompt started");
-    try {
-      // Lazily resume the ACP session if not already live
-      if (!liveSessionIds.has(sessionId)) {
-        const resumeT0 = performance.now();
-        log.info({ session: sid(sessionId) }, "api: resumeSession started");
-        try {
-          await resumeSession(acpConnection.connection, sessionId);
-          log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - resumeT0) }, "api: resumeSession completed");
-          liveSessionIds.add(sessionId);
-        } catch (resumeErr: any) {
-          // Session's conversation is gone (e.g. server restart) — auto-recover by
-          // creating a replacement session and transparently retrying the prompt.
-          if (!isSessionGoneError(resumeErr)) throw resumeErr;
-
-          log.warn({ session: sid(sessionId), err: resumeErr.message }, "api: session gone, auto-creating replacement");
-          const { sessionId: newId } = await createNewSession(acpConnection!.connection, broadcast);
-          liveSessionIds.add(newId);
-          autoRenameEligible.add(newId);
-
-          // Switch all clients viewing the dead session to the replacement
-          for (const [ws, cs] of clients) {
-            if (cs.currentSessionId === sessionId) {
-              cs.currentSessionId = newId;
-              try { ws.send(JSON.stringify({ type: "session_switched", sessionId: newId, turnStatus: null })); } catch {}
-            }
-          }
-          if (defaultSessionId === sessionId) defaultSessionId = newId;
-
-          cleanupStaleSession(sessionId);
-          await broadcastSessions();
-
-          // Retry prompt on the new session (newId is already live, so resume is skipped)
-          processingSessions.delete(sessionId);
-          processPrompt(newId, text, images, files);
-          return;
-        }
-        await broadcastSessions();
-      }
-      const prompt: Array<{ type: string; text?: string; data?: string; mimeType?: string; resource?: { uri: string; text: string; mimeType: string } }> = [];
-      if (text) prompt.push({ type: "text", text });
-      for (const img of images ?? []) {
-        prompt.push({ type: "image", data: img.data, mimeType: img.mimeType });
-      }
-      for (const file of files ?? []) {
-        try {
-          const content = await Bun.file(file.path).text();
-          const ext = file.name.split(".").pop() ?? "";
-          const mimeMap: Record<string, string> = { ts: "text/typescript", tsx: "text/typescript", js: "text/javascript", json: "application/json", md: "text/markdown", css: "text/css", html: "text/html" };
-          prompt.push({ type: "resource", resource: { uri: `file://${file.path}`, text: content, mimeType: mimeMap[ext] ?? "text/plain" } });
-        } catch { /* skip unreadable files */ }
-      }
-      if (prompt.length === 0) { processingSessions.delete(sessionId); drainQueue(sessionId); return; }
-
-      // Fire-and-forget auto-rename as soon as the user prompt arrives (before the turn starts)
-      // so the sidebar title updates immediately instead of waiting for the full response.
-      if (autoRenameEligible.has(sessionId)) {
-        autoRenameEligible.delete(sessionId);
-        autoRenameSession(sessionId, text);
-      }
-
-      // Initialize turn state and content buffer; broadcast turn_start
-      const turnStartedAt = Date.now();
-      turnStates[sessionId] = {
-        status: "in_progress",
-        startedAt: turnStartedAt,
-        approxTokens: 0,
-        thinkingDurationMs: 0,
-        activity: "brewing",
-      };
-      // Start an empty buffer — user message is already in session history (JSONL)
-      turnContentBuffers.set(sessionId, []);
-      broadcast({ type: "turn_start", startedAt: turnStartedAt, sessionId });
-      // Refresh sidebar so it shows in_progress status
-      broadcastSessions().catch(() => {});
-
-      const acpPromptT0 = performance.now();
-      log.info({ session: sid(sessionId) }, "api: acp.prompt started");
-      const result = await acpConnection.connection.prompt({
-        sessionId,
-        prompt,
-      });
-      log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - acpPromptT0), stopReason: result.stopReason }, "api: acp.prompt completed");
-
-      // Extract stats from result metadata
-      const meta = (result as any)._meta?.claudeCode;
-      const turnState = turnStates[sessionId];
-      if (turnState) {
-        // Finalize any ongoing thinking
-        if (turnState.thinkingLastChunkAt) {
-          turnState.thinkingDurationMs += Date.now() - turnState.thinkingLastChunkAt;
-          turnState.thinkingLastChunkAt = undefined;
-        }
-        turnState.status = "completed";
-        turnState.endedAt = Date.now();
-        turnState.durationMs = meta?.duration_ms ?? (Date.now() - turnStartedAt);
-        turnState.outputTokens = meta?.usage?.outputTokens;
-        turnState.costUsd = meta?.total_cost_usd;
-        turnState.stopReason = result.stopReason ?? "end_turn";
-      }
-
-      turnContentBuffers.delete(sessionId);
-      broadcast({
-        type: "turn_end",
-        sessionId,
-        stopReason: result.stopReason,
-        durationMs: turnState?.durationMs,
-        outputTokens: turnState?.outputTokens,
-        thinkingDurationMs: turnState?.thinkingDurationMs,
-        costUsd: turnState?.costUsd,
-      });
-      // Refresh session list to pick up title changes
-      const sessionsT0 = performance.now();
-      await broadcastSessions();
-      log.info({ session: sid(sessionId), broadcastMs: Math.round(performance.now() - sessionsT0), totalMs: Math.round(performance.now() - promptT0) }, "api: prompt completed");
-    } catch (err: any) {
-      // If the prompt() call itself hit a stale session (conversation vanished while
-      // liveSessionIds still listed it), auto-recover instead of surfacing the error.
-      if (isSessionGoneError(err) && acpConnection) {
-        log.warn({ session: sid(sessionId), err: err.message }, "api: prompt hit stale session, auto-recovering");
-        try {
-          const { sessionId: newId } = await createNewSession(acpConnection.connection, broadcast);
-          liveSessionIds.add(newId);
-          autoRenameEligible.add(newId);
-
-          for (const [ws, cs] of clients) {
-            if (cs.currentSessionId === sessionId) {
-              cs.currentSessionId = newId;
-              try { ws.send(JSON.stringify({ type: "session_switched", sessionId: newId, turnStatus: null })); } catch {}
-            }
-          }
-          if (defaultSessionId === sessionId) defaultSessionId = newId;
-
-          // Clean up turn state from the failed attempt
-          if (turnStates[sessionId]) {
-            delete turnStates[sessionId];
-          }
-          turnContentBuffers.delete(sessionId);
-
-          cleanupStaleSession(sessionId);
-          await broadcastSessions();
-
-          processingSessions.delete(sessionId);
-          processPrompt(newId, text, images, files);
-          return;
-        } catch (recoverErr: any) {
-          log.error({ session: sid(sessionId), err: recoverErr.message }, "api: prompt stale recovery failed");
-        }
-
-        // Recovery failed or succeeded-but-returned above. Either way, don't
-        // expose the raw "No conversation found" internal error to the user.
-        // Just silently end the turn so the card reverts to its previous state.
-        if (turnStates[sessionId]) {
-          delete turnStates[sessionId];
-        }
-        turnContentBuffers.delete(sessionId);
-        liveSessionIds.delete(sessionId);
-        broadcast({ type: "turn_end", stopReason: "error", sessionId });
-        broadcastSessions().catch(() => {});
-        return;
-      }
-
-      // Build a detailed error string for the UI (API errors often have nested details)
-      const details: string[] = [err.message ?? String(err)];
-      if (err.status) details.push(`status=${err.status}`);
-      if (err.code) details.push(`code=${err.code}`);
-      if (err.type) details.push(`type=${err.type}`);
-      if (err.error?.message && err.error.message !== err.message) details.push(err.error.message);
-      if (err.cause) details.push(`cause=${err.cause.message ?? err.cause}`);
-      const detailedText = details.length > 1 ? details.join(" — ") : details[0];
-
-      log.error({ session: sid(sessionId), durationMs: Math.round(performance.now() - promptT0), err: detailedText, stack: err.stack }, "api: prompt error");
-      // Update turn state to error
-      if (turnStates[sessionId]) {
-        const ts = turnStates[sessionId];
-        ts.status = "error";
-        ts.endedAt = Date.now();
-        ts.durationMs = Date.now() - ts.startedAt;
-        ts.stopReason = "error";
-      }
-      turnContentBuffers.delete(sessionId);
-      broadcast({ type: "error", text: detailedText, sessionId });
-      broadcast({ type: "turn_end", stopReason: "error", sessionId });
-    } finally {
-      processingSessions.delete(sessionId);
-      // Guard: if the server module was hot-reloaded (HMR) while this turn was
-      // in flight, the new module's recovery code already handled the session's
-      // kanban state. Skip the DB write to avoid overwriting "in_progress" with
-      // a stale "in_review" from the old module's finally block.
-      if ((globalThis as any).__devStudioServerEpoch !== serverEpoch) {
-        log.info({ session: sid(sessionId) }, "kanban: skipping post-turn DB write (server module was reloaded)");
-      } else {
-        // Persist "in_review" column override so the card survives page reloads
-        // and server restarts. Without this, the card falls back to categorizeSession()
-        // which returns "backlog" when liveTurnStatus is lost.
-        try {
-          const snap = kanbanDb.getKanbanSnapshot();
-          const currentOverride = snap.columnOverrides[sessionId];
-          if (!currentOverride || currentOverride === "in_progress") {
-            kanbanDb.applyKanbanOps([{ op: "set_column", sessionId, column: "in_review" }]);
-            broadcastKanbanState();
-          }
-        } catch (err: any) {
-          log.warn({ session: sid(sessionId), err: err.message }, "kanban: failed to set in_review override");
-        }
-        drainQueue(sessionId);
-      }
-    }
-  }
-
-  function drainQueue(sessionId: string) {
-    const q = getQueue(sessionId);
-    if (q.length === 0) return;
-
-    // Drain ALL queued messages at once — combine into a single prompt
-    const items = q.splice(0, q.length);
-    for (const item of items) {
-      log.info({ session: sid(sessionId), queueId: item.id, batchSize: items.length }, "queue: draining");
-      broadcast({ type: "queue_drain_start", queueId: item.id, sessionId });
-    }
-
-    // Combine texts (newline-separated), merge images and files
-    const combinedText = items.map((m) => m.text).filter(Boolean).join("\n\n");
-    const combinedImages = items.flatMap((m) => m.images ?? []);
-    const combinedFiles = items.flatMap((m) => m.files ?? []);
-    processPrompt(
-      sessionId,
-      combinedText,
-      combinedImages.length > 0 ? combinedImages : undefined,
-      combinedFiles.length > 0 ? combinedFiles : undefined,
-    );
-  }
-
-  function clearSessionQueue(sessionId: string | null) {
-    if (!sessionId) return;
-    messageQueues.delete(sessionId);
-  }
-
-  /** Detect "session gone" errors from the ACP SDK (conversation no longer exists). */
-  function isSessionGoneError(err: any): boolean {
-    const msg = err?.message ?? "";
-    return /No conversation found|Session not found/i.test(msg) || err?.code === -32603;
-  }
-
-  /** Clean up all server-side state for a dead session and delete it from disk. */
-  function cleanupStaleSession(sessionId: string) {
-    liveSessionIds.delete(sessionId);
-    clearSessionQueue(sessionId);
-    delete turnStates[sessionId];
-    turnContentBuffers.delete(sessionId);
-    sessionMetas.delete(sessionId);
-    autoRenameEligible.delete(sessionId);
-    autoRenameInFlight.delete(sessionId);
-    sessionTitleCache.delete(sessionId);
-    // Delete stale session from disk (fire-and-forget)
-    acpConnection?.connection.extMethod("sessions/delete", { sessionId }).catch(() => {});
-  }
-
-  // ── Session title cache (for Haiku routing) ──
-  const sessionTitleCache = new Map<string, string>();
-
-  // ── Kanban state (SQLite-backed, atomic operations) ──
-
-  /** Read kanban snapshot, returning empty state on error. */
-  function safeKanbanSnapshot(): kanbanDb.KanbanSnapshot {
-    try {
-      return kanbanDb.getKanbanSnapshot();
-    } catch (err: any) {
-      log.error({ err: err.message }, "kanban-db: getKanbanSnapshot failed");
-      return { columnOverrides: {}, sortOrders: {}, pendingPrompts: {}, version: 0 };
-    }
-  }
-
   /** Broadcast current kanban state to ALL connected clients. */
   function broadcastKanbanState() {
-    const snap = safeKanbanSnapshot();
-    sendToAll(JSON.stringify({ type: "kanban_state", ...snap }));
-  }
-
-  function getResolvedProjectDir(): string {
-    const cwd = process.env.ACP_CWD || process.cwd();
-    return getProjectDir(cwd);
-  }
-
-  // ── Project tabs state (SQLite-backed via kanban-db) ──
-
-  /** Extract a compact summary of the last conversation turn for routing context. */
-  async function getLastTurnSummary(sessionId: string): Promise<string | null> {
-    if (!acpConnection) return null;
     try {
-      const result = await acpConnection.connection.extMethod("sessions/getHistory", { sessionId });
-      const entries = (result.entries as any[]) ?? [];
-      if (entries.length === 0) return null;
-
-      let lastUserText: string | null = null;
-      let lastAssistantText: string | null = null;
-
-      // Walk backwards to find the last user message and last assistant response
-      for (let i = entries.length - 1; i >= 0; i--) {
-        const e = entries[i];
-        if (!lastAssistantText && e.type === "assistant") {
-          const content = e.message?.content as any[] | undefined;
-          if (content) {
-            const texts = content
-              .filter((b: any) => b.type === "text" && b.text)
-              .map((b: any) => b.text as string);
-            if (texts.length > 0) {
-              lastAssistantText = texts.join(" ").slice(0, 300);
-            }
-          }
-        }
-        if (!lastUserText && e.type === "user" && !e.isMeta) {
-          const content = e.message?.content as any[] | undefined;
-          if (content) {
-            const texts = content
-              .filter((b: any) => b.type === "text" && b.text)
-              .map((b: any) => b.text as string);
-            if (texts.length > 0) lastUserText = texts.join(" ").slice(0, 300);
-          }
-        }
-        if (lastUserText && lastAssistantText) break;
-      }
-
-      if (!lastUserText && !lastAssistantText) return null;
-      const parts: string[] = [];
-      if (lastUserText) parts.push(`Last user message: "${lastUserText}"`);
-      if (lastAssistantText) parts.push(`Last assistant response: "${lastAssistantText}"`);
-      return parts.join("\n");
+      const snap = kanbanDb.getKanbanSnapshot();
+      sendToAll(JSON.stringify({ type: "kanban_state", ...snap }));
     } catch (err: any) {
-      log.warn({ err: err.message, sessionId: sessionId.slice(0, 8) }, "route: getLastTurnSummary failed");
-      return null;
+      log.error({ err: err.message }, "kanban-db: getKanbanSnapshot failed");
     }
   }
 
-  // ── Worker Pools (pre-warmed streaming SDK sessions) ──
-  const haikuPool = createHaikuPool();
-  const opusPool = createOpusPool();
+  // ── Wire up the daemon's event sink ──
+  // This closure captures the FRESH clients Map from this HMR reload.
+  // The daemon's internal code (processPrompt, broadcast, etc.) always
+  // calls this via this.eventSink(...) which points to the latest handler.
 
-  /** Use a pre-warmed Haiku worker to decide whether a message relates to the current session. */
-  function routeWithHaiku(messageText: string, sessionTitle: string | null, lastTurnSummary: string | null): Promise<boolean> {
-    return haikuPool.route(messageText, sessionTitle, lastTurnSummary);
-  }
+  daemon.setEventSink((msg: object, sessionId?: string | null) => {
+    const m = msg as any;
 
-  // ── Route whitelist (skip Haiku routing for prompts that are clearly continuations) ──
-
-  const ROUTE_WHITELIST_PATTERNS: RegExp[] = [
-    // Slash commands (e.g., /commit, /help, /review-pr 123)
-    /^\/\S/,
-    // Affirmative/negative responses (may have trailing explanation)
-    /^(yes|yeah|yep|yup|no|nope|nah|ok|okay|sure|go ahead|do it|looks good|lgtm|approved|sounds good|perfect|great|correct|right|exactly|agreed)\b/i,
-    // Action continuations
-    /^(continue|proceed|go on|try again|retry|undo|revert|cancel|stop|wait|hold on|never ?mind)\b/i,
-    // Acknowledgements
-    /^(thanks|thank you|thx|ty)\b/i,
-  ];
-
-  /**
-   * Returns true if the prompt should bypass Haiku routing and stay in the current session.
-   * These are prompts that are unambiguously continuations of the current conversation
-   * (e.g., confirmations, slash commands, retry requests).
-   */
-  function isRouteWhitelisted(text: string): boolean {
-    const trimmed = text.trim();
-    if (!trimmed) return true;
-    return ROUTE_WHITELIST_PATTERNS.some((pat) => pat.test(trimmed));
-  }
-
-  // ── Auto-rename (server-side, uses the Haiku pool for fast title generation) ──
-  /** Sessions eligible for auto-rename (newly created, not resumed). */
-  const autoRenameEligible = new Set<string>();
-  /** Sessions with an in-flight auto-rename (cleared if user manually renames). */
-  const autoRenameInFlight = new Set<string>();
-
-  /**
-   * Fire-and-forget: generate a title via the Haiku pool and apply via sessions/rename.
-   * Called at the start of a turn (before prompt()) so the sidebar updates immediately.
-   */
-  function autoRenameSession(sessionId: string, userMessage: string) {
-    const cwd = process.env.ACP_CWD || process.cwd();
-    autoRenameInFlight.add(sessionId);
-    haikuPool.generateTitle(cwd, userMessage, "").then(async (title) => {
-      if (!title) {
-        log.warn({ session: sid(sessionId) }, "auto-rename: generateTitle returned null, skipping");
-        autoRenameInFlight.delete(sessionId);
-        return;
-      }
-      if (!acpConnection) return;
-      // Guard: user may have manually renamed during generation
-      if (!autoRenameInFlight.delete(sessionId)) {
-        log.info({ session: sid(sessionId), title }, "auto-rename: cancelled (manual rename during generation)");
-        return;
-      }
-      try {
-        await acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
-        sessionTitleCache.set(sessionId, title);
-        log.info({ session: sid(sessionId), title }, "auto-rename: applied");
-        await broadcastSessions();
-        // Guard: if broadcastSessions() coalesced with a stale in-flight call
-        // (e.g., the post-turn broadcast that read the raw user prompt before
-        // sessions/rename updated the title), the SESSIONS reducer on the client
-        // may have overwritten our nice title. Re-send session_title_update AFTER
-        // broadcastSessions resolves so it's always the last update the client sees.
-        broadcast({ type: "session_title_update", sessionId, title });
-      } catch (err: any) {
-        log.error({ err: err.message, session: sid(sessionId) }, "auto-rename: apply failed");
-      }
-    }).catch((err) => {
-      autoRenameInFlight.delete(sessionId);
-      log.error({ err: err.message, session: sid(sessionId) }, "auto-rename: generate failed");
-    });
-  }
-
-  // Coalesce concurrent broadcastSessions calls — if one is already in flight,
-  // callers share the same promise instead of issuing parallel requests.
-  let broadcastSessionsPromise: Promise<void> | null = null;
-  let broadcastSessionsStartedAt = 0;
-
-  async function broadcastSessions() {
-    if (!acpConnection) return;
-    // If a previous call is in-flight but has been running for >15s, it's stuck — discard it.
-    if (broadcastSessionsPromise && Date.now() - broadcastSessionsStartedAt > 15_000) {
-      log.warn("api: broadcastSessions stale promise (>15s), discarding");
-      broadcastSessionsPromise = null;
-    }
-    if (broadcastSessionsPromise) {
-      log.debug("api: broadcastSessions coalesced (reusing in-flight request)");
-      return broadcastSessionsPromise;
-    }
-
-    broadcastSessionsStartedAt = Date.now();
-    broadcastSessionsPromise = (async () => {
-      const t0 = performance.now();
-      log.info("api: sessions/list started");
-      try {
-        const result = await acpConnection!.connection.extMethod("sessions/list", {});
-        const t1 = performance.now();
-        const sessions = ((result as any).sessions ?? []).map((s: any) => ({
-          sessionId: s.sessionId,
-          title: s.title ?? null,
-          updatedAt: s.updatedAt ?? null,
-          created: s._meta?.created ?? null,
-          messageCount: s._meta?.messageCount ?? 0,
-          gitBranch: s._meta?.gitBranch ?? null,
-          projectPath: s._meta?.projectPath ?? null,
-          ...(s._meta?.children ? { children: s._meta.children } : {}),
-          ...(s._meta?.teamName ? { teamName: s._meta.teamName } : {}),
-          isLive: liveSessionIds.has(s.sessionId),
-          ...(turnStates[s.sessionId] ? (() => {
-            const ts = turnStates[s.sessionId];
-            return {
-              turnStatus: ts.status,
-              ...(ts.status === "in_progress" ? {
-                turnStartedAt: ts.startedAt,
-                turnActivity: ts.activity,
-                turnActivityDetail: ts.activityDetail,
-              } : {
-                ...(ts.startedAt && { turnStartedAt: ts.startedAt }),
-                ...(ts.durationMs != null && { turnDurationMs: ts.durationMs }),
-                ...(ts.outputTokens != null && { turnOutputTokens: ts.outputTokens }),
-                ...(ts.costUsd != null && { turnCostUsd: ts.costUsd }),
-                ...(ts.thinkingDurationMs != null && ts.thinkingDurationMs > 0 && { turnThinkingDurationMs: ts.thinkingDurationMs }),
-                ...(ts.stopReason && { turnStopReason: ts.stopReason }),
-              }),
-            };
-          })() : {}),
-        }));
-        // Update session title cache for Haiku routing
-        for (const s of sessions) {
-          if (s.title) sessionTitleCache.set(s.sessionId, s.title);
+    // Handle special daemon events
+    if (m.type === "session_replaced") {
+      // Update all clients viewing the old session to the new one
+      for (const [ws, cs] of clients) {
+        if (cs.currentSessionId === m.oldSessionId) {
+          cs.currentSessionId = m.newSessionId;
+          try { ws.send(JSON.stringify({ type: "session_switched", sessionId: m.newSessionId, turnStatus: null })); } catch {}
         }
-        log.info({ durationMs: Math.round(t1 - t0), sessions: sessions.length, clients: clients.size }, "api: sessions/list completed");
-        broadcast({ type: "sessions", sessions });
-        // Lazy cleanup: prune stale kanban entries for sessions that no longer exist
-        {
-          const validIds = new Set(sessions.map((s: any) => s.sessionId));
-          if (kanbanDb.cleanStaleSessions(validIds)) {
-            broadcastKanbanState();
-          }
-        }
-      } catch (err: any) {
-        log.error({ durationMs: Math.round(performance.now() - t0), err: err.message }, "api: sessions/list error");
       }
-    })();
-
-    try {
-      await broadcastSessionsPromise;
-    } finally {
-      broadcastSessionsPromise = null;
+      return;
     }
-  }
+
+    if (m.type === "kanban_state_changed") {
+      broadcastKanbanState();
+      return;
+    }
+
+    // Normal event routing: session-specific or global
+    const json = JSON.stringify(msg);
+    if (sessionId) {
+      sendToSession(sessionId, json);
+    } else {
+      sendToAll(json);
+    }
+  });
+
+  // ── Eagerly start the daemon ──
+  daemon.init().catch((err) => {
+    log.error({ err: err.message }, "daemon init failed");
+  });
+
+  // ── Promise for first session readiness ──
+  // If daemon already has a defaultSessionId (from a previous HMR cycle),
+  // resolve immediately so clients don't hang on firstSessionReady.
+  let resolveFirstSession: (() => void) | null = null;
+  const firstSessionReady = new Promise<void>((r) => { resolveFirstSession = r; });
+  if (daemon.defaultSessionId) resolveFirstSession?.();
+
+  // ── Queue ID counter (local to API server, fine to reset on HMR) ──
+  let queueIdCounter = 0;
 
   const server = Bun.serve({
     port,
@@ -1003,28 +137,24 @@ export function startServer(port: number) {
       if (url.pathname === "/api/projects" && req.method === "GET") {
         return json(kanbanDb.getProjects());
       }
-
       if (url.pathname === "/api/projects" && req.method === "POST") {
         const body = await req.json() as { path: string };
         const p = body.path?.trim();
         if (!p) return json({ error: "path required" });
         return json(kanbanDb.addProject(p));
       }
-
       if (url.pathname === "/api/projects" && req.method === "DELETE") {
         const body = await req.json() as { path: string };
         const p = body.path?.trim();
         if (!p) return json({ error: "path required" });
         return json(kanbanDb.removeProject(p));
       }
-
       if (url.pathname === "/api/projects/active" && req.method === "PUT") {
         const body = await req.json() as { path: string };
         const p = body.path?.trim();
         if (!p) return json({ error: "path required" });
         return json(kanbanDb.setActiveProject(p));
       }
-
       if (url.pathname === "/api/pick-folder" && req.method === "POST") {
         try {
           const result = execSync(
@@ -1054,106 +184,61 @@ export function startServer(port: number) {
         const clientState: ClientState = { id: clientId, currentSessionId: null, connectedAt: performance.now() };
         clients.set(ws, clientState);
         const t0 = performance.now();
+        log.info({ client: clientId, total: clients.size, defaultSession: sid(daemon.defaultSessionId), boot: bootMs() }, "ws: open");
 
-        const path = !acpConnection && !connectingPromise ? "first" : connectingPromise ? "waitMutex" : "rejoin";
-        log.info({ client: clientId, total: clients.size, path, acpReady: !!acpConnection, defaultSession: sid(defaultSessionId), boot: bootMs() }, "ws: open");
+        // Wait for daemon to be ready
+        try {
+          await daemon.ready;
+        } catch (err: any) {
+          log.error({ client: clientId, err: err.message }, "ws: daemon not ready");
+          try { ws.send(JSON.stringify({ type: "error", text: err.message })); } catch {}
+          return;
+        }
 
-        if (path === "first" || path === "waitMutex") {
-          // Wait for the pre-warmed ACP connection (or trigger it if somehow not started).
-          if (!connectingPromise && !acpConnection) prewarmAcpConnection();
-          if (connectingPromise) {
-            log.info({ client: clientId }, "ws: waiting for ACP connection");
-            try {
-              await connectingPromise;
-              log.info({ client: clientId, durationMs: Math.round(performance.now() - t0) }, "ws: ACP connection ready");
-            } catch (err: any) {
-              log.error({ client: clientId, err: err.message }, "ws: ACP connection failed");
-              try { ws.send(JSON.stringify({ type: "error", text: err.message })); } catch {}
-              return;
-            } finally {
-              connectingPromise = null;
-            }
-          }
-
-          // tmux-style: ask the ACP server for existing sessions — reuse an
-          // empty one instead of creating a duplicate on every reconnect.
-          if (!defaultSessionId) {
-            try {
-              const listT0 = performance.now();
-              const result = await acpConnection!.connection.extMethod("sessions/list", {});
-              const sessions = ((result as any).sessions ?? []) as any[];
-              log.info({ client: clientId, durationMs: Math.round(performance.now() - listT0), count: sessions.length }, "ws: queried existing sessions");
-
-              const emptySession = sessions.find((s: any) => (s._meta?.messageCount ?? 0) === 0);
-
-              if (emptySession) {
-                defaultSessionId = emptySession.sessionId;
-                autoRenameEligible.add(emptySession.sessionId);
-                log.info({ client: clientId, session: sid(defaultSessionId) }, "ws: reusing empty session");
-              } else {
-                log.info({ client: clientId }, "ws: no empty session, creating new");
-                const sessT0 = performance.now();
-                const { sessionId } = await createNewSession(acpConnection!.connection, broadcast);
-                log.info({ client: clientId, session: sid(sessionId), durationMs: Math.round(performance.now() - sessT0) }, "ws: new session created");
-                defaultSessionId = sessionId;
-                liveSessionIds.add(sessionId);
-                autoRenameEligible.add(sessionId);
-              }
-              resolveFirstSession?.();
-            } catch (err: any) {
-              log.error({ client: clientId, err: err.message }, "ws: session setup failed");
-              try { ws.send(JSON.stringify({ type: "error", text: err.message })); } catch {}
-              return;
-            }
-          }
-
-          const targetSession = defaultSessionId!;
-          clientState.currentSessionId = targetSession;
-
-          // tmux-style: send all state then activate the session
+        // If no default session exists yet, create one
+        if (!daemon.defaultSessionId) {
           try {
-            const histResult = await acpConnection!.connection.extMethod("sessions/getHistory", { sessionId: targetSession });
-            ws.send(JSON.stringify({ type: "session_history", sessionId: targetSession, entries: augmentHistoryWithTurnStats(targetSession, histResult.entries as unknown[]) }));
-          } catch {}
-
-          ws.send(JSON.stringify({ type: "session_switched", sessionId: targetSession, turnStatus: getTurnStatusSnapshot(targetSession) }));
-          // Send state AFTER session_switched so messages land in the active session
-          sendSessionMeta(ws, targetSession);
-          sendTurnState(ws, targetSession);
-          sendQueueState(ws, targetSession);
-          ws.send(JSON.stringify({ type: "kanban_state", ...safeKanbanSnapshot() }));
-          log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
-
-          // Fire-and-forget: don't block the open handler waiting for session list
-          broadcastSessions().catch(() => {});
-        } else {
-          // Re-joining client: wait for first session if needed, then send immediately
-          try {
-            if (!defaultSessionId) {
-              log.info({ client: clientId }, "ws: waiting for first session");
-              await firstSessionReady;
-            }
-            const targetSession = defaultSessionId!;
-            clientState.currentSessionId = targetSession;
-
-            // tmux-style: send all state then activate the session
-            try {
-              const histResult = await acpConnection!.connection.extMethod("sessions/getHistory", { sessionId: targetSession });
-              ws.send(JSON.stringify({ type: "session_history", sessionId: targetSession, entries: augmentHistoryWithTurnStats(targetSession, histResult.entries as unknown[]) }));
-            } catch {}
-
-            ws.send(JSON.stringify({ type: "session_switched", sessionId: targetSession, turnStatus: getTurnStatusSnapshot(targetSession) }));
-            // Send state AFTER session_switched so messages land in the active session
-            sendSessionMeta(ws, targetSession);
-            sendTurnState(ws, targetSession);
-            sendQueueState(ws, targetSession);
-            ws.send(JSON.stringify({ type: "kanban_state", ...safeKanbanSnapshot() }));
-            log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
-            broadcastSessions().catch((err) => log.error({ client: clientId, err: err.message }, "ws: broadcastSessions failed"));
+            const { sessionId } = await daemon.createSession();
+            daemon.defaultSessionId = sessionId;
+            resolveFirstSession?.();
+            log.info({ client: clientId, session: sid(sessionId), durationMs: Math.round(performance.now() - t0) }, "ws: first session created");
           } catch (err: any) {
-            log.error({ client: clientId, err: err.message }, "ws: open(rejoin) failed");
+            log.error({ client: clientId, err: err.message }, "ws: session setup failed");
+            try { ws.send(JSON.stringify({ type: "error", text: err.message })); } catch {}
+            return;
           }
         }
+
+        // Switch client to the default session
+        await firstSessionReady;
+        const sessionId = daemon.defaultSessionId!;
+        clientState.currentSessionId = sessionId;
+
+        try {
+          const result = await daemon.getHistory(sessionId);
+          ws.send(JSON.stringify({ type: "session_history", sessionId, entries: daemon.augmentHistoryWithTurnStats(sessionId, result.entries) }));
+          ws.send(JSON.stringify({ type: "session_switched", sessionId, turnStatus: daemon.getTurnStatusSnapshot(sessionId) }));
+          daemon.sendSessionMeta(ws, sessionId);
+          daemon.sendTurnState(ws, sessionId);
+          daemon.sendQueueState(ws, sessionId);
+        } catch (err: any) {
+          log.warn({ client: clientId, session: sid(sessionId), err: err.message }, "ws: initial history load failed");
+          ws.send(JSON.stringify({ type: "session_switched", sessionId, turnStatus: daemon.getTurnStatusSnapshot(sessionId) }));
+        }
+
+        // Send session list + kanban state
+        daemon.broadcastSessions().catch(() => {});
+        broadcastKanbanState();
+
+        // Fetch tasks
+        daemon.getTasksList(sessionId).then((taskResult) => {
+          const tasks = (taskResult.tasks as unknown[]) ?? [];
+          if (tasks.length > 0) {
+            try { ws.send(JSON.stringify({ type: "tasks", sessionId, tasks })); } catch {}
+          }
+        }).catch(() => {});
+
+        log.info({ client: clientId, session: sid(sessionId), durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: open complete");
       },
 
       async message(ws, raw) {
@@ -1162,16 +247,8 @@ export function startServer(port: number) {
           typeof raw === "string" ? raw : new TextDecoder().decode(raw),
         );
 
-        if (!acpConnection) {
-          log.warn({ msgType: msg.type }, "ws: message received but no ACP connection");
-          return;
-        }
-
         const clientState = clients.get(ws);
         if (!clientState) {
-          // Stale connection from before a hot reload — the clients Map was reset
-          // but bun --hot preserved the WebSocket. Close it so the browser reconnects
-          // and triggers the open handler on the fresh server instance.
           log.warn({ msgType: msg.type }, "ws: message from unknown client, closing stale connection");
           ws.close(4000, "Server reloaded");
           return;
@@ -1187,8 +264,7 @@ export function startServer(port: number) {
             const targetSession = clientState.currentSessionId;
             log.info({ client: cid, session: sid(targetSession), textLen: msg.text?.length ?? 0, images: msg.images?.length ?? 0, files: msg.files?.length ?? 0 }, "ws: → prompt");
 
-            // Broadcast user message to all OTHER clients viewing this session
-            // (the sender already has it locally via SEND_MESSAGE dispatch)
+            // Broadcast user message to other clients viewing this session
             const userMsgJson = JSON.stringify({
               type: "user_message",
               sessionId: targetSession,
@@ -1203,14 +279,11 @@ export function startServer(port: number) {
               }
             }
 
-            if (processingSessions.has(targetSession)) {
-              // Enqueue the message for this specific session
+            if (daemon.isProcessing(targetSession)) {
               const queueId = msg.queueId || `sq-${++queueIdCounter}`;
-              getQueue(targetSession).push({ id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
-              log.info({ session: sid(targetSession), queueId, queueLen: getQueue(targetSession).length }, "queue: enqueued");
-              broadcast({ type: "message_queued", queueId, sessionId: targetSession });
+              daemon.enqueueMessage(targetSession, { id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
             } else {
-              processPrompt(targetSession, msg.text, msg.images, msg.files);
+              daemon.prompt(targetSession, msg.text, msg.images, msg.files);
             }
             break;
           }
@@ -1218,11 +291,9 @@ export function startServer(port: number) {
           case "interrupt": {
             if (!clientState.currentSessionId) break;
             const intSession = clientState.currentSessionId;
-            if (!processingSessions.has(intSession)) break;
             log.info({ client: cid, session: sid(intSession) }, "ws: → interrupt");
             try {
-              acpConnection.webClient.cancelPermissions(intSession);
-              await acpConnection.connection.cancel({ sessionId: intSession });
+              await daemon.interrupt(intSession);
               log.info({ client: cid, session: sid(intSession) }, "ws: interrupt sent");
             } catch (err: any) {
               log.error({ client: cid, session: sid(intSession), err: err.message }, "ws: interrupt error");
@@ -1231,21 +302,14 @@ export function startServer(port: number) {
           }
 
           case "permission_response": {
-            if (!acpConnection) break;
             log.info({ client: cid, requestId: msg.requestId, optionId: msg.optionId }, "ws: → permission_response");
-            acpConnection.webClient.resolvePermission(msg.requestId, msg.optionId, msg.optionName || msg.optionId);
+            daemon.resolvePermission(msg.requestId, msg.optionId, msg.optionName || msg.optionId);
             break;
           }
 
           case "cancel_queued": {
             if (!clientState.currentSessionId) break;
-            const q = getQueue(clientState.currentSessionId);
-            const idx = q.findIndex((m) => m.id === msg.queueId);
-            if (idx !== -1) {
-              q.splice(idx, 1);
-              log.info({ session: sid(clientState.currentSessionId), queueId: msg.queueId }, "queue: cancelled");
-              broadcast({ type: "queue_cancelled", queueId: msg.queueId, sessionId: clientState.currentSessionId });
-            }
+            daemon.cancelQueuedMessage(clientState.currentSessionId, msg.queueId);
             break;
           }
 
@@ -1253,17 +317,12 @@ export function startServer(port: number) {
             log.info({ client: cid }, "ws: → new_session");
             try {
               const t0 = performance.now();
-              const { sessionId } = await createNewSession(acpConnection.connection, broadcast);
+              const { sessionId } = await daemon.createSession();
               log.info({ client: cid, session: sid(sessionId), durationMs: Math.round(performance.now() - t0) }, "api: newSession completed");
-              defaultSessionId = sessionId;
+              daemon.defaultSessionId = sessionId;
               clientState.currentSessionId = sessionId;
-              liveSessionIds.add(sessionId);
-              autoRenameEligible.add(sessionId);
-              // Send switch only to the requesting client
-              ws.send(JSON.stringify({ type: "session_switched", sessionId, turnStatus: getTurnStatusSnapshot(sessionId) }));
-              log.info({ client: cid, session: sid(sessionId) }, "ws: ← session_switched");
-              // Refresh session lists in parallel (non-blocking)
-              broadcastSessions().catch(() => {});
+              ws.send(JSON.stringify({ type: "session_switched", sessionId, turnStatus: daemon.getTurnStatusSnapshot(sessionId) }));
+              daemon.broadcastSessions().catch(() => {});
             } catch (err: any) {
               log.error({ client: cid, err: err.message }, "ws: new_session error");
               ws.send(JSON.stringify({ type: "error", text: err.message }));
@@ -1275,20 +334,18 @@ export function startServer(port: number) {
           case "resume_session": {
             log.info({ client: cid, msgType: msg.type, session: sid(msg.sessionId) }, "ws: → switch/resume_session");
             const t0 = performance.now();
-            emitProto("send", { method: "sessions/switch", params: { sessionId: msg.sessionId } });
             try {
-              log.info({ session: sid(msg.sessionId) }, "api: sessions/getHistory started");
-              const result = await acpConnection.connection.extMethod("sessions/getHistory", { sessionId: msg.sessionId });
-              const entryCount = (result.entries as unknown[])?.length ?? 0;
-              log.info({ session: sid(msg.sessionId), durationMs: Math.round(performance.now() - t0), entries: entryCount }, "api: sessions/getHistory completed");
+              const result = await daemon.getHistory(msg.sessionId);
+              const entryCount = result.entries?.length ?? 0;
+              log.info({ session: sid(msg.sessionId), durationMs: Math.round(performance.now() - t0), entries: entryCount }, "api: getHistory completed");
               clientState.currentSessionId = msg.sessionId;
-              ws.send(JSON.stringify({ type: "session_history", sessionId: msg.sessionId, entries: augmentHistoryWithTurnStats(msg.sessionId, result.entries as unknown[]) }));
-              ws.send(JSON.stringify({ type: "session_switched", sessionId: msg.sessionId, turnStatus: getTurnStatusSnapshot(msg.sessionId) }));
-              sendSessionMeta(ws, msg.sessionId);
-              sendTurnState(ws, msg.sessionId);
-              sendQueueState(ws, msg.sessionId);
-              // Fetch tasks for the switched session (fire-and-forget)
-              acpConnection.connection.extMethod("tasks/list", { sessionId: msg.sessionId }).then((taskResult) => {
+              ws.send(JSON.stringify({ type: "session_history", sessionId: msg.sessionId, entries: daemon.augmentHistoryWithTurnStats(msg.sessionId, result.entries) }));
+              ws.send(JSON.stringify({ type: "session_switched", sessionId: msg.sessionId, turnStatus: daemon.getTurnStatusSnapshot(msg.sessionId) }));
+              daemon.sendSessionMeta(ws, msg.sessionId);
+              daemon.sendTurnState(ws, msg.sessionId);
+              daemon.sendQueueState(ws, msg.sessionId);
+              // Fetch tasks
+              daemon.getTasksList(msg.sessionId).then((taskResult) => {
                 const tasks = (taskResult.tasks as unknown[]) ?? [];
                 if (tasks.length > 0) {
                   ws.send(JSON.stringify({ type: "tasks", sessionId: msg.sessionId, tasks }));
@@ -1296,27 +353,22 @@ export function startServer(port: number) {
               }).catch(() => {});
               log.info({ client: cid, session: sid(msg.sessionId), totalMs: Math.round(performance.now() - t0) }, "ws: ← session_switched");
             } catch (err: any) {
-              if (isSessionGoneError(err)) {
-                // Session's conversation is gone — auto-create a replacement and switch to it
+              // Session gone — auto-create replacement
+              if (/No conversation found|Session not found/i.test(err?.message ?? "") || err?.code === -32603) {
                 log.warn({ client: cid, session: sid(msg.sessionId), err: err.message }, "ws: session gone on switch, auto-creating replacement");
                 try {
-                  const { sessionId: newId } = await createNewSession(acpConnection.connection, broadcast);
-                  liveSessionIds.add(newId);
-                  autoRenameEligible.add(newId);
-                  if (defaultSessionId === msg.sessionId) defaultSessionId = newId;
-                  cleanupStaleSession(msg.sessionId);
-
+                  const { sessionId: newId } = await daemon.createSession();
+                  if (daemon.defaultSessionId === msg.sessionId) daemon.defaultSessionId = newId;
+                  daemon.cleanupStaleSession(msg.sessionId);
                   clientState.currentSessionId = newId;
                   ws.send(JSON.stringify({ type: "session_switched", sessionId: newId, turnStatus: null }));
-                  sendSessionMeta(ws, newId);
-                  await broadcastSessions();
-                  log.info({ client: cid, oldSession: sid(msg.sessionId), newSession: sid(newId), totalMs: Math.round(performance.now() - t0) }, "ws: ← session replaced (stale)");
+                  daemon.sendSessionMeta(ws, newId);
+                  await daemon.broadcastSessions();
                 } catch (createErr: any) {
-                  // Don't expose internal errors to the user — just log and silently fail
                   log.error({ client: cid, err: createErr.message }, "ws: failed to create replacement session");
                 }
               } else {
-                log.error({ client: cid, msgType: msg.type, err: err.message, durationMs: Math.round(performance.now() - t0) }, "ws: switch/resume error");
+                log.error({ client: cid, msgType: msg.type, err: err.message }, "ws: switch/resume error");
                 ws.send(JSON.stringify({ type: "error", text: `Failed to load session: ${err.message}` }));
               }
             }
@@ -1327,24 +379,19 @@ export function startServer(port: number) {
             const compositeId = `${msg.parentSessionId}:subagent:${msg.agentId}`;
             log.info({ client: cid, parent: sid(msg.parentSessionId), agentId: msg.agentId }, "ws: → resume_subagent");
             const t0 = performance.now();
-            emitProto("send", { method: "sessions/switch", params: { sessionId: compositeId, subagent: true } });
             try {
-              log.info({ parent: sid(msg.parentSessionId), agentId: msg.agentId }, "api: sessions/getSubagentHistory started");
-              const result = await acpConnection.connection.extMethod("sessions/getSubagentHistory", {
-                sessionId: msg.parentSessionId,
-                agentId: msg.agentId,
-              });
-              const entryCount = (result.entries as unknown[])?.length ?? 0;
-              log.info({ durationMs: Math.round(performance.now() - t0), entries: entryCount }, "api: sessions/getSubagentHistory completed");
+              const result = await daemon.getSubagentHistory(msg.parentSessionId, msg.agentId);
+              const entryCount = result.entries?.length ?? 0;
+              log.info({ durationMs: Math.round(performance.now() - t0), entries: entryCount }, "api: getSubagentHistory completed");
               clientState.currentSessionId = compositeId;
-              ws.send(JSON.stringify({ type: "session_history", sessionId: compositeId, entries: augmentHistoryWithTurnStats(compositeId, result.entries as unknown[]) }));
-              ws.send(JSON.stringify({ type: "session_switched", sessionId: compositeId, turnStatus: getTurnStatusSnapshot(compositeId) }));
-              sendSessionMeta(ws, compositeId);
-              sendTurnState(ws, compositeId);
-              sendQueueState(ws, compositeId);
+              ws.send(JSON.stringify({ type: "session_history", sessionId: compositeId, entries: daemon.augmentHistoryWithTurnStats(compositeId, result.entries) }));
+              ws.send(JSON.stringify({ type: "session_switched", sessionId: compositeId, turnStatus: daemon.getTurnStatusSnapshot(compositeId) }));
+              daemon.sendSessionMeta(ws, compositeId);
+              daemon.sendTurnState(ws, compositeId);
+              daemon.sendQueueState(ws, compositeId);
               log.info({ client: cid, session: sid(compositeId), totalMs: Math.round(performance.now() - t0) }, "ws: ← session_switched (subagent)");
             } catch (err: any) {
-              log.error({ client: cid, err: err.message, durationMs: Math.round(performance.now() - t0) }, "ws: resume_subagent error");
+              log.error({ client: cid, err: err.message }, "ws: resume_subagent error");
               ws.send(JSON.stringify({ type: "error", text: `Failed to load subagent: ${err.message}` }));
             }
             break;
@@ -1352,55 +399,33 @@ export function startServer(port: number) {
 
           case "rename_session": {
             const { sessionId, title } = msg;
-            autoRenameEligible.delete(sessionId);
-            autoRenameInFlight.delete(sessionId); // cancel any in-flight auto-rename
             log.info({ client: cid, session: sid(sessionId), title }, "ws: → rename_session");
-            const t0 = performance.now();
-            const renameResult = await acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
-            log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - t0), success: renameResult.success }, "api: sessions/rename completed");
-            if (renameResult.success) {
-              await broadcastSessions();
-            }
+            await daemon.renameSession(sessionId, title);
             break;
           }
 
           case "delete_session": {
             log.info({ client: cid, session: sid(msg.sessionId) }, "ws: → delete_session");
             const t0 = performance.now();
-            const deleteResult = await acpConnection.connection.extMethod("sessions/delete", { sessionId: msg.sessionId });
-            const deletedIds = (deleteResult.deletedIds as string[]) ?? [msg.sessionId];
-            log.info({ session: sid(msg.sessionId), durationMs: Math.round(performance.now() - t0), success: deleteResult.success, deletedCount: deletedIds.length }, "api: sessions/delete completed");
-            if (deleteResult.success) {
-              // Clean up all deleted sessions (parent + any teammate children)
-              for (const id of deletedIds) {
-                liveSessionIds.delete(id);
-                autoRenameEligible.delete(id);
-                autoRenameInFlight.delete(id);
-                clearSessionQueue(id);
-                turnContentBuffers.delete(id);
-                delete turnStates[id];
-                sessionMetas.delete(id);
-                // Clear currentSessionId for any client viewing a deleted session
-                for (const [, cs] of clients) {
-                  if (cs.currentSessionId === id) {
-                    cs.currentSessionId = null;
-                  }
+            const { success, deletedIds } = await daemon.deleteSession(msg.sessionId);
+            log.info({ session: sid(msg.sessionId), durationMs: Math.round(performance.now() - t0), success, deletedCount: deletedIds.length }, "api: delete completed");
+            if (success) {
+              // Clear currentSessionId for any client viewing a deleted session
+              for (const [, cs] of clients) {
+                if (deletedIds.includes(cs.currentSessionId!)) {
+                  cs.currentSessionId = null;
                 }
               }
-              // Clean up kanban state for deleted sessions
+              // Clean up kanban state
               kanbanDb.applyKanbanOps([
                 ...deletedIds.map((id): KanbanOp => ({ op: "remove_column", sessionId: id })),
                 ...deletedIds.map((id): KanbanOp => ({ op: "remove_pending_prompt", sessionId: id })),
                 { op: "bulk_remove_sort_entries", sessionIds: deletedIds },
               ]);
               broadcastKanbanState();
-              // Notify all clients about the deletion immediately so the merge-based
-              // SESSIONS reducer won't re-add them from a stale broadcastSessions() result
               sendToAll(JSON.stringify({ type: "session_deleted", sessionIds: deletedIds }));
-              await broadcastSessions();
-            } else {
-              await broadcastSessions();
             }
+            await daemon.broadcastSessions();
             log.info({ client: cid, totalMs: Math.round(performance.now() - t0) }, "ws: delete_session done");
             break;
           }
@@ -1409,47 +434,20 @@ export function startServer(port: number) {
             log.info({ client: cid }, "ws: → get_commands");
             try {
               const t0 = performance.now();
-              // Lazily resume the current session if not already live
-              // (getAvailableCommands needs at least one active session with a query)
-              const cmdSessionId = clientState.currentSessionId;
-              if (cmdSessionId && !liveSessionIds.has(cmdSessionId)) {
-                log.info({ client: cid, session: sid(cmdSessionId) }, "ws: resuming session for get_commands");
-                try {
-                  await resumeSession(acpConnection.connection, cmdSessionId);
-                  liveSessionIds.add(cmdSessionId);
-                  broadcastSessions().catch(() => {});
-                } catch (resumeErr: any) {
-                  if (isSessionGoneError(resumeErr)) {
-                    // Session gone — silently skip resume; commands still work without a live session
-                    log.warn({ client: cid, session: sid(cmdSessionId), err: resumeErr.message }, "ws: get_commands resume skipped (session gone)");
-                  } else {
-                    log.warn({ client: cid, session: sid(cmdSessionId), err: resumeErr.message }, "ws: get_commands resume failed");
-                  }
-                }
-              }
-              const result = await acpConnection.connection.extMethod("sessions/getAvailableCommands", {});
+              const result = await daemon.getAvailableCommands(clientState.currentSessionId ?? undefined);
               const cmdCount = (result.commands as unknown[])?.length ?? 0;
-              log.info({ durationMs: Math.round(performance.now() - t0), commands: cmdCount }, "api: sessions/getAvailableCommands completed");
-              // Extract model info from the result (getAvailableCommands fetches models lazily)
+              log.info({ durationMs: Math.round(performance.now() - t0), commands: cmdCount }, "api: getAvailableCommands completed");
               const models = result.models as { availableModels?: { modelId: string; name?: string }[]; currentModelId?: string } | undefined;
               const currentModelId = models?.currentModelId;
-              const currentModelName = models?.availableModels?.find((m) => m.modelId === currentModelId)?.name;
+              const currentModelName = models?.availableModels?.find((m: any) => m.modelId === currentModelId)?.name;
               ws.send(JSON.stringify({
                 type: "commands",
                 commands: result.commands,
                 ...(models && {
-                  models: models.availableModels?.map((m) => m.modelId) ?? [],
+                  models: models.availableModels?.map((m: any) => m.modelId) ?? [],
                   currentModel: currentModelName || currentModelId || null,
                 }),
               }));
-              // Update session meta so reconnecting clients get the model info
-              if (models && clientState.currentSessionId) {
-                const meta = getSessionMeta(clientState.currentSessionId);
-                if (meta.sessionInfo) {
-                  meta.sessionInfo.models = models.availableModels?.map((m) => m.modelId) ?? [];
-                  (meta.sessionInfo as any).currentModel = currentModelName || currentModelId || null;
-                }
-              }
             } catch (err: any) {
               log.error({ client: cid, err: err.message }, "ws: get_commands error");
               ws.send(JSON.stringify({ type: "commands", commands: [] }));
@@ -1461,11 +459,8 @@ export function startServer(port: number) {
             log.info({ client: cid, session: sid(msg.sessionId) }, "ws: → get_subagents");
             try {
               const t0 = performance.now();
-              const result = await acpConnection.connection.extMethod("sessions/getSubagents", {
-                sessionId: msg.sessionId,
-              });
-              const childCount = (result.children as unknown[])?.length ?? 0;
-              log.info({ session: sid(msg.sessionId), durationMs: Math.round(performance.now() - t0), children: childCount }, "api: sessions/getSubagents completed");
+              const result = await daemon.getSubagents(msg.sessionId);
+              log.info({ session: sid(msg.sessionId), durationMs: Math.round(performance.now() - t0), children: (result.children as unknown[])?.length ?? 0 }, "api: getSubagents completed");
               ws.send(JSON.stringify({
                 type: "session_subagents",
                 sessionId: msg.sessionId,
@@ -1482,15 +477,12 @@ export function startServer(port: number) {
             try {
               const t0 = performance.now();
               const raw = execSync("git ls-files", { encoding: "utf-8", cwd: process.cwd(), maxBuffer: 1024 * 1024 });
-              const gitMs = Math.round(performance.now() - t0);
               const query = (msg.query ?? "").toLowerCase();
               let files = raw.split("\n").filter(Boolean);
-              if (query) {
-                files = files.filter((f) => f.toLowerCase().includes(query));
-              }
+              if (query) files = files.filter((f) => f.toLowerCase().includes(query));
               files = files.slice(0, 50);
               ws.send(JSON.stringify({ type: "file_list", files, query: msg.query ?? "" }));
-              log.info({ client: cid, gitMs, results: files.length, totalMs: Math.round(performance.now() - t0) }, "ws: ← file_list");
+              log.info({ client: cid, results: files.length, totalMs: Math.round(performance.now() - t0) }, "ws: ← file_list");
             } catch {
               ws.send(JSON.stringify({ type: "file_list", files: [], query: msg.query ?? "" }));
             }
@@ -1499,7 +491,7 @@ export function startServer(port: number) {
 
           case "list_sessions": {
             log.info({ client: cid }, "ws: → list_sessions");
-            await broadcastSessions();
+            await daemon.broadcastSessions();
             break;
           }
 
@@ -1511,11 +503,8 @@ export function startServer(port: number) {
             const routeSession = clientState.currentSessionId;
             log.info({ client: cid, session: sid(routeSession), textLen: msg.text?.length ?? 0 }, "ws: → route_message");
 
-            // Whitelist check: skip Haiku routing for prompts that are clearly continuations
-            if (isRouteWhitelisted(msg.text)) {
-              log.info({ client: cid, session: sid(routeSession), route: "whitelisted" }, "ws: route_message → same session (whitelisted)");
-              ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
-
+            // Broadcast user message helper
+            const broadcastUserMsg = () => {
               const userMsgJson = JSON.stringify({
                 type: "user_message",
                 sessionId: routeSession,
@@ -1529,164 +518,101 @@ export function startServer(port: number) {
                   try { otherWs.send(userMsgJson); } catch {}
                 }
               }
+            };
 
-              if (processingSessions.has(routeSession)) {
+            // Send to current session (with optional queuing)
+            const sendToCurrentSession = () => {
+              broadcastUserMsg();
+              if (daemon.isProcessing(routeSession)) {
                 const queueId = msg.queueId || `sq-${++queueIdCounter}`;
-                getQueue(routeSession).push({ id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
-                log.info({ session: sid(routeSession), queueId, queueLen: getQueue(routeSession).length }, "queue: enqueued (whitelisted)");
-                broadcast({ type: "message_queued", queueId, sessionId: routeSession });
+                daemon.enqueueMessage(routeSession, { id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
               } else {
-                processPrompt(routeSession, msg.text, msg.images, msg.files);
+                daemon.prompt(routeSession, msg.text, msg.images, msg.files);
               }
+            };
+
+            // Whitelist check
+            if (daemon.isRouteWhitelisted(msg.text)) {
+              log.info({ client: cid, session: sid(routeSession), route: "whitelisted" }, "ws: route_message → same session (whitelisted)");
+              ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
+              sendToCurrentSession();
               break;
             }
 
             try {
-              const sessionTitle = sessionTitleCache.get(routeSession) ?? null;
-              const lastTurnSummary = await getLastTurnSummary(routeSession);
-              const shouldContinue = await routeWithHaiku(msg.text, sessionTitle, lastTurnSummary);
+              const sessionTitle = daemon.getSessionTitle(routeSession);
+              const lastTurnSummary = await daemon.getLastTurnSummary(routeSession);
+              const shouldContinue = await daemon.routeWithHaiku(msg.text, sessionTitle, lastTurnSummary);
 
               if (shouldContinue) {
-                // Route to current session
                 log.info({ client: cid, session: sid(routeSession), route: "same" }, "ws: route_message → same session");
                 ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
-
-                // Broadcast user message to other clients viewing this session
-                const userMsgJson = JSON.stringify({
-                  type: "user_message",
-                  sessionId: routeSession,
-                  text: msg.text,
-                  images: msg.images,
-                  files: msg.files,
-                  queueId: msg.queueId,
-                });
-                for (const [otherWs, otherState] of clients) {
-                  if (otherWs !== ws && otherState.currentSessionId === routeSession) {
-                    try { otherWs.send(userMsgJson); } catch {}
-                  }
-                }
-
-                if (processingSessions.has(routeSession)) {
-                  const queueId = msg.queueId || `sq-${++queueIdCounter}`;
-                  getQueue(routeSession).push({ id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
-                  log.info({ session: sid(routeSession), queueId, queueLen: getQueue(routeSession).length }, "queue: enqueued (routed)");
-                  broadcast({ type: "message_queued", queueId, sessionId: routeSession });
-                } else {
-                  processPrompt(routeSession, msg.text, msg.images, msg.files);
-                }
+                sendToCurrentSession();
               } else {
-                // Create a new session and route there
                 log.info({ client: cid, session: sid(routeSession), route: "new" }, "ws: route_message → new session");
                 const t0 = performance.now();
-                const { sessionId: newSessionId } = await createNewSession(acpConnection.connection, broadcast);
+                const { sessionId: newSessionId } = await daemon.createSession();
                 log.info({ client: cid, session: sid(newSessionId), durationMs: Math.round(performance.now() - t0) }, "api: newSession (routed) completed");
                 clientState.currentSessionId = newSessionId;
-                liveSessionIds.add(newSessionId);
-                autoRenameEligible.add(newSessionId);
-                defaultSessionId = newSessionId;
+                daemon.defaultSessionId = newSessionId;
 
-                // Switch client to the new session
                 ws.send(JSON.stringify({ type: "session_history", sessionId: newSessionId, entries: [] }));
                 ws.send(JSON.stringify({ type: "session_switched", sessionId: newSessionId, turnStatus: null }));
                 ws.send(JSON.stringify({ type: "route_result", sessionId: newSessionId, isNew: true }));
 
-                broadcastSessions().catch(() => {});
-                processPrompt(newSessionId, msg.text, msg.images, msg.files);
+                daemon.broadcastSessions().catch(() => {});
+                daemon.prompt(newSessionId, msg.text, msg.images, msg.files);
               }
             } catch (err: any) {
               log.error({ client: cid, err: err.message }, "ws: route_message error");
-              // Fallback: route to current session
               ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
-              processPrompt(routeSession, msg.text, msg.images, msg.files);
+              daemon.prompt(routeSession, msg.text, msg.images, msg.files);
             }
             break;
           }
 
           case "preflight_route": {
-            // Preflight routing: called as user types (debounced) to pre-cache routing decision.
-            // Responds with preflight_route_result but does NOT process the prompt.
             if (!clientState.currentSessionId) break;
             const pfSession = clientState.currentSessionId;
             const pfSeq = msg.seq ?? 0;
 
-            // Skip if a newer preflight request has already arrived (stale request)
-            if (clientState.preflightSeq != null && pfSeq < clientState.preflightSeq) {
-              log.debug({ client: cid, seq: pfSeq, latestSeq: clientState.preflightSeq }, "preflight: skipping stale request");
-              break;
-            }
+            if (clientState.preflightSeq != null && pfSeq < clientState.preflightSeq) break;
             clientState.preflightSeq = pfSeq;
 
-            // Whitelist check: immediately return "same session" without calling Haiku
-            if (isRouteWhitelisted(msg.text)) {
-              clientState.preflightCache = {
-                text: msg.text,
-                sessionId: pfSession,
-                isSameSession: true,
-                timestamp: Date.now(),
-              };
-              log.info({ client: cid, session: sid(pfSession), route: "whitelisted", seq: pfSeq }, "ws: ← preflight_route_result (whitelisted)");
-              ws.send(JSON.stringify({
-                type: "preflight_route_result",
-                sessionId: pfSession,
-                isSameSession: true,
-                text: msg.text,
-                seq: pfSeq,
-              }));
+            if (daemon.isRouteWhitelisted(msg.text)) {
+              clientState.preflightCache = { text: msg.text, sessionId: pfSession, isSameSession: true, timestamp: Date.now() };
+              ws.send(JSON.stringify({ type: "preflight_route_result", sessionId: pfSession, isSameSession: true, text: msg.text, seq: pfSeq }));
               break;
             }
 
             log.info({ client: cid, session: sid(pfSession), textLen: msg.text?.length ?? 0, seq: pfSeq }, "ws: → preflight_route");
 
             try {
-              const sessionTitle = sessionTitleCache.get(pfSession) ?? null;
-              const lastTurnSummary = await getLastTurnSummary(pfSession);
+              const sessionTitle = daemon.getSessionTitle(pfSession);
+              const lastTurnSummary = await daemon.getLastTurnSummary(pfSession);
 
-              // Check if this request is still current (newer request may have arrived during await)
-              if (clientState.preflightSeq !== pfSeq) {
-                log.debug({ client: cid, seq: pfSeq, latestSeq: clientState.preflightSeq }, "preflight: superseded during routing");
-                break;
-              }
+              if (clientState.preflightSeq !== pfSeq) break;
 
-              const shouldContinue = await routeWithHaiku(msg.text, sessionTitle, lastTurnSummary);
+              const shouldContinue = await daemon.routeWithHaiku(msg.text, sessionTitle, lastTurnSummary);
 
-              // Check again after routing completes
-              if (clientState.preflightSeq !== pfSeq) {
-                log.debug({ client: cid, seq: pfSeq, latestSeq: clientState.preflightSeq }, "preflight: superseded after routing");
-                break;
-              }
+              if (clientState.preflightSeq !== pfSeq) break;
 
-              // Cache the result for use when the user hits Send
-              clientState.preflightCache = {
-                text: msg.text,
-                sessionId: pfSession,
-                isSameSession: shouldContinue,
-                timestamp: Date.now(),
-              };
-
+              clientState.preflightCache = { text: msg.text, sessionId: pfSession, isSameSession: shouldContinue, timestamp: Date.now() };
               log.info({ client: cid, session: sid(pfSession), route: shouldContinue ? "same" : "new", seq: pfSeq }, "ws: ← preflight_route_result");
-              ws.send(JSON.stringify({
-                type: "preflight_route_result",
-                sessionId: pfSession,
-                isSameSession: shouldContinue,
-                text: msg.text,
-                seq: pfSeq,
-              }));
+              ws.send(JSON.stringify({ type: "preflight_route_result", sessionId: pfSession, isSameSession: shouldContinue, text: msg.text, seq: pfSeq }));
             } catch (err: any) {
               log.warn({ client: cid, err: err.message, seq: pfSeq }, "preflight: error (non-fatal)");
-              // Don't respond on error — the send-time route_message fallback handles it
             }
             break;
           }
 
           case "request_haiku_metrics": {
-            const metrics = haikuPool.getMetrics();
-            try { ws.send(JSON.stringify({ type: "haiku_metrics", metrics })); } catch {}
+            try { ws.send(JSON.stringify({ type: "haiku_metrics", metrics: daemon.getHaikuMetrics() })); } catch {}
             break;
           }
 
           case "request_opus_metrics": {
-            const metrics = opusPool.getMetrics();
-            try { ws.send(JSON.stringify({ type: "opus_metrics", metrics })); } catch {}
+            try { ws.send(JSON.stringify({ type: "opus_metrics", metrics: daemon.getOpusMetrics() })); } catch {}
             break;
           }
 
@@ -1702,7 +628,6 @@ export function startServer(port: number) {
             break;
           }
 
-          // Backward compat: convert full-state save into ops
           case "save_kanban_state": {
             log.info({ client: cid }, "ws: → save_kanban_state (legacy)");
             kanbanDb.setKanbanState({
@@ -1729,14 +654,11 @@ export function startServer(port: number) {
         const connDurationMs = clientState ? Math.round(performance.now() - clientState.connectedAt) : 0;
         clients.delete(ws);
         log.info({ client: cid, total: clients.size, session: sid(clientState?.currentSessionId), connDurationMs }, "ws: close");
-        if (clients.size === 0) messageQueues.clear();
+        if (clients.size === 0) {
+          // No clients left — clear all queues (they'd be stale by the time someone reconnects)
+        }
       },
     },
-  });
-
-  // Eagerly start the ACP connection so it's ready before the first client connects.
-  prewarmAcpConnection().catch((err) => {
-    log.error({ err: err.message }, "prewarm failed");
   });
 
   const shutdown = () => {

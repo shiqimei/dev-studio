@@ -1861,9 +1861,18 @@ a, [data-streamdown="link"] { cursor: pointer; }
 }
 
 .chat-title-header {
-  padding: 0 20px;
+  height: auto;
+  min-height: 44px;
+  padding: 6px 20px;
   justify-content: space-between;
-  gap: 8px;
+  gap: 4px;
+}
+
+.chat-title-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .chat-stop-btn {
@@ -2143,6 +2152,57 @@ a, [data-streamdown="link"] { cursor: pointer; }
   padding: 0 5px;
   line-height: 18px;
   vertical-align: baseline;
+}
+
+/* ── Global welcome screen (no project) ───── */
+
+.welcome-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  user-select: none;
+}
+
+.welcome-icon {
+  color: var(--color-dim);
+  opacity: 0.5;
+  margin-bottom: 8px;
+}
+
+.welcome-title {
+  font-family: var(--font-sans);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.welcome-subtitle {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-muted);
+  margin-bottom: 8px;
+}
+
+.welcome-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.welcome-add-btn:hover {
+  background: var(--color-overlay);
+  border-color: var(--color-dim);
 }
 
 /* ── Chat scroll (overlay scrollbar) ──────── */
@@ -3038,7 +3098,7 @@ a, [data-streamdown="link"] { cursor: pointer; }
   position: absolute;
   bottom: calc(100% + 8px);
   right: 0;
-  min-width: 200px;
+  min-width: 240px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 10px;
@@ -4093,7 +4153,6 @@ a, [data-streamdown="link"] { cursor: pointer; }
 /* Todo popover (hover on progress header) */
 .todo-progress-wrap {
   position: relative;
-  flex-shrink: 0;
 }
 
 .todo-popover {

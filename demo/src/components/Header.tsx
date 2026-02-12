@@ -23,20 +23,6 @@ export function Header() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Load project state on mount
-  useEffect(() => {
-    fetch("/api/projects")
-      .then((r) => r.json())
-      .then((data) => {
-        dispatch({
-          type: "SET_PROJECTS",
-          projects: data.projects ?? [],
-          activeProject: data.activeProject ?? null,
-        });
-      })
-      .catch(() => {});
-  }, [dispatch]);
-
   const addProject = useCallback(async () => {
     try {
       const pickRes = await fetch("/api/pick-folder", { method: "POST" });

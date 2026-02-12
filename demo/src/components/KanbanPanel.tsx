@@ -752,6 +752,12 @@ export function KanbanPanel() {
     lastClickedCardRef.current = null;
   }, []);
 
+  // Deselect active card and clear multi-selection when switching projects
+  useEffect(() => {
+    clearSelection();
+    deselectSession();
+  }, [state.activeProject]);
+
   // Click on empty board area → deselect card, show welcome screen, focus input
   const handleBoardClick = useCallback((e: React.MouseEvent) => {
     // Only act when clicking directly on the board or column background — not on a card

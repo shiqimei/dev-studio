@@ -752,6 +752,11 @@ export function KanbanPanel() {
   // turn starts, otherwise the SESSIONS reducer can misinterpret the optimistic turn status as a
   // completed transition and briefly send the card to "in review".
   useEffect(() => {
+    // Skip during reconnection window — kanban overrides and liveTurnStatus
+    // may be stale (e.g. WS_DISCONNECTED set error/disconnected on entries
+    // that the server successfully reconnected). Wait for KANBAN_STATE_LOADED
+    // to deliver fresh server state before making cleanup decisions.
+    if (!state.kanbanStateLoaded) return;
     const optimisticIds = new Set(optimisticBacklog.map((s) => s.sessionId));
     const ops: KanbanOp[] = [];
     for (const [sessionId, col] of Object.entries(state.kanbanColumnOverrides)) {
@@ -766,7 +771,7 @@ export function KanbanPanel() {
     if (ops.length > 0) {
       sendKanbanOp(ops);
     }
-  }, [state.liveTurnStatus, state.kanbanColumnOverrides, optimisticBacklog, sendKanbanOp]);
+  }, [state.kanbanStateLoaded, state.liveTurnStatus, state.kanbanColumnOverrides, optimisticBacklog, sendKanbanOp]);
 
   // Sync pending prompts from server when all client ops have been ack'd.
   // While ops are in-flight we keep local state to avoid clobbering optimistic

@@ -1264,7 +1264,21 @@ function reducer(state: AppState, action: Action): AppState {
         latestTasks: null,
       };
 
-    case "KANBAN_STATE_LOADED":
+    case "KANBAN_STATE_LOADED": {
+      // On reconnect, clear stale "disconnected" liveTurnStatus for sessions
+      // that the server says are still in_progress (successfully reconnected).
+      // Without this, the auto-cleanup effect sees error + in_progress override
+      // and would drag reconnected cards to in_review.
+      let lts = state.liveTurnStatus;
+      if (!state.kanbanStateLoaded) {
+        const freshLts = { ...lts };
+        for (const [sessionId, col] of Object.entries(action.columnOverrides)) {
+          if (col === "in_progress" && freshLts[sessionId]?.stopReason === "disconnected") {
+            delete freshLts[sessionId];
+          }
+        }
+        lts = freshLts;
+      }
       return {
         ...state,
         kanbanColumnOverrides: action.columnOverrides,
@@ -1275,7 +1289,9 @@ function reducer(state: AppState, action: Action): AppState {
         // During normal operation (already loaded), keep pending ops — they're drained by ack.
         kanbanPendingOps: state.kanbanStateLoaded ? state.kanbanPendingOps : [],
         kanbanStateLoaded: true,
+        liveTurnStatus: lts,
       };
+    }
 
     case "KANBAN_STATE_UPDATED":
       return {

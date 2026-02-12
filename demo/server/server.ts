@@ -10,6 +10,13 @@ import { getProjectDir } from "./kanban.js";
 import * as kanbanDb from "./kanban-db.js";
 
 export function startServer(port: number) {
+  // ── HMR epoch ──
+  // Monotonic counter shared across HMR reloads via globalThis. When Bun hot-
+  // reloads this module, the old module's async closures (e.g. processPrompt)
+  // still run to completion. The epoch lets those closures detect that a newer
+  // module has taken over and skip stale writes to the shared SQLite DB.
+  const serverEpoch = ((globalThis as any).__devStudioServerEpoch = ((globalThis as any).__devStudioServerEpoch ?? 0) + 1);
+
   // ── Initialize SQLite DB synchronously before serving requests ──
   try {
     kanbanDb.init();
@@ -434,28 +441,45 @@ export function startServer(port: number) {
       try {
         kanbanDb.migrateFromJson(getResolvedProjectDir());
         // Recover sessions that were in_progress when the server last shut down.
-        // Their turns were interrupted (e.g. HMR, crash) — move to in_review
-        // with an explicit stop reason so the kanban board shows why they stopped.
+        // Try to reconnect each one — their JSONL is still on disk. Only move
+        // to in_review (with a "server_restart" badge) if resumption fails.
         const snap = kanbanDb.getKanbanSnapshot();
         const interrupted: string[] = [];
         for (const [sessionId, col] of Object.entries(snap.columnOverrides)) {
           if (col === "in_progress") interrupted.push(sessionId);
         }
         if (interrupted.length > 0) {
-          const ops: KanbanOp[] = interrupted.map((sessionId) => ({
-            op: "set_column" as const, sessionId, column: "in_review",
-          }));
-          kanbanDb.applyKanbanOps(ops);
+          log.info({ count: interrupted.length, sessions: interrupted.map(sid) }, "kanban: attempting to reconnect interrupted sessions");
+          const reconnected: string[] = [];
+          const failed: string[] = [];
           for (const sessionId of interrupted) {
-            turnStates[sessionId] = {
-              status: "error",
-              startedAt: 0,
-              approxTokens: 0,
-              thinkingDurationMs: 0,
-              stopReason: "server_restart",
-            };
+            try {
+              await resumeSession(acpConnection!.connection, sessionId);
+              liveSessionIds.add(sessionId);
+              reconnected.push(sessionId);
+              log.info({ session: sid(sessionId) }, "kanban: session reconnected");
+            } catch (err: any) {
+              log.warn({ session: sid(sessionId), err: err.message }, "kanban: failed to reconnect session");
+              failed.push(sessionId);
+            }
           }
-          log.info({ count: interrupted.length, sessions: interrupted.map(sid) }, "kanban: recovered interrupted sessions (server restart)");
+          // Only move genuinely-dead sessions to in_review
+          if (failed.length > 0) {
+            const ops: KanbanOp[] = failed.map((sessionId) => ({
+              op: "set_column" as const, sessionId, column: "in_review",
+            }));
+            kanbanDb.applyKanbanOps(ops);
+            for (const sessionId of failed) {
+              turnStates[sessionId] = {
+                status: "error",
+                startedAt: 0,
+                approxTokens: 0,
+                thinkingDurationMs: 0,
+                stopReason: "server_restart",
+              };
+            }
+          }
+          log.info({ reconnected: reconnected.length, failed: failed.length, reconnectedSessions: reconnected.map(sid), failedSessions: failed.map(sid) }, "kanban: session reconnection complete");
         }
       } catch (err: any) {
         log.warn({ err: err.message }, "kanban-db: init error");
@@ -655,20 +679,28 @@ export function startServer(port: number) {
       broadcast({ type: "turn_end", stopReason: "error", sessionId });
     } finally {
       processingSessions.delete(sessionId);
-      // Persist "in_review" column override so the card survives page reloads
-      // and server restarts. Without this, the card falls back to categorizeSession()
-      // which returns "backlog" when liveTurnStatus is lost.
-      try {
-        const snap = kanbanDb.getKanbanSnapshot();
-        const currentOverride = snap.columnOverrides[sessionId];
-        if (!currentOverride || currentOverride === "in_progress") {
-          kanbanDb.applyKanbanOps([{ op: "set_column", sessionId, column: "in_review" }]);
-          broadcastKanbanState();
+      // Guard: if the server module was hot-reloaded (HMR) while this turn was
+      // in flight, the new module's recovery code already handled the session's
+      // kanban state. Skip the DB write to avoid overwriting "in_progress" with
+      // a stale "in_review" from the old module's finally block.
+      if ((globalThis as any).__devStudioServerEpoch !== serverEpoch) {
+        log.info({ session: sid(sessionId) }, "kanban: skipping post-turn DB write (server module was reloaded)");
+      } else {
+        // Persist "in_review" column override so the card survives page reloads
+        // and server restarts. Without this, the card falls back to categorizeSession()
+        // which returns "backlog" when liveTurnStatus is lost.
+        try {
+          const snap = kanbanDb.getKanbanSnapshot();
+          const currentOverride = snap.columnOverrides[sessionId];
+          if (!currentOverride || currentOverride === "in_progress") {
+            kanbanDb.applyKanbanOps([{ op: "set_column", sessionId, column: "in_review" }]);
+            broadcastKanbanState();
+          }
+        } catch (err: any) {
+          log.warn({ session: sid(sessionId), err: err.message }, "kanban: failed to set in_review override");
         }
-      } catch (err: any) {
-        log.warn({ session: sid(sessionId), err: err.message }, "kanban: failed to set in_review override");
+        drainQueue(sessionId);
       }
-      drainQueue(sessionId);
     }
   }
 

@@ -393,9 +393,42 @@ export interface ProjectState {
   activeProject: string | null;
 }
 
+/**
+ * Ensure the cwd is always in the projects table and exactly one project is active.
+ * This is the single invariant enforcer — called on every read to self-heal.
+ */
+function ensureProjects(d: Database): void {
+  const cwd = process.env.ACP_CWD || process.cwd();
+
+  // 1. Always ensure cwd is present (regardless of what else is in the table)
+  const cwdRow = d.query("SELECT id FROM projects WHERE path = ?").get(cwd) as
+    | { id: number }
+    | null;
+  if (!cwdRow) {
+    const name = path.basename(cwd);
+    const maxPos = d.query("SELECT COALESCE(MAX(position), -1) as m FROM projects").get() as {
+      m: number;
+    };
+    d.run("INSERT INTO projects (path, name, is_active, position) VALUES (?, ?, 0, ?)", [
+      cwd,
+      name,
+      maxPos.m + 1,
+    ]);
+  }
+
+  // 2. Ensure exactly one project is active (prefer cwd)
+  const active = d.query("SELECT COUNT(*) as n FROM projects WHERE is_active = 1").get() as {
+    n: number;
+  };
+  if (active.n === 0) {
+    d.run("UPDATE projects SET is_active = 1 WHERE path = ?", [cwd]);
+  }
+}
+
 /** Read all projects ordered by position, returning the simplified state. */
 export function getProjects(): ProjectState {
   const d = getDb();
+  ensureProjects(d);
   const rows = d
     .query("SELECT path, is_active FROM projects ORDER BY position ASC, id ASC")
     .all() as Array<{ path: string; is_active: number }>;
@@ -425,11 +458,14 @@ export function addProject(projectPath: string): ProjectState {
   return getProjects();
 }
 
-/** Remove a project by path. If it was active, activate the first remaining. */
+/** Remove a project by path. Refuses to remove the last project. If it was active, activate the first remaining. */
 export function removeProject(projectPath: string): ProjectState {
   const d = getDb();
 
   d.transaction(() => {
+    const count = d.query("SELECT COUNT(*) as n FROM projects").get() as { n: number };
+    if (count.n <= 1) return; // Never remove the last project
+
     const row = d.query("SELECT is_active FROM projects WHERE path = ?").get(projectPath) as {
       is_active: number;
     } | null;

@@ -6,9 +6,11 @@
  * start of spawning a new Opus subprocess.
  *
  * Built on the shared WorkerPool abstraction from worker-pool.ts.
+ * Exposes the streaming primitive so callers can push a prompt and
+ * iterate over response chunks as they arrive.
  */
 
-import { createWorkerPool, type WorkerPool, type MetricEntry } from "./worker-pool.js";
+import { createWorkerPool, type WorkerPool, type MetricEntry, type StreamChunk } from "./worker-pool.js";
 
 // ── Config ──
 
@@ -28,11 +30,18 @@ const OPUS_CONFIG = {
 // ── Types ──
 
 export type OpusMetricEntry = MetricEntry;
+export type { StreamChunk };
 
 export interface OpusPool {
   /** Warm the pool — spawns workers and absorbs cold start. Returns when ready. */
   warmup(): Promise<void>;
-  /** Send a prompt and get a response using a pre-warmed worker. */
+  /**
+   * Stream response chunks from a pre-warmed Opus worker.
+   * Push a prompt, get back an async iterator of text/thinking chunks.
+   * The worker is automatically released when iteration completes or is aborted.
+   */
+  stream(prompt: string): AsyncGenerator<StreamChunk, void, undefined>;
+  /** Send a prompt and get the full response (convenience over stream). */
   query(prompt: string): Promise<string>;
   /** Record a metric entry in the ring buffer. */
   recordMetric(entry: OpusMetricEntry): void;

@@ -8,6 +8,10 @@
  * Workers are recycled after MAX_USES to prevent unbounded context growth
  * (each prompt/response pair accumulates in the conversation history).
  *
+ * Response consumption uses an async-iterator-first design:
+ *   stream(prompt)  → AsyncGenerator<StreamChunk>  (primary primitive)
+ *   query(prompt)   → Promise<string>              (convenience, built on stream)
+ *
  * Used by both the Haiku pool (routing, title generation) and
  * the Opus pool (pre-warmed for kanban task work).
  */
@@ -36,12 +40,22 @@ export interface WorkerPoolConfig {
   maxBudgetUsd?: number;
 }
 
+// ── Stream chunks ──
+
+export interface StreamChunk {
+  type: "text" | "thinking";
+  text: string;
+}
+
 // ── Worker ──
 
 interface Worker {
   push(text: string): void;
   close(): void;
+  /** Drain a response fully, returning the accumulated text. Used for warmup. */
   readResponse(): Promise<string>;
+  /** Stream response chunks as they arrive from the SDK. */
+  streamResponse(): AsyncGenerator<StreamChunk, void, undefined>;
   busy: boolean;
   warmedUp: boolean;
   uses: number;
@@ -105,6 +119,7 @@ function createWorker(config: WorkerPoolConfig): Worker {
 
   const iter = conversation[Symbol.asyncIterator]();
 
+  /** Drain a full response, returning accumulated text. Used for warmup only. */
   async function readResponse(): Promise<string> {
     let text = "";
     while (true) {
@@ -124,7 +139,52 @@ function createWorker(config: WorkerPoolConfig): Worker {
     return text;
   }
 
-  return { push, close, readResponse, busy: false, warmedUp: false, uses: 0 };
+  /**
+   * Stream response chunks as they arrive from the SDK.
+   *
+   * Yields text/thinking deltas from stream_event messages in real time.
+   * Falls back to the final assistant message content if no stream events
+   * were received (e.g., very short responses).
+   */
+  async function* streamResponse(): AsyncGenerator<StreamChunk, void, undefined> {
+    let streamedText = false;
+    while (true) {
+      const { value: msg, done } = await iter.next();
+      if (done) break;
+
+      // Yield incremental deltas from SDK stream events
+      if (msg.type === "stream_event") {
+        const event = (msg as any).event;
+        if (event?.type === "content_block_delta") {
+          const delta = event.delta;
+          if (delta?.type === "text_delta" && delta.text) {
+            streamedText = true;
+            yield { type: "text", text: delta.text };
+          } else if (delta?.type === "thinking_delta" && delta.thinking) {
+            yield { type: "thinking", text: delta.thinking };
+          }
+        }
+        continue;
+      }
+
+      // Final assistant message — extract any text not already streamed
+      if (msg.type === "assistant") {
+        if (!streamedText) {
+          const content = (msg as any).message?.content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (block.type === "text" && block.text) {
+                yield { type: "text", text: block.text };
+              }
+            }
+          }
+        }
+        return;
+      }
+    }
+  }
+
+  return { push, close, readResponse, streamResponse, busy: false, warmedUp: false, uses: 0 };
 }
 
 // ── Metrics ──
@@ -146,7 +206,13 @@ const METRICS_BUFFER_SIZE = 200;
 export interface WorkerPool {
   /** Warm the pool — spawns workers and absorbs cold start. Returns when ready. */
   warmup(): Promise<void>;
-  /** Send a prompt and get a response using a pre-warmed worker. */
+  /**
+   * Stream response chunks from a pre-warmed worker.
+   * This is the primary primitive — yields text/thinking chunks as they arrive.
+   * The worker is automatically released when the generator completes or is closed.
+   */
+  stream(prompt: string): AsyncGenerator<StreamChunk, void, undefined>;
+  /** Send a prompt and get the full response. Convenience wrapper over stream(). */
   query(prompt: string): Promise<string>;
   /** Record a metric entry in the ring buffer. */
   recordMetric(entry: MetricEntry): void;
@@ -251,16 +317,15 @@ export function createWorkerPool(config: WorkerPoolConfig): WorkerPool {
     }
   }
 
-  // ── Generic query ──
+  // ── Stream (primary primitive) ──
 
-  async function queryPool(prompt: string): Promise<string> {
+  async function* streamPool(prompt: string): AsyncGenerator<StreamChunk, void, undefined> {
     let worker: Worker | null = null;
     try {
       worker = await acquire();
       worker.push(prompt);
-      const answer = await worker.readResponse();
+      yield* worker.streamResponse();
       worker.uses++;
-      return answer;
     } catch (err: any) {
       // Evict the broken worker and spawn a replacement
       if (worker) {
@@ -273,6 +338,16 @@ export function createWorkerPool(config: WorkerPoolConfig): WorkerPool {
     }
   }
 
+  // ── Query (convenience, built on stream) ──
+
+  async function queryPool(prompt: string): Promise<string> {
+    let text = "";
+    for await (const chunk of streamPool(prompt)) {
+      if (chunk.type === "text") text += chunk.text;
+    }
+    return text.trim();
+  }
+
   // ── Shutdown ──
 
   function shutdown() {
@@ -283,5 +358,5 @@ export function createWorkerPool(config: WorkerPoolConfig): WorkerPool {
     workers.length = 0;
   }
 
-  return { warmup, query: queryPool, recordMetric, getMetrics, shutdown };
+  return { warmup, stream: streamPool, query: queryPool, recordMetric, getMetrics, shutdown };
 }

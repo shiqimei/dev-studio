@@ -1,6 +1,7 @@
 /**
- * Kanban board state persistence via SQLite.
- * Database stored at ~/devstudio/data.db with atomic SQL operations.
+ * DevStudio state persistence via SQLite.
+ * Database stored at ~/.devstudio/data.db with atomic SQL operations.
+ * Manages kanban board state and opened projects.
  */
 import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
@@ -63,6 +64,18 @@ function getDb(): Database {
     CREATE TABLE IF NOT EXISTS kanban_meta (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      path          TEXT NOT NULL UNIQUE,
+      name          TEXT,
+      is_active     INTEGER NOT NULL DEFAULT 0,
+      position      INTEGER NOT NULL DEFAULT 0,
+      added_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      last_opened_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
 
@@ -361,6 +374,153 @@ export function migrateFromJson(projectDir: string): boolean {
 
   log.info({ jsonPath }, "kanban-db: migrated from JSON");
   return true;
+}
+
+// ── Projects ──
+
+export interface ProjectRow {
+  id: number;
+  path: string;
+  name: string | null;
+  is_active: number;
+  position: number;
+  added_at: string;
+  last_opened_at: string;
+}
+
+export interface ProjectState {
+  projects: string[];
+  activeProject: string | null;
+}
+
+/** Read all projects ordered by position, returning the simplified state. */
+export function getProjects(): ProjectState {
+  const d = getDb();
+  const rows = d
+    .query("SELECT path, is_active FROM projects ORDER BY position ASC, id ASC")
+    .all() as Array<{ path: string; is_active: number }>;
+  const projects = rows.map((r) => r.path);
+  const active = rows.find((r) => r.is_active === 1);
+  return { projects, activeProject: active?.path ?? null };
+}
+
+/** Add a project. Derives `name` from the last path segment. Sets it as active. */
+export function addProject(projectPath: string): ProjectState {
+  const d = getDb();
+  const name = path.basename(projectPath);
+  const maxPos = d.query("SELECT COALESCE(MAX(position), -1) as m FROM projects").get() as {
+    m: number;
+  };
+
+  d.transaction(() => {
+    d.run("UPDATE projects SET is_active = 0");
+    d.run(
+      `INSERT INTO projects (path, name, is_active, position)
+       VALUES (?1, ?2, 1, ?3)
+       ON CONFLICT(path) DO UPDATE SET is_active = 1, last_opened_at = datetime('now')`,
+      [projectPath, name, maxPos.m + 1],
+    );
+  })();
+
+  return getProjects();
+}
+
+/** Remove a project by path. If it was active, activate the first remaining. */
+export function removeProject(projectPath: string): ProjectState {
+  const d = getDb();
+
+  d.transaction(() => {
+    const row = d.query("SELECT is_active FROM projects WHERE path = ?").get(projectPath) as {
+      is_active: number;
+    } | null;
+    d.run("DELETE FROM projects WHERE path = ?", [projectPath]);
+
+    if (row?.is_active === 1) {
+      const first = d
+        .query("SELECT id FROM projects ORDER BY position ASC, id ASC LIMIT 1")
+        .get() as { id: number } | null;
+      if (first) {
+        d.run("UPDATE projects SET is_active = 1 WHERE id = ?", [first.id]);
+      }
+    }
+  })();
+
+  return getProjects();
+}
+
+/** Set a project as active (deactivates all others). */
+export function setActiveProject(projectPath: string): ProjectState {
+  const d = getDb();
+  d.transaction(() => {
+    d.run("UPDATE projects SET is_active = 0");
+    d.run("UPDATE projects SET is_active = 1, last_opened_at = datetime('now') WHERE path = ?", [
+      projectPath,
+    ]);
+  })();
+  return getProjects();
+}
+
+/**
+ * Migrate projects from the legacy state.json file into SQLite (one-time).
+ * Returns true if migration occurred.
+ */
+export function migrateProjectsFromJson(): boolean {
+  const d = getDb();
+
+  // Skip if DB already has projects
+  const count = d.query("SELECT COUNT(*) as n FROM projects").get() as { n: number };
+  if (count.n > 0) {
+    return false;
+  }
+
+  const stateFile = path.join(os.homedir(), ".devstudio", "state.json");
+  let raw: string;
+  try {
+    raw = fs.readFileSync(stateFile, "utf-8");
+  } catch {
+    return false;
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+
+  const projects: string[] = Array.isArray(parsed.projects) ? parsed.projects : [];
+  const activeProject: string | null = parsed.activeProject ?? null;
+
+  if (projects.length === 0) return false;
+
+  d.transaction(() => {
+    for (let i = 0; i < projects.length; i++) {
+      const p = projects[i];
+      const name = path.basename(p);
+      const isActive = p === activeProject ? 1 : 0;
+      d.run(
+        "INSERT OR IGNORE INTO projects (path, name, is_active, position) VALUES (?, ?, ?, ?)",
+        [p, name, isActive, i],
+      );
+    }
+  })();
+
+  log.info({ stateFile, count: projects.length }, "projects: migrated from state.json");
+  return true;
+}
+
+/**
+ * Seed the projects table with the current working directory if empty.
+ */
+export function seedProjectsFromCwd(): void {
+  const d = getDb();
+  const count = d.query("SELECT COUNT(*) as n FROM projects").get() as { n: number };
+  if (count.n > 0) return;
+
+  const cwd = process.env.ACP_CWD || process.cwd();
+  const name = path.basename(cwd);
+  d.run("INSERT INTO projects (path, name, is_active, position) VALUES (?, ?, 1, 0)", [cwd, name]);
+  log.info({ cwd }, "projects: seeded from cwd");
 }
 
 /**

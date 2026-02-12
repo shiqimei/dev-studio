@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useTheme, THEMES } from "../context/ThemeContext";
+import { useFont, FONTS } from "../context/FontContext";
 import { useWsActions } from "../context/WebSocketContext";
 import type { HaikuMetricEntry } from "../../server/haiku-pool";
 
@@ -296,6 +297,7 @@ function MetricsTab() {
 
 export function SettingsModal() {
   const { theme, setTheme } = useTheme();
+  const { font, setFont } = useFont();
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
   const panelRef = useRef<HTMLDivElement>(null);
@@ -396,6 +398,28 @@ export function SettingsModal() {
                         <span className="settings-theme-swatch" style={{ background: t.swatch }} />
                         <span className="settings-theme-name">{t.label}</span>
                         {theme === t.id && (
+                          <span className="settings-theme-check">{"\u2713"}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Font section */}
+                <div className="settings-section">
+                  <div className="settings-section-label">Font</div>
+                  <div className="settings-font-grid">
+                    {FONTS.map((f) => (
+                      <button
+                        key={f.id}
+                        className={`settings-font-card${font === f.id ? " active" : ""}`}
+                        onClick={() => setFont(f.id)}
+                      >
+                        <span className="settings-font-preview" style={{ fontFamily: f.family }}>
+                          Aa
+                        </span>
+                        <span className="settings-font-name">{f.label}</span>
+                        {font === f.id && (
                           <span className="settings-theme-check">{"\u2713"}</span>
                         )}
                       </button>

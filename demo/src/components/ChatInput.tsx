@@ -72,6 +72,31 @@ export function ChatInput() {
     el.style.height = Math.min(el.scrollHeight, 210) + "px";
   }, [state.currentSessionId]); // intentionally not depending on kanbanPendingPrompts to avoid re-running on every edit
 
+  // ── Clear input when the current session's task starts (e.g. drag-to-in_progress) ──
+  // The programmatic send() in handleMoveCard doesn't go through handleSend,
+  // so the input wouldn't know to clear itself without this.
+  const prevLiveStatusRef = useRef<string | undefined>();
+  useEffect(() => {
+    const sid = state.currentSessionId;
+    if (!sid) return;
+    const liveStatus = state.liveTurnStatus[sid]?.status;
+    const prev = prevLiveStatusRef.current;
+    prevLiveStatusRef.current = liveStatus;
+    if (prev !== "in_progress" && liveStatus === "in_progress" && isBacklogEditRef.current) {
+      isBacklogEditRef.current = false;
+      if (renameDebouncerRef.current) clearTimeout(renameDebouncerRef.current);
+      const el = inputRef.current;
+      if (el) {
+        el.value = "";
+        el.style.height = "auto";
+      }
+      saveDraft(sid, "");
+      lastSnapshotRef.current = "";
+      undoStack.current = [];
+      redoStack.current = [];
+    }
+  }, [state.currentSessionId, state.liveTurnStatus]);
+
   // ── Lazy command loading (gate on connected + empty commands) ──
 
   // ── Slash command autocomplete state ──

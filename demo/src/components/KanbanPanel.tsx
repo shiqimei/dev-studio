@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef, useCallback, Fragment } from "react";
+import { useMemo, useState, useEffect, useLayoutEffect, useRef, useCallback, Fragment } from "react";
 import { useDrag, useDrop } from "react-dnd";
 import { useWsState, useWsActions, titleLockedSessions } from "../context/WebSocketContext";
 import { RETRY_PROMPT } from "../kanban-prompts";
@@ -146,6 +146,8 @@ function stopReasonLabel(reason: string | undefined): string | null {
     case "error": return "Error";
     case "max_tokens": return "Max tokens";
     case "stop_sequence": return "Stop sequence";
+    case "server_restart": return "Server restarted";
+    case "disconnected": return "Disconnected";
     case undefined:
     case "end_turn":
     case "cancelled": return null; // normal completion — no badge needed
@@ -343,6 +345,7 @@ function KanbanSessionRow({
   return (
     <div
       ref={cardRef}
+      data-session-id={session.sessionId}
       className={`kanban-card-wrap${isDragging ? " kanban-card-dragging" : ""}${isSelected ? " kanban-card-selected" : ""}${isErrorCard ? " kanban-card-error" : ""}${stackClass}`}
       onClickCapture={(e) => {
         if (e.shiftKey) {
@@ -1032,6 +1035,9 @@ export function KanbanPanel() {
 
   const handleMoveCard = useCallback(
     (dragSessionId: string, sourceCol: KanbanColumnId, targetIndex: number, targetCol: KanbanColumnId) => {
+      // Mark as manual move so FLIP animation is skipped for this card
+      manualMoveIdsRef.current.add(dragSessionId);
+
       // ── Start task when moving any card into in_progress ──
       if (targetCol === "in_progress" && sourceCol !== "in_progress") {
         const pendingPrompt = pendingPromptsRef.current[dragSessionId];
@@ -1144,6 +1150,9 @@ export function KanbanPanel() {
 
   const handleBulkMove = useCallback(
     (sessionIds: string[], targetCol: KanbanColumnId) => {
+      // Mark as manual moves so FLIP animation is skipped for these cards
+      for (const id of sessionIds) manualMoveIdsRef.current.add(id);
+
       // Compute new sort orders from current derived state
       const idSet = new Set(sessionIds);
       const nextSort: Record<string, string[]> = {};
@@ -1284,6 +1293,106 @@ export function KanbanPanel() {
     setContextMenu({ sessionId, title, x: rect.right, y: rect.bottom });
   };
 
+  // ── FLIP animation for automatic column transitions ──
+  // Only animates cards that change columns due to state changes (e.g. task
+  // completes and moves from in_progress → in_review). Manual drag-and-drop
+  // moves are excluded — they have their own visual feedback.
+  const boardRef = useRef<HTMLDivElement>(null);
+  const cardPositionsRef = useRef<Map<string, DOMRect>>(new Map());
+  const prevColumnMapRef = useRef<Map<string, string>>(new Map());
+  const manualMoveIdsRef = useRef<Set<string>>(new Set());
+
+  useLayoutEffect(() => {
+    if (!boardRef.current) return;
+
+    const anyDragging = boardRef.current.querySelector(".kanban-card-dragging") !== null;
+
+    // Build current column membership
+    const currentColumnMap = new Map<string, string>();
+    for (const [colId, sessions] of Object.entries(columnData) as [string, DiskSession[]][]) {
+      for (const s of sessions) currentColumnMap.set(s.sessionId, colId);
+    }
+
+    // Detect cards that changed columns
+    const movedIds = new Set<string>();
+    const manuallyMovedIds = new Set<string>();
+    const prevMap = prevColumnMapRef.current;
+    if (prevMap.size > 0) {
+      for (const [id, col] of currentColumnMap) {
+        const prevCol = prevMap.get(id);
+        if (prevCol && prevCol !== col) {
+          if (manualMoveIdsRef.current.has(id)) {
+            manuallyMovedIds.add(id);
+          } else {
+            movedIds.add(id);
+          }
+        }
+      }
+    }
+    prevColumnMapRef.current = currentColumnMap;
+    manualMoveIdsRef.current.clear();
+
+    // Suppress fadeSlideIn on ANY card that changed columns — the CSS entrance
+    // animation on .kanban-card-wrap fires on the fresh DOM element React creates
+    // in the new column parent. Must run before the anyDragging guard because
+    // react-dnd's isDragging may still be true in the same render as the drop.
+    const allChangedIds = new Set([...movedIds, ...manuallyMovedIds]);
+    if (allChangedIds.size > 0) {
+      boardRef.current.querySelectorAll<HTMLElement>("[data-session-id]").forEach((card) => {
+        if (allChangedIds.has(card.dataset.sessionId!)) {
+          card.style.animation = "none";
+        }
+      });
+    }
+
+    if (anyDragging) return;
+
+    // FLIP-animate only automatic transitions
+    if (movedIds.size > 0) {
+      const prevPositions = cardPositionsRef.current;
+      const cards = boardRef.current.querySelectorAll<HTMLElement>("[data-session-id]");
+
+      cards.forEach((card) => {
+        const id = card.dataset.sessionId!;
+        if (!movedIds.has(id)) return;
+
+        const prev = prevPositions.get(id);
+        if (!prev) return;
+
+        const curr = card.getBoundingClientRect();
+        const dx = prev.left - curr.left;
+        const dy = prev.top - curr.top;
+        if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+
+        card.style.animation = "none";
+        card.style.transform = `translate(${dx}px, ${dy}px)`;
+        card.style.transition = "none";
+        card.getBoundingClientRect();
+        card.style.transition = "transform 0.3s cubic-bezier(0.25, 0.1, 0.25, 1)";
+        card.style.transform = "";
+
+        const cleanup = () => {
+          card.style.transition = "";
+          card.style.transform = "";
+          // Keep animation: none — removing it would re-trigger the CSS
+          // fadeSlideIn animation on .kanban-card-wrap, causing a flicker.
+          card.removeEventListener("transitionend", cleanup);
+        };
+        card.addEventListener("transitionend", cleanup);
+        setTimeout(cleanup, 400);
+      });
+    }
+
+    // Snapshot positions (skip during drag — layout is distorted)
+    const nextPositions = new Map<string, DOMRect>();
+    boardRef.current.querySelectorAll<HTMLElement>("[data-session-id]").forEach((card) => {
+      if (!card.classList.contains("kanban-card-dragging")) {
+        nextPositions.set(card.dataset.sessionId!, card.getBoundingClientRect());
+      }
+    });
+    cardPositionsRef.current = nextPositions;
+  });
+
   const liveSessionIds = useMemo(
     () => new Set(state.diskSessions.filter((s) => s.isLive).map((s) => s.sessionId)),
     [state.diskSessions],
@@ -1291,7 +1400,7 @@ export function KanbanPanel() {
 
   return (
     <div className="kanban-panel">
-      <div className="kanban-board">
+      <div ref={boardRef} className="kanban-board">
         {COLUMNS.map((col) => (
           <KanbanColumnView
             key={col.id}
@@ -1350,6 +1459,11 @@ export function KanbanPanel() {
           columnData={columnData}
           onSelect={(sessionId, columnId) => {
             handleSelectSession(sessionId, columnId);
+            // Scroll the selected card into view after the modal closes
+            requestAnimationFrame(() => {
+              const card = document.querySelector(`[data-session-id="${sessionId}"]`);
+              card?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+            });
           }}
           onClose={() => setSearchOpen(false)}
         />

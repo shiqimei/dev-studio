@@ -31,6 +31,7 @@
   --color-code-bg: rgba(255, 255, 255, 0.1);
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-chat: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 }
 
 /* ── Theme: Midnight (high-contrast terminal) ── */
@@ -230,7 +231,7 @@ a, [data-streamdown="link"] { cursor: pointer; }
 /* ── Chat messages ────────────────────────── */
 
 .msg {
-  font-family: var(--font-mono);
+  font-family: var(--font-chat);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
@@ -470,6 +471,12 @@ a, [data-streamdown="link"] { cursor: pointer; }
 .msg.assistant [data-streamdown="inline-code"] {
   color: #6ADAFF;
   background: var(--color-code-bg);
+  font-family: var(--font-mono);
+}
+
+.msg.assistant pre,
+.msg.assistant code {
+  font-family: var(--font-mono);
 }
 
 /* Color swatch preview square for inline color codes */
@@ -1909,7 +1916,7 @@ a, [data-streamdown="link"] { cursor: pointer; }
 .project-tabs {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   overflow-x: auto;
   scrollbar-width: none;
   max-width: 50%;
@@ -1924,31 +1931,28 @@ a, [data-streamdown="link"] { cursor: pointer; }
 .project-tab {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border-radius: 5px;
-  border: 1px solid transparent;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: none;
   background: none;
   color: var(--color-muted);
   font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background 0.15s, color 0.15s;
   flex-shrink: 0;
 }
 
 .project-tab:hover {
   color: var(--color-dim);
-  background: var(--color-subtle-bg);
+  background: var(--color-overlay);
 }
 
 .project-tab.active {
   color: var(--color-text);
-  border-color: var(--color-border);
   background: var(--color-surface);
 }
 
@@ -1959,12 +1963,17 @@ a, [data-streamdown="link"] { cursor: pointer; }
 }
 
 .project-tab-close {
-  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 12px;
   line-height: 1;
   color: var(--color-muted);
+  border-radius: 3px;
   opacity: 0;
-  transition: opacity 0.15s, color 0.15s;
-  padding: 0 1px;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
   cursor: pointer;
 }
 
@@ -1974,29 +1983,29 @@ a, [data-streamdown="link"] { cursor: pointer; }
 
 .project-tab-close:hover {
   color: var(--color-red);
+  background: rgba(248, 113, 113, 0.1);
 }
 
 .project-tab-add {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
-  border: 1px dashed var(--color-border);
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: none;
   background: none;
   color: var(--color-muted);
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 15px;
+  font-weight: 400;
   cursor: pointer;
   flex-shrink: 0;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 
 .project-tab-add:hover {
   color: var(--color-text);
-  border-color: var(--color-dim);
-  background: var(--color-subtle-bg);
+  background: var(--color-overlay);
 }
 
 .sidebar-new-btn {
@@ -2246,7 +2255,8 @@ a, [data-streamdown="link"] { cursor: pointer; }
   align-items: stretch;
   min-width: 0;
   border-radius: 8px;
-  transition: background 0.15s;
+  box-shadow: 0 0 0 transparent;
+  transition: background 0.15s, box-shadow 0.25s ease;
 }
 
 .session-row:hover {
@@ -2869,6 +2879,49 @@ a, [data-streamdown="link"] { cursor: pointer; }
   color: var(--color-accent);
 }
 
+.settings-font-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.settings-font-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.settings-font-card:hover {
+  border-color: var(--color-dim);
+  background: var(--color-overlay);
+}
+
+.settings-font-card.active {
+  border-color: var(--color-accent);
+}
+
+.settings-font-preview {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--color-text);
+  flex-shrink: 0;
+  width: 32px;
+  text-align: center;
+}
+
+.settings-font-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
 .settings-keybindings {
   display: flex;
   flex-direction: column;
@@ -3341,11 +3394,13 @@ a, [data-streamdown="link"] { cursor: pointer; }
 .kanban-column-body .session-row-active {
   background: color-mix(in srgb, var(--color-surface) 40%, var(--color-bg));
   border-color: var(--color-faint);
+  box-shadow: 4px 4px 8px color-mix(in srgb, var(--color-faint) 55%, var(--color-bg));
 }
 
 .kanban-column-body .session-row-active:hover {
   background: color-mix(in srgb, var(--color-surface) 55%, var(--color-bg));
   border-color: var(--color-faint);
+  box-shadow: 4px 4px 8px color-mix(in srgb, var(--color-faint) 55%, var(--color-bg));
 }
 
 /* 2-line clamp for session titles inside kanban cards */
@@ -3544,7 +3599,7 @@ a, [data-streamdown="link"] { cursor: pointer; }
 .kanban-card-selected .session-row {
   border-color: var(--color-accent);
   background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 25%, transparent), 0 2px 8px rgba(0, 0, 0, 0.15), 0 4px 16px color-mix(in srgb, var(--color-accent) 15%, transparent);
+  box-shadow: 4px 4px 8px color-mix(in srgb, var(--color-faint) 55%, var(--color-bg));
   transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 

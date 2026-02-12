@@ -294,8 +294,23 @@ function reducer(state: AppState, action: Action): AppState {
     case "WS_CONNECTED":
       return { ...state, connected: true, reconnectAttempt: 0, busy: false, startTime: Date.now() };
 
-    case "WS_DISCONNECTED":
-      return { ...state, connected: false, busy: false, queuedMessages: [], pendingQueuedEntries: [], kanbanStateLoaded: false };
+    case "WS_DISCONNECTED": {
+      // Mark any in-progress sessions as interrupted so the kanban board
+      // shows an explicit stop reason instead of silently dropping them.
+      const disconnectedLts = { ...state.liveTurnStatus };
+      for (const [sid, ts] of Object.entries(disconnectedLts)) {
+        if (ts.status === "in_progress") {
+          disconnectedLts[sid] = {
+            ...ts,
+            status: "error",
+            endedAt: Date.now(),
+            durationMs: Date.now() - ts.startedAt,
+            stopReason: "disconnected",
+          };
+        }
+      }
+      return { ...state, connected: false, busy: false, queuedMessages: [], pendingQueuedEntries: [], kanbanStateLoaded: false, turnStatus: state.turnStatus?.status === "in_progress" ? { ...state.turnStatus, status: "error", endedAt: Date.now(), durationMs: Date.now() - state.turnStatus.startedAt, stopReason: "disconnected" } : state.turnStatus, liveTurnStatus: disconnectedLts };
+    }
 
     case "WS_RECONNECTING":
       return { ...state, reconnectAttempt: action.attempt };

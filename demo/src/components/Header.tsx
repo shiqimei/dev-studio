@@ -48,12 +48,10 @@ export function Header() {
         body: JSON.stringify({ path }),
       });
       const data = await addRes.json();
-      dispatch({ type: "SET_PROJECTS", projects: data.projects, activeProject: path });
-      // Also persist active
-      fetch("/api/projects/active", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path }),
+      dispatch({
+        type: "SET_PROJECTS",
+        projects: data.projects,
+        activeProject: data.activeProject,
       });
     } catch {}
   }, [dispatch]);
@@ -80,21 +78,14 @@ export function Header() {
           body: JSON.stringify({ path }),
         });
         const data = await res.json();
-        const newActive =
-          state.activeProject === path
-            ? data.projects[0] ?? null
-            : state.activeProject;
-        dispatch({ type: "SET_PROJECTS", projects: data.projects, activeProject: newActive });
-        if (state.activeProject === path && newActive) {
-          fetch("/api/projects/active", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ path: newActive }),
-          });
-        }
+        dispatch({
+          type: "SET_PROJECTS",
+          projects: data.projects,
+          activeProject: data.activeProject,
+        });
       } catch {}
     },
-    [dispatch, state.activeProject],
+    [dispatch],
   );
 
   return (

@@ -1,6 +1,4 @@
 import path from "node:path";
-import os from "node:os";
-import fs from "node:fs/promises";
 import { execSync } from "node:child_process";
 import { createAcpConnection, createNewSession, resumeSession } from "./session.js";
 import { createHaikuPool } from "./haiku-pool.js";
@@ -12,6 +10,15 @@ import { getProjectDir } from "./kanban.js";
 import * as kanbanDb from "./kanban-db.js";
 
 export function startServer(port: number) {
+  // ── Initialize SQLite DB synchronously before serving requests ──
+  try {
+    kanbanDb.init();
+    kanbanDb.migrateProjectsFromJson();
+    kanbanDb.seedProjectsFromCwd();
+  } catch (err: any) {
+    log.warn({ err: err.message }, "db: early init error");
+  }
+
   // ── Client tracking ──
   let nextClientId = 1;
   // ── Preflight route cache (per-client, caches routing decision as user types) ──
@@ -425,8 +432,31 @@ export function startServer(port: number) {
       log.info({ durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "prewarm: ACP connection ready");
       // Initialize kanban SQLite DB + migrate from JSON if needed
       try {
-        kanbanDb.init();
         kanbanDb.migrateFromJson(getResolvedProjectDir());
+        // Recover sessions that were in_progress when the server last shut down.
+        // Their turns were interrupted (e.g. HMR, crash) — move to in_review
+        // with an explicit stop reason so the kanban board shows why they stopped.
+        const snap = kanbanDb.getKanbanSnapshot();
+        const interrupted: string[] = [];
+        for (const [sessionId, col] of Object.entries(snap.columnOverrides)) {
+          if (col === "in_progress") interrupted.push(sessionId);
+        }
+        if (interrupted.length > 0) {
+          const ops: KanbanOp[] = interrupted.map((sessionId) => ({
+            op: "set_column" as const, sessionId, column: "in_review",
+          }));
+          kanbanDb.applyKanbanOps(ops);
+          for (const sessionId of interrupted) {
+            turnStates[sessionId] = {
+              status: "error",
+              startedAt: 0,
+              approxTokens: 0,
+              thinkingDurationMs: 0,
+              stopReason: "server_restart",
+            };
+          }
+          log.info({ count: interrupted.length, sessions: interrupted.map(sid) }, "kanban: recovered interrupted sessions (server restart)");
+        }
       } catch (err: any) {
         log.warn({ err: err.message }, "kanban-db: init error");
       }
@@ -716,34 +746,7 @@ export function startServer(port: number) {
     return getProjectDir(cwd);
   }
 
-  // ── Project tabs state (persisted to ~/.devstudio/state.json) ──
-  const DEVSTUDIO_DIR = path.join(os.homedir(), ".devstudio");
-  const STATE_FILE = path.join(DEVSTUDIO_DIR, "state.json");
-
-  interface DevStudioState {
-    projects: string[];
-    activeProject: string | null;
-  }
-
-  async function readProjectState(): Promise<DevStudioState> {
-    try {
-      const raw = await fs.readFile(STATE_FILE, "utf-8");
-      const parsed = JSON.parse(raw);
-      return {
-        projects: Array.isArray(parsed.projects) ? parsed.projects : [],
-        activeProject: parsed.activeProject ?? null,
-      };
-    } catch {
-      // File doesn't exist or is invalid — return defaults with current cwd
-      const cwd = process.env.ACP_CWD || process.cwd();
-      return { projects: [cwd], activeProject: cwd };
-    }
-  }
-
-  async function writeProjectState(state: DevStudioState): Promise<void> {
-    await fs.mkdir(DEVSTUDIO_DIR, { recursive: true });
-    await fs.writeFile(STATE_FILE, JSON.stringify(state, null, 2) + "\n");
-  }
+  // ── Project tabs state (SQLite-backed via kanban-db) ──
 
   /** Extract a compact summary of the last conversation turn for routing context. */
   async function getLastTurnSummary(sessionId: string): Promise<string | null> {
@@ -966,42 +969,28 @@ export function startServer(port: number) {
       const json = (data: unknown) => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
 
       if (url.pathname === "/api/projects" && req.method === "GET") {
-        const state = await readProjectState();
-        return json(state);
+        return json(kanbanDb.getProjects());
       }
 
       if (url.pathname === "/api/projects" && req.method === "POST") {
         const body = await req.json() as { path: string };
         const p = body.path?.trim();
         if (!p) return json({ error: "path required" });
-        const state = await readProjectState();
-        if (!state.projects.includes(p)) state.projects.push(p);
-        state.activeProject = p;
-        await writeProjectState(state);
-        return json(state);
+        return json(kanbanDb.addProject(p));
       }
 
       if (url.pathname === "/api/projects" && req.method === "DELETE") {
         const body = await req.json() as { path: string };
         const p = body.path?.trim();
         if (!p) return json({ error: "path required" });
-        const state = await readProjectState();
-        state.projects = state.projects.filter((x) => x !== p);
-        if (state.activeProject === p) {
-          state.activeProject = state.projects[0] ?? null;
-        }
-        await writeProjectState(state);
-        return json(state);
+        return json(kanbanDb.removeProject(p));
       }
 
       if (url.pathname === "/api/projects/active" && req.method === "PUT") {
         const body = await req.json() as { path: string };
         const p = body.path?.trim();
         if (!p) return json({ error: "path required" });
-        const state = await readProjectState();
-        state.activeProject = p;
-        await writeProjectState(state);
-        return json(state);
+        return json(kanbanDb.setActiveProject(p));
       }
 
       if (url.pathname === "/api/pick-folder" && req.method === "POST") {

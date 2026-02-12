@@ -7,10 +7,8 @@ import type { Logger } from "./types.js";
 
 const AUTO_RENAME_MODEL = "claude-haiku-4-5-20251001";
 
-const MAX_TITLE_LENGTH = 32;
-
 const SYSTEM_PROMPT =
-  `Generate a session title in ≤${MAX_TITLE_LENGTH} characters. ` +
+  "Generate a concise session title. " +
   "Use imperative verb phrases (e.g. Fix login bug, Add dark mode, Refactor auth). " +
   "No quotes, no trailing punctuation. Output ONLY the title, nothing else.";
 
@@ -78,7 +76,7 @@ export async function generateSessionTitle(input: AutoRenameInput): Promise<stri
     if (title.endsWith(".")) {
       title = title.slice(0, -1);
     }
-    title = title.slice(0, MAX_TITLE_LENGTH).trim();
+    title = title.trim();
 
     return title || null;
   } catch (err) {

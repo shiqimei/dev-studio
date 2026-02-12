@@ -100,11 +100,9 @@ export function createHaikuPool(): HaikuPool {
 
   // ── Title generation ──
 
-  const MAX_TITLE_LENGTH = 50;
-
   function buildTitlePrompt(projectName: string, userMessage: string, assistantText: string): string {
     let prompt =
-      `Generate a short session title (3-6 words, max ${MAX_TITLE_LENGTH} chars). ` +
+      `Generate a concise session title (3-8 words). ` +
       `Use imperative verb phrases (e.g. Fix login bug, Add dark mode, Refactor auth). ` +
       `Keep it short and self-contained — avoid dangling prepositions or articles at the end. ` +
       `No quotes, no trailing punctuation. Output ONLY the title, nothing else.\n\n` +
@@ -137,14 +135,6 @@ export function createHaikuPool(): HaikuPool {
         title = title.slice(1, -1);
       }
       if (title.endsWith(".")) title = title.slice(0, -1);
-      if (title.length > MAX_TITLE_LENGTH) {
-        // Truncate at word boundary, then strip dangling prepositions/articles
-        title = title.slice(0, MAX_TITLE_LENGTH);
-        const lastSpace = title.lastIndexOf(" ");
-        if (lastSpace > 0) title = title.slice(0, lastSpace);
-        // Strip trailing filler words that look "cut" (e.g. "Add support for" → "Add support")
-        title = title.replace(/\s+(?:for|to|in|on|at|of|the|a|an|with|and|or|from|by|as|into)$/i, "");
-      }
       title = title.trim();
 
       const durationMs = Math.round(performance.now() - t0);

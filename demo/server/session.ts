@@ -1,82 +1,17 @@
 import { spawn, execSync } from "node:child_process";
 import path from "node:path";
 import { log, bootMs } from "./log.js";
+import { nodeToWebWritable, nodeToWebReadable, instrumentedStream } from "./acp-shared.js";
 
 // Resolve system-installed claude binary at module load time
 let systemClaudePath = "";
 try { systemClaudePath = execSync("which claude", { encoding: "utf-8" }).trim(); } catch {}
-import { Readable, Writable } from "node:stream";
-import { ReadableStream, WritableStream } from "node:stream/web";
 import {
-  type AnyMessage,
   ClientSideConnection,
   ndJsonStream,
 } from "@agentclientprotocol/sdk";
 import { WebClient } from "./client.js";
 import type { AcpConnection, BroadcastFn } from "./types.js";
-
-function nodeToWebWritable(nodeStream: Writable): WritableStream<Uint8Array> {
-  return new WritableStream<Uint8Array>({
-    write(chunk) {
-      return new Promise<void>((resolve, reject) => {
-        nodeStream.write(Buffer.from(chunk), (err) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve();
-          }
-        });
-      });
-    },
-  });
-}
-
-function nodeToWebReadable(nodeStream: Readable): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      nodeStream.on("data", (chunk: Buffer) => {
-        controller.enqueue(new Uint8Array(chunk));
-      });
-      nodeStream.on("end", () => controller.close());
-      nodeStream.on("error", (err) => controller.error(err));
-    },
-  });
-}
-
-/**
- * Wraps an ndJsonStream with taps on both directions.
- * `onSend` fires for client→agent messages.
- * `onRecv` fires for agent→client messages.
- */
-function instrumentedStream(
-  base: {
-    readable: ReadableStream<AnyMessage>;
-    writable: WritableStream<AnyMessage>;
-  },
-  onSend: (msg: AnyMessage) => void,
-  onRecv: (msg: AnyMessage) => void,
-) {
-  // Tap readable (agent → client)
-  const recvTransform = new TransformStream<AnyMessage, AnyMessage>({
-    transform(msg, controller) {
-      onRecv(msg);
-      controller.enqueue(msg);
-    },
-  });
-  const readable = base.readable.pipeThrough(recvTransform);
-
-  // Tap writable (client → agent)
-  const sendTransform = new TransformStream<AnyMessage, AnyMessage>({
-    transform(msg, controller) {
-      onSend(msg);
-      controller.enqueue(msg);
-    },
-  });
-  sendTransform.readable.pipeTo(base.writable);
-  const writable = sendTransform.writable;
-
-  return { readable, writable };
-}
 
 /**
  * One-time connection setup: spawns agent process, creates ClientSideConnection, initializes.

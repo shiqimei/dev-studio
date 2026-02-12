@@ -28,6 +28,7 @@ import type {
   SubagentChild,
   SubagentType,
   KanbanOp,
+  ExecutorType,
 } from "../types";
 import { classifyTool } from "../utils";
 import { isSystemPrompt } from "../kanban-prompts";
@@ -192,6 +193,10 @@ const initialState: AppState = {
   kanbanVersion: 0,
   kanbanPendingOps: [],
   kanbanStateLoaded: false,
+
+  // Executor selection
+  availableExecutors: ["claude"],
+  selectedExecutor: "claude",
 
   // Project tabs
   projects: [],
@@ -370,7 +375,7 @@ function reducer(state: AppState, action: Action): AppState {
         busy: true,
         currentTurnId: null,
         turnStatus: preliminaryTs,
-        liveTurnStatus: state.currentSessionId
+        liveTurnStatus: !action.skipLiveTurnStatus && state.currentSessionId
           ? { ...state.liveTurnStatus, [state.currentSessionId]: preliminaryTs }
           : state.liveTurnStatus,
         messages: [...finalizeStreaming(state.messages, state.currentTurnId), userTurn],
@@ -1418,6 +1423,12 @@ function reducer(state: AppState, action: Action): AppState {
         },
       };
 
+    case "EXECUTORS":
+      return { ...state, availableExecutors: action.available };
+
+    case "SET_EXECUTOR":
+      return { ...state, selectedExecutor: action.executor };
+
     case "SET_PROJECTS":
       return { ...state, projects: action.projects, activeProject: action.activeProject };
 
@@ -1557,7 +1568,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
     console.log(`[${pageMs()}] newSession: optimistic switch to ${tempId}, sending request to server`);
     dispatch({ type: "SESSION_SWITCHED", sessionId: tempId, turnStatus: null });
-    wsRef.current.send(JSON.stringify({ type: "new_session" }));
+    wsRef.current.send(JSON.stringify({ type: "new_session", executorType: stateRef.current.selectedExecutor }));
   }, []);
 
   /** Tracks a pending route_message so the client can show the user message
@@ -1648,7 +1659,20 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
     const queueId = `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    if (currentSessionRef.current && !currentSessionRef.current.startsWith("pending:")) {
+    // Cross-project guard: if the current session belongs to a different project
+    // than the active one, treat it as "no session" so a new session is created
+    // in the correct project instead of continuing in the old one.
+    let sessionMatchesProject = true;
+    if (currentSessionRef.current && stateRef.current.activeProject) {
+      const currentSession = stateRef.current.diskSessions.find(
+        (s) => s.sessionId === currentSessionRef.current,
+      );
+      if (currentSession?.projectPath && currentSession.projectPath !== stateRef.current.activeProject) {
+        sessionMatchesProject = false;
+      }
+    }
+
+    if (sessionMatchesProject && currentSessionRef.current && !currentSessionRef.current.startsWith("pending:")) {
       const trimmed = text.trim();
       const cache = preflightCacheRef.current;
       const wordCount = trimmed.split(/\s+/).length;
@@ -1730,7 +1754,13 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       // Show user message optimistically (same as non-routing path).
       // If Haiku routes to a new session, SESSION_SWITCHED clears messages[]
       // and route_result re-dispatches SEND_MESSAGE into the new session.
-      dispatch({ type: "SEND_MESSAGE", text, images, files, queueId });
+      // skipLiveTurnStatus: don't pollute the global liveTurnStatus (read by
+      // the kanban board) with an optimistic in_progress for a session that
+      // may not actually receive the prompt. The local turnStatus still shows
+      // the brewing indicator in the chat UI. If routing confirms the same
+      // session, the server's turn_start will set liveTurnStatus; if routing
+      // creates a new session, the original card stays in its original column.
+      dispatch({ type: "SEND_MESSAGE", text, images, files, queueId, skipLiveTurnStatus: true });
       console.log(`[${pageMs()}] send: routing via Haiku for session ${currentSessionRef.current.slice(0, 8)}`);
       wsRef.current.send(JSON.stringify({
         type: "route_message",
@@ -1869,7 +1899,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         return;
       }
       pendingBacklogRef.current = { resolve, title };
-      wsRef.current.send(JSON.stringify({ type: "new_session" }));
+      wsRef.current.send(JSON.stringify({ type: "new_session", executorType: stateRef.current.selectedExecutor }));
     });
   }, []);
 
@@ -2515,6 +2545,9 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       break;
     case "commands":
       dispatch({ type: "COMMANDS", commands: msg.commands ?? [], models: msg.models, currentModel: msg.currentModel });
+      break;
+    case "executors":
+      dispatch({ type: "EXECUTORS", available: msg.available ?? ["claude"] });
       break;
     case "session_deleted":
       dispatch({ type: "SESSION_DELETED", sessionIds: msg.sessionIds ?? [msg.sessionId] });

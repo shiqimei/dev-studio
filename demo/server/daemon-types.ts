@@ -1,4 +1,5 @@
 import type { MetricEntry } from "./worker-pool.js";
+import type { ExecutorType } from "./kanban-db.js";
 
 // ── Turn state ──
 
@@ -66,7 +67,7 @@ export interface AgentsDaemon {
   readonly ready: Promise<void>;
 
   // ── Session lifecycle ──
-  createSession(): Promise<{ sessionId: string }>;
+  createSession(executorType?: ExecutorType): Promise<{ sessionId: string }>;
   resumeSession(sessionId: string): Promise<void>;
   prompt(sessionId: string, text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>): void;
   /** Stream a prompt through the pre-warmed opus pool (no ACP session needed). */
@@ -105,6 +106,10 @@ export interface AgentsDaemon {
   isProcessing(sessionId: string): boolean;
   clearSessionQueue(sessionId: string | null): void;
 
+  // ── Interrupt and prompt ──
+  /** Interrupt the current turn and schedule a new prompt to run after it completes. */
+  interruptAndPrompt(sessionId: string, text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>): void;
+
   // ── Metrics ──
   getHaikuMetrics(): MetricEntry[];
   getOpusMetrics(): MetricEntry[];
@@ -113,6 +118,9 @@ export interface AgentsDaemon {
   readonly liveSessionIds: Set<string>;
   defaultSessionId: string | null;
   readonly autoRenameEligible: Set<string>;
+
+  // ── Executor management ──
+  getAvailableExecutors(): ExecutorType[];
 
   // ── Permission forwarding ──
   resolvePermission(requestId: string, optionId: string, optionName: string): void;

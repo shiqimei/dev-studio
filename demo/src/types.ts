@@ -148,6 +148,8 @@ export type ChatEntry =
 
 // ── Sessions ────────────────────────────────
 
+export type ExecutorType = "claude" | "codex";
+
 export type SubagentType = "code" | "explore" | "bash" | "plan" | "agent";
 
 export interface SubagentChild {
@@ -172,6 +174,8 @@ export interface DiskSession {
   children?: SubagentChild[];
   /** Present when this session is a team leader. */
   teamName?: string;
+  /** Which executor owns this session. */
+  executorType?: ExecutorType;
   /** True when this session is active in the ACP connection. */
   isLive?: boolean;
   /** Server-side turn status for this session (only present for live sessions). */
@@ -339,6 +343,10 @@ export interface AppState {
   kanbanStateLoaded: boolean;
   kanbanPendingOps: Array<{ seq: number; ops: KanbanOp[] }>;
 
+  // Executor selection
+  availableExecutors: ExecutorType[];
+  selectedExecutor: ExecutorType;
+
   // Project tabs
   projects: string[];
   activeProject: string | null;
@@ -351,7 +359,7 @@ export type Action =
   | { type: "WS_DISCONNECTED" }
   | { type: "WS_RECONNECTING"; attempt: number }
   | { type: "SET_BUSY"; busy: boolean }
-  | { type: "SEND_MESSAGE"; text: string; images?: ImageAttachment[]; files?: FileAttachment[]; queueId?: string }
+  | { type: "SEND_MESSAGE"; text: string; images?: ImageAttachment[]; files?: FileAttachment[]; queueId?: string; skipLiveTurnStatus?: boolean }
   | { type: "TEXT_CHUNK"; text: string }
   | { type: "THOUGHT_CHUNK"; text: string }
   | { type: "TOOL_CALL"; toolCallId: string; kind: string; title: string; content: string; rawInput?: unknown; meta: any }
@@ -392,4 +400,6 @@ export type Action =
   | { type: "KANBAN_UPDATE_PENDING_PROMPT"; sessionId: string; text: string }
   | { type: "SET_OPTIMISTIC_TURN_STATUS"; sessionId: string; status: TurnStatus }
   | { type: "SET_PROJECTS"; projects: string[]; activeProject: string | null }
-  | { type: "SET_ACTIVE_PROJECT"; path: string };
+  | { type: "SET_ACTIVE_PROJECT"; path: string }
+  | { type: "EXECUTORS"; available: ExecutorType[] }
+  | { type: "SET_EXECUTOR"; executor: ExecutorType };

@@ -132,11 +132,15 @@ function categorizeSession(
   liveTurnStatus: Record<string, TurnStatus>,
 ): KanbanColumnId {
   const live = liveTurnStatus[session.sessionId];
-  // Currently running
-  if (live?.status === "in_progress" || session.turnStatus === "in_progress") return "in_progress";
-  // Completed or errored — goes to "In Review" for user to inspect
-  if (live?.status === "completed" || live?.status === "error" || session.turnStatus === "completed" || session.turnStatus === "error") return "in_review";
-  // Everything else
+  // liveTurnStatus is updated in real-time by TURN_START / TURN_END events.
+  // session.turnStatus is a snapshot from the last SESSIONS broadcast and may be stale.
+  // When live status exists, prefer it to avoid stale session.turnStatus keeping
+  // completed sessions stuck in the "in progress" column.
+  if (live?.status === "in_progress") return "in_progress";
+  if (live?.status === "completed" || live?.status === "error") return "in_review";
+  // No live status — fall back to session snapshot
+  if (session.turnStatus === "in_progress") return "in_progress";
+  if (session.turnStatus === "completed" || session.turnStatus === "error") return "in_review";
   return "backlog";
 }
 
@@ -433,6 +437,9 @@ function KanbanSessionRow({
             <div className="subagent-empty-placeholder">No sub-agent sessions</div>
           )
       )}
+      {session.executorType === "codex" && (
+        <div className="kanban-executor-badge" title="Codex session">CX</div>
+      )}
       {badgeLabel && (
         <div className={`kanban-stop-reason-badge${isErrorCard ? " kanban-stop-reason-error" : ""}`} title={`Turn ended: ${cardStopReason}`}>
           {isErrorCard && (
@@ -711,7 +718,7 @@ function applyOpsToSnapshot(
 
 export function KanbanPanel() {
   const state = useWsState();
-  const { dispatch, resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, sendPromptToSession, sendKanbanOp, updatePendingPrompt } = useWsActions();
+  const { dispatch, resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, sendPromptToSession, sendKanbanOp, updatePendingPrompt, deselectSession } = useWsActions();
 
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
@@ -747,6 +754,20 @@ export function KanbanPanel() {
     setSelectedCards(new Set());
     lastClickedCardRef.current = null;
   }, []);
+
+  // Click on empty board area → deselect card, show welcome screen, focus input
+  const handleBoardClick = useCallback((e: React.MouseEvent) => {
+    // Only act when clicking directly on the board or column background — not on a card
+    const target = e.target as HTMLElement;
+    if (target.closest(".kanban-card-wrap, .kanban-new-card, .kanban-add-btn, .kanban-column-header")) return;
+    clearSelection();
+    deselectSession();
+    // Focus the chat input to enter new-session mode
+    requestAnimationFrame(() => {
+      const input = document.querySelector<HTMLTextAreaElement>(".kanban-input-area textarea");
+      input?.focus();
+    });
+  }, [clearSelection, deselectSession]);
 
   // Auto-clear overrides when a session's turn status makes them redundant.
   // Checks the server-side overrides (not the overlay) to avoid feedback loops.
@@ -893,16 +914,22 @@ export function KanbanPanel() {
       recurring: [],
       completed: [],
     };
+    // Filter sessions by active project tab
+    const activeProj = state.activeProject;
+    const matchesProject = (session: DiskSession) =>
+      !activeProj || session.projectPath === activeProj;
     // Merge real sessions with optimistic backlog entries
     const optimisticIds = new Set(optimisticBacklog.map((s) => s.sessionId));
     for (const session of state.diskSessions) {
       // Skip real sessions that duplicate an optimistic entry (shouldn't happen, but guard)
       if (optimisticIds.has(session.sessionId)) continue;
+      if (!matchesProject(session)) continue;
       const overrideCol = columnOverrides[session.sessionId];
       const col = overrideCol ?? categorizeSession(session, state.liveTurnStatus);
       buckets[col].push(session);
     }
     for (const session of optimisticBacklog) {
+      if (!matchesProject(session)) continue;
       const overrideCol = columnOverrides[session.sessionId];
       const col = overrideCol ?? categorizeSession(session, state.liveTurnStatus);
       buckets[col].push(session);
@@ -929,7 +956,7 @@ export function KanbanPanel() {
       }
     }
     return buckets;
-  }, [state.diskSessions, state.liveTurnStatus, columnOverrides, sortOrders, optimisticBacklog]);
+  }, [state.diskSessions, state.liveTurnStatus, columnOverrides, sortOrders, optimisticBacklog, state.activeProject]);
 
   // Keep a ref to the latest columnData for use in handleMoveCard
   const columnDataRef = useRef(columnData);
@@ -1249,10 +1276,8 @@ export function KanbanPanel() {
 
   const handleSelectSession = (sessionId: string, columnId: KanbanColumnId) => {
     clearSelection();
-    // Normal click sets the anchor for future shift+click range selection
     lastClickedCardRef.current = { sessionId, columnId };
     if (sessionId === activeSessionId) {
-      // Already active — enter inline edit mode
       setEditingCardId(sessionId);
       return;
     }
@@ -1260,17 +1285,22 @@ export function KanbanPanel() {
     resumeSession(sessionId);
   };
 
-  // Clear selection and editing on Escape key
+  // Clear selection and editing on Escape key; deselect session to show welcome screen
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (editingCardId) setEditingCardId(null);
+        if (editingCardId) { setEditingCardId(null); return; }
         if (selectedCards.size > 0) clearSelection();
+        deselectSession();
+        requestAnimationFrame(() => {
+          const input = document.querySelector<HTMLTextAreaElement>(".kanban-input-area textarea");
+          input?.focus();
+        });
       }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [selectedCards.size, clearSelection, editingCardId]);
+  }, [selectedCards.size, clearSelection, editingCardId, deselectSession]);
 
   // Cmd+P / Ctrl+P to open card search
   useEffect(() => {
@@ -1398,7 +1428,7 @@ export function KanbanPanel() {
 
   return (
     <div className="kanban-panel">
-      <div ref={boardRef} className="kanban-board">
+      <div ref={boardRef} className="kanban-board" onClick={handleBoardClick}>
         {COLUMNS.map((col) => (
           <KanbanColumnView
             key={col.id}

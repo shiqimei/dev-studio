@@ -4,3 +4,4 @@ app/dist
 .DS_Store
 .claude/*.local.*
 CLAUDE.local.md
+vendor/codex-acp/target/

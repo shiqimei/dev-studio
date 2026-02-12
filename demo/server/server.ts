@@ -122,9 +122,6 @@ export function startServer(port: number) {
   const firstSessionReady = new Promise<void>((r) => { resolveFirstSession = r; });
   if (daemon.defaultSessionId) resolveFirstSession?.();
 
-  // ── Queue ID counter (local to API server, fine to reset on HMR) ──
-  let queueIdCounter = 0;
-
   const server = Bun.serve({
     port,
 
@@ -232,7 +229,8 @@ export function startServer(port: number) {
           ws.send(JSON.stringify({ type: "session_switched", sessionId, turnStatus: daemon.getTurnStatusSnapshot(sessionId) }));
         }
 
-        // Send session list + kanban state
+        // Send available executors, session list + kanban state
+        try { ws.send(JSON.stringify({ type: "executors", available: daemon.getAvailableExecutors() })); } catch {}
         daemon.broadcastSessions().catch(() => {});
         broadcastKanbanState();
 
@@ -296,8 +294,7 @@ export function startServer(port: number) {
             }
 
             if (daemon.isProcessing(targetSession)) {
-              const queueId = msg.queueId || `sq-${++queueIdCounter}`;
-              daemon.enqueueMessage(targetSession, { id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
+              daemon.interruptAndPrompt(targetSession, msg.text, msg.images, msg.files);
             } else {
               daemon.prompt(targetSession, msg.text, msg.images, msg.files);
             }
@@ -331,8 +328,7 @@ export function startServer(port: number) {
             const alreadyProcessing = daemon.isProcessing(opusSession);
             log.info({ client: cid, session: sid(opusSession), alreadyProcessing }, "ws: opus_prompt dispatching");
             if (alreadyProcessing) {
-              const queueId = msg.queueId || `sq-${++queueIdCounter}`;
-              daemon.enqueueMessage(opusSession, { id: queueId, text: msg.text, addedAt: Date.now() });
+              daemon.interruptAndPrompt(opusSession, msg.text);
             } else if (typeof daemon.opusPrompt === "function") {
               daemon.opusPrompt(opusSession, msg.text);
             } else {
@@ -363,18 +359,13 @@ export function startServer(port: number) {
             break;
           }
 
-          case "cancel_queued": {
-            if (!clientState.currentSessionId) break;
-            daemon.cancelQueuedMessage(clientState.currentSessionId, msg.queueId);
-            break;
-          }
-
           case "new_session": {
-            log.info({ client: cid }, "ws: → new_session");
+            const executorType = msg.executorType ?? "claude";
+            log.info({ client: cid, executorType }, "ws: → new_session");
             try {
               const t0 = performance.now();
-              const { sessionId } = await daemon.createSession();
-              log.info({ client: cid, session: sid(sessionId), durationMs: Math.round(performance.now() - t0) }, "api: newSession completed");
+              const { sessionId } = await daemon.createSession(executorType);
+              log.info({ client: cid, session: sid(sessionId), executorType, durationMs: Math.round(performance.now() - t0) }, "api: newSession completed");
               daemon.defaultSessionId = sessionId;
               clientState.currentSessionId = sessionId;
               ws.send(JSON.stringify({ type: "session_switched", sessionId, turnStatus: daemon.getTurnStatusSnapshot(sessionId) }));
@@ -576,12 +567,11 @@ export function startServer(port: number) {
               }
             };
 
-            // Send to current session (with optional queuing)
+            // Send to current session (interrupt if busy)
             const sendToCurrentSession = () => {
               broadcastUserMsg();
               if (daemon.isProcessing(routeSession)) {
-                const queueId = msg.queueId || `sq-${++queueIdCounter}`;
-                daemon.enqueueMessage(routeSession, { id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
+                daemon.interruptAndPrompt(routeSession, msg.text, msg.images, msg.files);
               } else {
                 daemon.prompt(routeSession, msg.text, msg.images, msg.files);
               }
@@ -607,7 +597,8 @@ export function startServer(port: number) {
               } else {
                 log.info({ client: cid, session: sid(routeSession), route: "new" }, "ws: route_message → new session");
                 const t0 = performance.now();
-                const { sessionId: newSessionId } = await daemon.createSession();
+                const routeExecutorType = msg.executorType ?? "claude";
+                const { sessionId: newSessionId } = await daemon.createSession(routeExecutorType);
                 log.info({ client: cid, session: sid(newSessionId), durationMs: Math.round(performance.now() - t0) }, "api: newSession (routed) completed");
                 clientState.currentSessionId = newSessionId;
                 daemon.defaultSessionId = newSessionId;

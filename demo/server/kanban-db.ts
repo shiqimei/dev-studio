@@ -68,6 +68,13 @@ function getDb(): Database {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS session_executor_types (
+      session_id    TEXT PRIMARY KEY,
+      executor_type TEXT NOT NULL DEFAULT 'claude'
+    )
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS projects (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       path          TEXT NOT NULL UNIQUE,
@@ -195,6 +202,7 @@ export function cleanStaleSessions(validSessionIds: Set<string>): boolean {
       const c1 = d.run("DELETE FROM kanban_column_overrides").changes;
       const c2 = d.run("DELETE FROM kanban_sort_orders").changes;
       const c3 = d.run("DELETE FROM kanban_pending_prompts").changes;
+      d.run("DELETE FROM session_executor_types");
       if (c1 + c2 + c3 > 0) {
         bumpVersion();
         return true;
@@ -223,6 +231,9 @@ export function cleanStaleSessions(validSessionIds: Set<string>): boolean {
     const c3 = d.run(
       "DELETE FROM kanban_pending_prompts WHERE session_id NOT IN (SELECT id FROM _valid_ids)",
     ).changes;
+    d.run(
+      "DELETE FROM session_executor_types WHERE session_id NOT IN (SELECT id FROM _valid_ids)",
+    );
 
     // Also clean up sort_orders columns that are now empty
     d.run(
@@ -374,6 +385,48 @@ export function migrateFromJson(projectDir: string): boolean {
 
   log.info({ jsonPath }, "kanban-db: migrated from JSON");
   return true;
+}
+
+// ── Executor types ──
+
+export type ExecutorType = "claude" | "codex";
+
+/** Store the executor type for a session. */
+export function setSessionExecutorType(sessionId: string, executorType: ExecutorType): void {
+  const d = getDb();
+  d.run(
+    "INSERT INTO session_executor_types (session_id, executor_type) VALUES (?1, ?2) ON CONFLICT(session_id) DO UPDATE SET executor_type = ?2",
+    [sessionId, executorType],
+  );
+}
+
+/** Get the executor type for a session (defaults to "claude" if not found). */
+export function getSessionExecutorType(sessionId: string): ExecutorType {
+  const d = getDb();
+  const row = d.query("SELECT executor_type FROM session_executor_types WHERE session_id = ?").get(sessionId) as {
+    executor_type: string;
+  } | null;
+  return (row?.executor_type as ExecutorType) ?? "claude";
+}
+
+/** Remove the executor type entry for a session. */
+export function deleteSessionExecutorType(sessionId: string): void {
+  const d = getDb();
+  d.run("DELETE FROM session_executor_types WHERE session_id = ?", [sessionId]);
+}
+
+/** Get executor types for all sessions (for enriching session lists). */
+export function getAllSessionExecutorTypes(): Record<string, ExecutorType> {
+  const d = getDb();
+  const rows = d.query("SELECT session_id, executor_type FROM session_executor_types").all() as Array<{
+    session_id: string;
+    executor_type: string;
+  }>;
+  const result: Record<string, ExecutorType> = {};
+  for (const row of rows) {
+    result[row.session_id] = row.executor_type as ExecutorType;
+  }
+  return result;
 }
 
 // ── Projects ──

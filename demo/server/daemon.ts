@@ -12,6 +12,7 @@
  */
 
 import { createAcpConnection, createNewSession, resumeSession } from "./session.js";
+import { createCodexConnection, isCodexAvailable } from "./codex-session.js";
 import { createHaikuPool } from "./haiku-pool.js";
 import { createOpusPool } from "./opus-pool.js";
 import type { AcpConnection } from "./types.js";
@@ -21,6 +22,7 @@ import { log, bootMs } from "./log.js";
 import type { KanbanOp } from "./kanban.js";
 import { getProjectDir } from "./kanban.js";
 import * as kanbanDb from "./kanban-db.js";
+import type { ExecutorType } from "./kanban-db.js";
 import type {
   AgentsDaemon,
   EventSink,
@@ -101,8 +103,8 @@ class AgentsDaemonImpl implements AgentsDaemon {
   // ── Event sink (replaced by API server on each HMR reload) ──
   private eventSink: EventSink = () => {};
 
-  // ── ACP connection ──
-  private acpConnection: AcpConnection | null = null;
+  // ── ACP connections (one per executor type) ──
+  private connections: { claude: AcpConnection | null; codex: AcpConnection | null } = { claude: null, codex: null };
   private initPromise: Promise<void> | null = null;
   private _ready!: Promise<void>;
   private resolveReady!: () => void;
@@ -142,6 +144,27 @@ class AgentsDaemonImpl implements AgentsDaemon {
     return this._ready;
   }
 
+  // ── Connection helpers ──
+
+  /** Get the ACP connection for a given session (looks up executor type in SQLite). */
+  private getConnectionForSession(sessionId: string): AcpConnection | null {
+    const executorType = kanbanDb.getSessionExecutorType(sessionId);
+    const conn = this.connections[executorType];
+    // Safety fallback for unknown/stale executor types in persisted DB rows.
+    return conn ?? this.connections.claude;
+  }
+
+  /** Get the ACP connection for a given executor type. */
+  private getConnectionForExecutor(executorType: ExecutorType): AcpConnection | null {
+    return this.connections[executorType];
+  }
+
+  getAvailableExecutors(): ExecutorType[] {
+    const executors: ExecutorType[] = ["claude"];
+    if (this.connections.codex) executors.push("codex");
+    return executors;
+  }
+
   // ── Event sink ──
 
   setEventSink(sink: EventSink): void {
@@ -173,6 +196,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
         const ts = this.turnStates[msgSessionId];
         this.eventSink({
           type: "turn_activity",
+          sessionId: msgSessionId,
           activity: ts.activity,
           detail: ts.activityDetail,
           approxTokens: ts.approxTokens,
@@ -243,6 +267,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
       const ts = this.turnStates[msgSessionId];
       this.eventSink({
         type: "turn_activity",
+        sessionId: msgSessionId,
         activity: ts.activity,
         detail: ts.activityDetail,
         approxTokens: ts.approxTokens,
@@ -254,19 +279,33 @@ class AgentsDaemonImpl implements AgentsDaemon {
   // ── Lifecycle ──
 
   async init(): Promise<void> {
-    if (this.acpConnection) return;
+    if (this.connections.claude) return;
     if (this.initPromise) return this.initPromise;
 
     const t0 = performance.now();
     log.info({ boot: bootMs() }, "daemon: init starting");
 
     this.initPromise = (async () => {
-      // Warm worker pools in parallel with ACP connection
+      // Warm worker pools in parallel with ACP connections
       const haikuWarmup = this.haikuPool.warmup();
       const opusWarmup = this.opusPool.warmup();
 
-      this.acpConnection = await createAcpConnection(this.broadcast.bind(this));
-      log.info({ durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "daemon: ACP connection ready");
+      // Spawn Claude Code ACP connection (required)
+      this.connections.claude = await createAcpConnection(this.broadcast.bind(this));
+      log.info({ durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "daemon: Claude ACP connection ready");
+
+      // Spawn Codex ACP connection (optional — graceful fallback if unavailable)
+      if (isCodexAvailable()) {
+        try {
+          this.connections.codex = await createCodexConnection(this.broadcast.bind(this));
+          log.info({ boot: bootMs() }, "daemon: Codex ACP connection ready");
+        } catch (err: any) {
+          log.warn({ err: err.message, boot: bootMs() }, "daemon: Codex ACP connection failed, continuing without Codex");
+          this.connections.codex = null;
+        }
+      } else {
+        log.info({ boot: bootMs() }, "daemon: Codex ACP binary not found, skipping");
+      }
 
       // Initialize kanban DB + recover interrupted sessions
       try {
@@ -282,7 +321,9 @@ class AgentsDaemonImpl implements AgentsDaemon {
           const failed: string[] = [];
           for (const sessionId of interrupted) {
             try {
-              await resumeSession(this.acpConnection!.connection, sessionId);
+              const conn = this.getConnectionForSession(sessionId);
+              if (!conn) throw new Error("No connection for executor type");
+              await resumeSession(conn.connection, sessionId);
               this.liveSessionIds.add(sessionId);
               reconnected.push(sessionId);
               log.info({ session: sid(sessionId) }, "daemon: session reconnected");
@@ -322,17 +363,20 @@ class AgentsDaemonImpl implements AgentsDaemon {
 
   // ── Session lifecycle ──
 
-  async createSession(): Promise<{ sessionId: string }> {
-    if (!this.acpConnection) throw new Error("Daemon not initialized");
-    const result = await createNewSession(this.acpConnection.connection, this.broadcast.bind(this));
+  async createSession(executorType: ExecutorType = "claude"): Promise<{ sessionId: string }> {
+    const conn = this.getConnectionForExecutor(executorType);
+    if (!conn) throw new Error(`No connection for executor type: ${executorType}`);
+    const result = await createNewSession(conn.connection, this.broadcast.bind(this));
+    kanbanDb.setSessionExecutorType(result.sessionId, executorType);
     this.liveSessionIds.add(result.sessionId);
     this.autoRenameEligible.add(result.sessionId);
     return result;
   }
 
   async resumeSession(sessionId: string): Promise<void> {
-    if (!this.acpConnection) throw new Error("Daemon not initialized");
-    await resumeSession(this.acpConnection.connection, sessionId);
+    const conn = this.getConnectionForSession(sessionId);
+    if (!conn) throw new Error("Daemon not initialized");
+    await resumeSession(conn.connection, sessionId);
     this.liveSessionIds.add(sessionId);
   }
 
@@ -345,16 +389,31 @@ class AgentsDaemonImpl implements AgentsDaemon {
   }
 
   async interrupt(sessionId: string): Promise<void> {
-    if (!this.acpConnection) return;
+    const conn = this.getConnectionForSession(sessionId);
+    if (!conn) return;
     if (!this.processingSessions.has(sessionId)) return;
-    this.acpConnection.webClient.cancelPermissions(sessionId);
-    await this.acpConnection.connection.cancel({ sessionId });
+    conn.webClient.cancelPermissions(sessionId);
+    await conn.connection.cancel({ sessionId });
+  }
+
+  interruptAndPrompt(sessionId: string, text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>): void {
+    // Clear any existing queued messages — only the latest prompt matters
+    this.clearSessionQueue(sessionId);
+    // Store the new prompt as the pending message to process after interrupt
+    const queueId = this.generateQueueId();
+    this.getQueue(sessionId).push({ id: queueId, text, images, files, addedAt: Date.now() });
+    log.info({ session: sid(sessionId), queueId }, "interrupt-and-prompt: queued new prompt, interrupting current turn");
+    // Interrupt the current turn — processPrompt's finally block will drainQueue
+    this.interrupt(sessionId).catch((err: any) => {
+      log.error({ session: sid(sessionId), err: err.message }, "interrupt-and-prompt: interrupt failed");
+    });
   }
 
   // ── processPrompt ──
 
   private async processPrompt(sessionId: string, text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>) {
-    if (!this.acpConnection) return;
+    const conn = this.getConnectionForSession(sessionId);
+    if (!conn) return;
     this.processingSessions.add(sessionId);
     const promptT0 = performance.now();
     log.info({ session: sid(sessionId), textLen: text.length, images: images?.length ?? 0, files: files?.length ?? 0 }, "daemon: prompt started");
@@ -364,14 +423,16 @@ class AgentsDaemonImpl implements AgentsDaemon {
         const resumeT0 = performance.now();
         log.info({ session: sid(sessionId) }, "daemon: resumeSession started");
         try {
-          await resumeSession(this.acpConnection.connection, sessionId);
+          await resumeSession(conn.connection, sessionId);
           log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - resumeT0) }, "daemon: resumeSession completed");
           this.liveSessionIds.add(sessionId);
         } catch (resumeErr: any) {
           if (!isSessionGoneError(resumeErr)) throw resumeErr;
 
           log.warn({ session: sid(sessionId), err: resumeErr.message }, "daemon: session gone, auto-creating replacement");
-          const { sessionId: newId } = await createNewSession(this.acpConnection!.connection, this.broadcast.bind(this));
+          const executorType = kanbanDb.getSessionExecutorType(sessionId);
+          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this));
+          kanbanDb.setSessionExecutorType(newId, executorType);
           this.liveSessionIds.add(newId);
           this.autoRenameEligible.add(newId);
 
@@ -425,7 +486,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
 
       const acpPromptT0 = performance.now();
       log.info({ session: sid(sessionId) }, "daemon: acp.prompt started");
-      const result = await this.acpConnection.connection.prompt({ sessionId, prompt });
+      const result = await conn.connection.prompt({ sessionId, prompt });
       log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - acpPromptT0), stopReason: result.stopReason }, "daemon: acp.prompt completed");
 
       // Extract stats from result
@@ -459,10 +520,12 @@ class AgentsDaemonImpl implements AgentsDaemon {
       log.info({ session: sid(sessionId), broadcastMs: Math.round(performance.now() - sessionsT0), totalMs: Math.round(performance.now() - promptT0) }, "daemon: prompt completed");
     } catch (err: any) {
       // Auto-recover stale sessions
-      if (isSessionGoneError(err) && this.acpConnection) {
+      if (isSessionGoneError(err) && conn) {
         log.warn({ session: sid(sessionId), err: err.message }, "daemon: prompt hit stale session, auto-recovering");
         try {
-          const { sessionId: newId } = await createNewSession(this.acpConnection.connection, this.broadcast.bind(this));
+          const executorType = kanbanDb.getSessionExecutorType(sessionId);
+          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this));
+          kanbanDb.setSessionExecutorType(newId, executorType);
           this.liveSessionIds.add(newId);
           this.autoRenameEligible.add(newId);
 
@@ -749,6 +812,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
     ws.send(JSON.stringify({ type: "turn_start", startedAt: ts.startedAt, sessionId }));
     ws.send(JSON.stringify({
       type: "turn_activity",
+      sessionId,
       activity: ts.activity,
       detail: ts.activityDetail,
       approxTokens: ts.approxTokens,
@@ -860,9 +924,10 @@ class AgentsDaemonImpl implements AgentsDaemon {
   }
 
   async getLastTurnSummary(sessionId: string): Promise<string | null> {
-    if (!this.acpConnection) return null;
+    const conn = this.getConnectionForSession(sessionId);
+    if (!conn) return null;
     try {
-      const result = await this.acpConnection.connection.extMethod("sessions/getHistory", { sessionId });
+      const result = await conn.connection.extMethod("sessions/getHistory", { sessionId });
       const entries = (result.entries as any[]) ?? [];
       if (entries.length === 0) return null;
 
@@ -906,14 +971,16 @@ class AgentsDaemonImpl implements AgentsDaemon {
   // ── Queries ──
 
   async getHistory(sessionId: string): Promise<{ entries: unknown[] }> {
-    if (!this.acpConnection) throw new Error("Daemon not initialized");
-    const result = await this.acpConnection.connection.extMethod("sessions/getHistory", { sessionId });
+    const conn = this.getConnectionForSession(sessionId);
+    if (!conn) throw new Error("Daemon not initialized");
+    const result = await conn.connection.extMethod("sessions/getHistory", { sessionId });
     return { entries: result.entries as unknown[] };
   }
 
   async getSubagentHistory(parentSessionId: string, agentId: string): Promise<{ entries: unknown[] }> {
-    if (!this.acpConnection) throw new Error("Daemon not initialized");
-    const result = await this.acpConnection.connection.extMethod("sessions/getSubagentHistory", {
+    const conn = this.getConnectionForSession(parentSessionId);
+    if (!conn) throw new Error("Daemon not initialized");
+    const result = await conn.connection.extMethod("sessions/getSubagentHistory", {
       sessionId: parentSessionId,
       agentId,
     });
@@ -921,7 +988,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
   }
 
   async broadcastSessions(): Promise<void> {
-    if (!this.acpConnection) return;
+    if (!this.connections.claude) return;
     if (this.broadcastSessionsPromise && Date.now() - this.broadcastSessionsStartedAt > 15_000) {
       log.warn("daemon: broadcastSessions stale promise (>15s), discarding");
       this.broadcastSessionsPromise = null;
@@ -936,9 +1003,22 @@ class AgentsDaemonImpl implements AgentsDaemon {
       const t0 = performance.now();
       log.info("daemon: sessions/list started");
       try {
-        const result = await this.acpConnection!.connection.extMethod("sessions/list", {});
+        // Query both connections in parallel
+        const claudePromise = this.connections.claude!.connection.extMethod("sessions/list", {});
+        const codexPromise = this.connections.codex
+          ? this.connections.codex.connection.extMethod("sessions/list", {}).catch((err: any) => {
+              log.warn({ err: err.message }, "daemon: codex sessions/list failed");
+              return { sessions: [] };
+            })
+          : Promise.resolve({ sessions: [] });
+
+        const [claudeResult, codexResult] = await Promise.all([claudePromise, codexPromise]);
         const t1 = performance.now();
-        const sessions = ((result as any).sessions ?? []).map((s: any) => ({
+
+        // Get all executor types from DB for tagging
+        const executorTypes = kanbanDb.getAllSessionExecutorTypes();
+
+        const mapSession = (s: any) => ({
           sessionId: s.sessionId,
           title: s.title ?? null,
           updatedAt: s.updatedAt ?? null,
@@ -948,6 +1028,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
           projectPath: s._meta?.projectPath ?? null,
           ...(s._meta?.children ? { children: s._meta.children } : {}),
           ...(s._meta?.teamName ? { teamName: s._meta.teamName } : {}),
+          executorType: executorTypes[s.sessionId] ?? "claude",
           isLive: this.liveSessionIds.has(s.sessionId),
           ...(this.turnStates[s.sessionId] ? (() => {
             const ts = this.turnStates[s.sessionId];
@@ -967,11 +1048,16 @@ class AgentsDaemonImpl implements AgentsDaemon {
               }),
             };
           })() : {}),
-        }));
+        });
+
+        const claudeSessions = ((claudeResult as any).sessions ?? []).map(mapSession);
+        const codexSessions = ((codexResult as any).sessions ?? []).map(mapSession);
+        const sessions = [...claudeSessions, ...codexSessions];
+
         for (const s of sessions) {
           if (s.title) this.sessionTitleCache.set(s.sessionId, s.title);
         }
-        log.info({ durationMs: Math.round(t1 - t0), sessions: sessions.length }, "daemon: sessions/list completed");
+        log.info({ durationMs: Math.round(t1 - t0), sessions: sessions.length, claude: claudeSessions.length, codex: codexSessions.length }, "daemon: sessions/list completed");
         this.broadcast({ type: "sessions", sessions });
         // Lazy cleanup: prune stale kanban entries
         {
@@ -993,16 +1079,18 @@ class AgentsDaemonImpl implements AgentsDaemon {
   }
 
   async getSubagents(sessionId: string): Promise<any> {
-    if (!this.acpConnection) throw new Error("Daemon not initialized");
-    return this.acpConnection.connection.extMethod("sessions/getSubagents", { sessionId });
+    const conn = this.getConnectionForSession(sessionId);
+    if (!conn) throw new Error("Daemon not initialized");
+    return conn.connection.extMethod("sessions/getSubagents", { sessionId });
   }
 
   async getAvailableCommands(sessionIdHint?: string): Promise<any> {
-    if (!this.acpConnection) throw new Error("Daemon not initialized");
+    const conn = sessionIdHint ? this.getConnectionForSession(sessionIdHint) : this.connections.claude;
+    if (!conn) throw new Error("Daemon not initialized");
     // Lazily resume the session if needed
     if (sessionIdHint && !this.liveSessionIds.has(sessionIdHint)) {
       try {
-        await resumeSession(this.acpConnection.connection, sessionIdHint);
+        await resumeSession(conn.connection, sessionIdHint);
         this.liveSessionIds.add(sessionIdHint);
         this.broadcastSessions().catch(() => {});
       } catch (resumeErr: any) {
@@ -1011,21 +1099,23 @@ class AgentsDaemonImpl implements AgentsDaemon {
         }
       }
     }
-    return this.acpConnection.connection.extMethod("sessions/getAvailableCommands", {});
+    return conn.connection.extMethod("sessions/getAvailableCommands", {});
   }
 
   async getTasksList(sessionId: string): Promise<any> {
-    if (!this.acpConnection) throw new Error("Daemon not initialized");
-    return this.acpConnection.connection.extMethod("tasks/list", { sessionId });
+    const conn = this.getConnectionForSession(sessionId);
+    if (!conn) throw new Error("Daemon not initialized");
+    return conn.connection.extMethod("tasks/list", { sessionId });
   }
 
   // ── Session management ──
 
   async renameSession(sessionId: string, title: string): Promise<boolean> {
-    if (!this.acpConnection) return false;
+    const conn = this.getConnectionForSession(sessionId);
+    if (!conn) return false;
     this.autoRenameEligible.delete(sessionId);
     this.autoRenameInFlight.delete(sessionId);
-    const result = await this.acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
+    const result = await conn.connection.extMethod("sessions/rename", { sessionId, title });
     if (result.success) {
       this.sessionTitleCache.set(sessionId, title);
       // Emit session_title_update immediately so clients get the title even if
@@ -1038,8 +1128,9 @@ class AgentsDaemonImpl implements AgentsDaemon {
   }
 
   async deleteSession(sessionId: string): Promise<{ success: boolean; deletedIds: string[] }> {
-    if (!this.acpConnection) return { success: false, deletedIds: [] };
-    const result = await this.acpConnection.connection.extMethod("sessions/delete", { sessionId });
+    const conn = this.getConnectionForSession(sessionId);
+    if (!conn) return { success: false, deletedIds: [] };
+    const result = await conn.connection.extMethod("sessions/delete", { sessionId });
     const deletedIds = (result.deletedIds as string[]) ?? [sessionId];
     if (result.success) {
       for (const id of deletedIds) {
@@ -1051,6 +1142,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
         delete this.turnStates[id];
         this.sessionMetas.delete(id);
         this.sessionTitleCache.delete(id);
+        kanbanDb.deleteSessionExecutorType(id);
       }
     }
     return { success: !!result.success, deletedIds };
@@ -1065,7 +1157,9 @@ class AgentsDaemonImpl implements AgentsDaemon {
     this.autoRenameEligible.delete(sessionId);
     this.autoRenameInFlight.delete(sessionId);
     this.sessionTitleCache.delete(sessionId);
-    this.acpConnection?.connection.extMethod("sessions/delete", { sessionId }).catch(() => {});
+    const conn = this.getConnectionForSession(sessionId);
+    conn?.connection.extMethod("sessions/delete", { sessionId }).catch(() => {});
+    kanbanDb.deleteSessionExecutorType(sessionId);
   }
 
   // ── Auto-rename ──
@@ -1079,13 +1173,14 @@ class AgentsDaemonImpl implements AgentsDaemon {
         this.autoRenameInFlight.delete(sessionId);
         return;
       }
-      if (!this.acpConnection) return;
+      const conn = this.getConnectionForSession(sessionId);
+      if (!conn) return;
       if (!this.autoRenameInFlight.delete(sessionId)) {
         log.info({ session: sid(sessionId), title }, "auto-rename: cancelled (manual rename during generation)");
         return;
       }
       try {
-        await this.acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
+        await conn.connection.extMethod("sessions/rename", { sessionId, title });
         this.sessionTitleCache.set(sessionId, title);
         log.info({ session: sid(sessionId), title }, "auto-rename: applied");
         await this.broadcastSessions();
@@ -1107,11 +1202,14 @@ class AgentsDaemonImpl implements AgentsDaemon {
   // ── Permission forwarding ──
 
   resolvePermission(requestId: string, optionId: string, optionName: string): void {
-    this.acpConnection?.webClient.resolvePermission(requestId, optionId, optionName);
+    // Permission requests can come from either connection — try both
+    this.connections.claude?.webClient.resolvePermission(requestId, optionId, optionName);
+    this.connections.codex?.webClient.resolvePermission(requestId, optionId, optionName);
   }
 
   cancelPermissions(sessionId: string): void {
-    this.acpConnection?.webClient.cancelPermissions(sessionId);
+    const conn = this.getConnectionForSession(sessionId);
+    conn?.webClient.cancelPermissions(sessionId);
   }
 
   // ── Helpers ──
@@ -1137,5 +1235,37 @@ export function getOrCreateDaemon(): AgentsDaemon {
     Object.setPrototypeOf(g[DAEMON_KEY], AgentsDaemonImpl.prototype);
     log.info("daemon: reusing existing instance (HMR reload, prototype patched)");
   }
-  return g[DAEMON_KEY];
+  // HMR compatibility: older daemon instances (pre multi-executor support)
+  // may only have `acpConnection` and no `connections` object.
+  const daemon = g[DAEMON_KEY] as any;
+  if (!daemon.connections || typeof daemon.connections !== "object") {
+    daemon.connections = {
+      claude: daemon.acpConnection ?? null,
+      codex: null,
+    };
+    log.warn(
+      { migratedLegacyAcpConnection: !!daemon.acpConnection },
+      "daemon: hydrated missing connections field on reused instance",
+    );
+  } else {
+    if (!("claude" in daemon.connections)) {
+      daemon.connections.claude = daemon.acpConnection ?? null;
+    }
+    if (!("codex" in daemon.connections)) {
+      daemon.connections.codex = null;
+    }
+    // Lazily connect Codex if binary became available since last init
+    if (!daemon.connections.codex && isCodexAvailable()) {
+      log.info("daemon: Codex binary now available, attempting late connection");
+      createCodexConnection(daemon.broadcast.bind(daemon)).then((conn) => {
+        daemon.connections.codex = conn;
+        log.info("daemon: Codex ACP late connection ready");
+        // Notify connected clients that Codex is now available
+        daemon.broadcast({ type: "executors", available: daemon.getAvailableExecutors() });
+      }).catch((err: any) => {
+        log.warn({ err: err.message }, "daemon: Codex ACP late connection failed");
+      });
+    }
+  }
+  return daemon;
 }

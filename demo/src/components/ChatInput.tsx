@@ -1,7 +1,7 @@
 import { useRef, useCallback, useState, useEffect } from "react";
 import { useWs, titleLockedSessions } from "../context/WebSocketContext";
 import { toSupportedImage } from "../utils";
-import type { ImageAttachment, FileAttachment, SlashCommand } from "../types";
+import type { ImageAttachment, FileAttachment, SlashCommand, ExecutorType } from "../types";
 
 // ── localStorage helpers for session-scoped draft persistence ──
 const DRAFT_KEY_PREFIX = "chatInput:draft:";
@@ -539,6 +539,29 @@ export function ChatInput() {
         </div>
       )}
       <div className="flex gap-2">
+        {state.availableExecutors.length > 1 && (
+          <div className="flex flex-col items-center justify-end pb-[10px] shrink-0">
+            <div className="flex rounded-full border border-border overflow-hidden text-[10px] font-mono leading-none">
+              {(["claude", "codex"] as ExecutorType[])
+                .filter((e) => state.availableExecutors.includes(e))
+                .map((e) => (
+                  <button
+                    key={e}
+                    type="button"
+                    title={e === "codex" ? "Codex — recommended for debugging" : "Claude Code"}
+                    onClick={() => dispatch({ type: "SET_EXECUTOR", executor: e })}
+                    className={`px-1.5 py-1 cursor-pointer border-none ${
+                      state.selectedExecutor === e
+                        ? "bg-accent text-white"
+                        : "bg-surface text-dim hover:text-text"
+                    }`}
+                  >
+                    {e === "claude" ? "CC" : "CX"}
+                  </button>
+                ))}
+            </div>
+          </div>
+        )}
         <textarea
           ref={inputRef}
           rows={3}

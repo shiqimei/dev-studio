@@ -18,7 +18,7 @@ function findSubagentChild(children: SubagentChild[], agentId: string): Subagent
 
 export function ChatPanel({ style }: { style?: React.CSSProperties }) {
   const state = useWsState();
-  const { renameSession } = useWsActions();
+  const { renameSession, interrupt } = useWsActions();
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -154,6 +154,18 @@ export function ChatPanel({ style }: { style?: React.CSSProperties }) {
           >
             {sessionTitle ?? "\u00a0"}
           </h1>
+        )}
+        {state.busy && (
+          <button
+            type="button"
+            className="chat-stop-btn"
+            onClick={interrupt}
+            title="Stop session"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="0">
+              <g><path d="M18.437,20.937H5.563a2.5,2.5,0,0,1-2.5-2.5V5.563a2.5,2.5,0,0,1,2.5-2.5H18.437a2.5,2.5,0,0,1,2.5,2.5V18.437A2.5,2.5,0,0,1,18.437,20.937ZM5.563,4.063a1.5,1.5,0,0,0-1.5,1.5V18.437a1.5,1.5,0,0,0,1.5,1.5H18.437a1.5,1.5,0,0,0,1.5-1.5V5.563a1.5,1.5,0,0,0-1.5-1.5Z" /></g>
+            </svg>
+          </button>
         )}
       </div>
       {isEmpty ? (

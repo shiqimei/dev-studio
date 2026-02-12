@@ -214,9 +214,6 @@ export interface SessionSnapshot {
   currentTurnId: string | null;
   turnToolCallIds: string[];
   turnStatus: TurnStatus | null;
-  queuedMessages: string[];
-  /** Queued user messages not yet picked up by the agent (held out of messages[]). */
-  pendingQueuedEntries: MessageEntry[];
   latestPlan: PlanEntryItem[] | null;
   latestTasks: TaskItemEntry[] | null;
 }
@@ -294,9 +291,6 @@ export interface AppState {
   /** Current reconnection attempt (0 = not reconnecting or first connect). */
   reconnectAttempt: number;
   busy: boolean;
-  queuedMessages: string[];
-  /** Queued user messages not yet picked up by the agent (held out of messages[]). */
-  pendingQueuedEntries: MessageEntry[];
   messages: ChatEntry[];
   currentTurnId: string | null;
   tasks: Record<string, TaskInfo>;
@@ -385,9 +379,6 @@ export type Action =
   | { type: "SESSION_SWITCH_PENDING"; sessionId: string }
   | { type: "SESSION_SWITCHED"; sessionId: string; turnStatus?: TurnStatus | null }
   | { type: "SESSION_TITLE_UPDATE"; sessionId: string; title: string }
-  | { type: "MESSAGE_QUEUED"; queueId: string }
-  | { type: "QUEUE_DRAIN_START"; queueId: string }
-  | { type: "QUEUE_CANCELLED"; queueId: string }
   | { type: "COMMANDS"; commands: SlashCommand[]; models?: string[]; currentModel?: string | null }
   | { type: "SESSION_SUBAGENTS"; sessionId: string; children: SubagentChild[] }
   | { type: "SESSION_DELETED"; sessionIds: string[] }

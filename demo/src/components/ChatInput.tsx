@@ -3,6 +3,30 @@ import { useWs, titleLockedSessions } from "../context/WebSocketContext";
 import { toSupportedImage } from "../utils";
 import type { ImageAttachment, FileAttachment, SlashCommand, ExecutorType } from "../types";
 
+// ── Executor icons ──
+
+function ClaudeCodeIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M7 1.5L8.2 5.2L12 6.2L8.8 8.2L9.2 12.2L7 9.5L4.8 12.2L5.2 8.2L2 6.2L5.8 5.2L7 1.5Z" fill="currentColor" opacity="0.85" />
+    </svg>
+  );
+}
+
+function CodexIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M5.5 3L2.5 7L5.5 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.5 3L11.5 7L8.5 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+const EXECUTOR_META: Record<ExecutorType, { label: string; icon: React.ReactNode; description: string }> = {
+  claude: { label: "Claude Code", icon: <ClaudeCodeIcon />, description: "General-purpose coding" },
+  codex: { label: "Codex", icon: <CodexIcon />, description: "Recommended for debugging" },
+};
+
 // ── localStorage helpers for session-scoped draft persistence ──
 const DRAFT_KEY_PREFIX = "chatInput:draft:";
 
@@ -27,7 +51,7 @@ function basename(path: string): string {
 }
 
 export function ChatInput() {
-  const { state, send, interrupt, cancelQueued, searchFiles, requestCommands, preflightRoute, updatePendingPrompt, renameSession, dispatch } = useWs();
+  const { state, send, deselectSession, searchFiles, requestCommands, preflightRoute, updatePendingPrompt, renameSession, dispatch } = useWs();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [files, setFiles] = useState<FileAttachment[]>([]);
@@ -111,6 +135,22 @@ export function ChatInput() {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // ── Executor popover state ──
+  const [executorPopoverOpen, setExecutorPopoverOpen] = useState(false);
+  const executorPopoverRef = useRef<HTMLDivElement>(null);
+  const showExecutorSelector = state.availableExecutors.length > 1;
+
+  useEffect(() => {
+    if (!executorPopoverOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (executorPopoverRef.current && !executorPopoverRef.current.contains(e.target as Node)) {
+        setExecutorPopoverOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [executorPopoverOpen]);
 
   const handleSend = useCallback(() => {
     const text = inputRef.current?.value.trim() ?? "";
@@ -317,10 +357,10 @@ export function ChatInput() {
         return;
       }
 
-      // ESC to interrupt when a turn is in progress
-      if (e.key === "Escape" && state.busy) {
+      // ESC to deselect session (returns to new-session input)
+      if (e.key === "Escape") {
         e.preventDefault();
-        interrupt();
+        deselectSession();
         return;
       }
 
@@ -345,7 +385,7 @@ export function ChatInput() {
         });
       }
     },
-    [handleSend, state.busy, state.currentSessionId, interrupt, slashOpen, slashFiltered, slashIdx, selectSlashCommand, mentionOpen, mentionResults, mentionIdx, selectFile],
+    [handleSend, state.currentSessionId, deselectSession, slashOpen, slashFiltered, slashIdx, selectSlashCommand, mentionOpen, mentionResults, mentionIdx, selectFile],
   );
 
   const onInput = useCallback(() => {
@@ -428,10 +468,6 @@ export function ChatInput() {
     }
   }, [slashIdx, mentionIdx, slashOpen, mentionOpen]);
 
-  // Queued message entries for the pinned queue area — read directly from
-  // pendingQueuedEntries (messages held out of the chat until agent picks them up).
-  const queuedEntries = state.pendingQueuedEntries;
-
   const isSubagentView = state.currentSessionId?.includes(":subagent:") ?? false;
 
   if (isSubagentView) {
@@ -447,31 +483,6 @@ export function ChatInput() {
   return (
     <div className="px-5 pb-8 shrink-0 relative">
       <div className="chat-content">
-      {/* Pinned queued messages */}
-      {queuedEntries.length > 0 && (
-        <div className="queued-pin-area">
-          {queuedEntries.map((entry) => {
-            const text = entry.content
-              .filter((b) => b.type === "text")
-              .map((b) => (b as { text: string }).text)
-              .join(" ");
-            const truncated = text.length > 80 ? text.slice(0, 80) + "..." : text;
-            return (
-              <div key={entry.id} className="queued-pin-item">
-                <span className="queued-pin-label">queued</span>
-                <span className="queued-pin-text">{truncated || "..."}</span>
-                <button
-                  type="button"
-                  className="queued-pin-cancel"
-                  onClick={() => cancelQueued(entry._queueId!)}
-                >
-                  x
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
       {/* Autocomplete dropdown */}
       {showAutocomplete && (
         <div
@@ -538,41 +549,65 @@ export function ChatInput() {
           ))}
         </div>
       )}
-      <div className="flex gap-2">
-        {state.availableExecutors.length > 1 && (
-          <div className="flex flex-col items-center justify-end pb-[10px] shrink-0">
-            <div className="flex rounded-full border border-border overflow-hidden text-[10px] font-mono leading-none">
-              {(["claude", "codex"] as ExecutorType[])
-                .filter((e) => state.availableExecutors.includes(e))
-                .map((e) => (
-                  <button
-                    key={e}
-                    type="button"
-                    title={e === "codex" ? "Codex — recommended for debugging" : "Claude Code"}
-                    onClick={() => dispatch({ type: "SET_EXECUTOR", executor: e })}
-                    className={`px-1.5 py-1 cursor-pointer border-none ${
-                      state.selectedExecutor === e
-                        ? "bg-accent text-white"
-                        : "bg-surface text-dim hover:text-text"
-                    }`}
-                  >
-                    {e === "claude" ? "CC" : "CX"}
-                  </button>
-                ))}
-            </div>
-          </div>
-        )}
+      <div className="relative">
         <textarea
           ref={inputRef}
           rows={3}
-          placeholder={state.busy ? "Press ESC to interrupt..." : images.length > 0 ? "Add a message or send image..." : files.length > 0 ? "Add a message or send files..." : "Send a message... (/ for commands, @ for files)"}
+          placeholder={images.length > 0 ? "Add a message or send image..." : files.length > 0 ? "Add a message or send files..." : "Send a message... (/ for commands, @ for files, ESC for new session)"}
           onKeyDown={onKeyDown}
           onInput={onInput}
           onPaste={onPaste}
           onFocus={onFocus}
-          className="flex-1 bg-surface border-none rounded-[20px] p-[14px] text-text font-mono text-sm outline-none resize-none max-h-[210px] overflow-auto chat-input-shadow placeholder:text-dim"
+          className="w-full bg-surface border-none rounded-[20px] p-[14px] text-text font-mono text-sm outline-none resize-none max-h-[210px] overflow-auto chat-input-shadow placeholder:text-dim"
+          style={showExecutorSelector ? { paddingBottom: "36px" } : undefined}
         />
-
+        {showExecutorSelector && (
+          <div className="executor-selector-anchor" ref={executorPopoverRef}>
+            <button
+              type="button"
+              className="executor-selector-trigger"
+              onClick={() => setExecutorPopoverOpen((v) => !v)}
+            >
+              {EXECUTOR_META[state.selectedExecutor].icon}
+              <span>{EXECUTOR_META[state.selectedExecutor].label}</span>
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="executor-selector-chevron" style={executorPopoverOpen ? { transform: "rotate(180deg)" } : undefined}>
+                <path d="M2.5 4L5 6.5L7.5 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            {executorPopoverOpen && (
+              <div className="executor-popover">
+                {(["claude", "codex"] as ExecutorType[])
+                  .filter((e) => state.availableExecutors.includes(e))
+                  .map((e) => {
+                    const meta = EXECUTOR_META[e];
+                    const isActive = state.selectedExecutor === e;
+                    return (
+                      <button
+                        key={e}
+                        type="button"
+                        className={`executor-popover-item${isActive ? " executor-popover-item-active" : ""}`}
+                        onClick={() => {
+                          dispatch({ type: "SET_EXECUTOR", executor: e });
+                          setExecutorPopoverOpen(false);
+                        }}
+                      >
+                        <span className="executor-popover-icon">{meta.icon}</span>
+                        <span className="executor-popover-label">
+                          <span className="executor-popover-name">{meta.label}</span>
+                          <span className="executor-popover-desc">{meta.description}</span>
+                        </span>
+                        {isActive && (
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="executor-popover-check">
+                            <path d="M3 7.5L5.5 10L11 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        )}
+                      </button>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
       </div>
     </div>

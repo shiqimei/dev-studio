@@ -144,8 +144,6 @@ const emptySnapshot: SessionSnapshot = {
   currentTurnId: null,
   turnToolCallIds: [],
   turnStatus: null,
-  queuedMessages: [],
-  pendingQueuedEntries: [],
   latestPlan: null,
   latestTasks: null,
 };
@@ -154,8 +152,6 @@ const initialState: AppState = {
   connected: false,
   reconnectAttempt: 0,
   busy: false,
-  queuedMessages: [],
-  pendingQueuedEntries: [],
   messages: [],
   currentTurnId: null,
   tasks: {},
@@ -314,7 +310,7 @@ function reducer(state: AppState, action: Action): AppState {
           };
         }
       }
-      return { ...state, connected: false, busy: false, queuedMessages: [], pendingQueuedEntries: [], kanbanStateLoaded: false, turnStatus: state.turnStatus?.status === "in_progress" ? { ...state.turnStatus, status: "error", endedAt: Date.now(), durationMs: Date.now() - state.turnStatus.startedAt, stopReason: "disconnected" } : state.turnStatus, liveTurnStatus: disconnectedLts };
+      return { ...state, connected: false, busy: false, kanbanStateLoaded: false, turnStatus: state.turnStatus?.status === "in_progress" ? { ...state.turnStatus, status: "error", endedAt: Date.now(), durationMs: Date.now() - state.turnStatus.startedAt, stopReason: "disconnected" } : state.turnStatus, liveTurnStatus: disconnectedLts };
     }
 
     case "WS_RECONNECTING":
@@ -346,21 +342,8 @@ function reducer(state: AppState, action: Action): AppState {
         _queueId: action.queueId,
       };
 
-      // When the session is already busy, the message will be queued server-side.
-      // Don't add it to messages[] yet — hold it in pendingQueuedEntries and
-      // preserve the current turnStatus so the running bar stays visible.
-      if (state.turnStatus?.status === "in_progress") {
-        return {
-          ...state,
-          busy: true,
-          queuedMessages: action.queueId
-            ? [...state.queuedMessages, action.queueId]
-            : state.queuedMessages,
-          pendingQueuedEntries: [...state.pendingQueuedEntries, userTurn],
-        };
-      }
-
-      // Not busy — optimistic: show the message immediately and start a new turn.
+      // Always show the message immediately. If the session is busy, the server
+      // will interrupt the current turn and re-prompt with this message.
       // Set a preliminary turnStatus so the running bar appears instantly
       // (before TURN_START arrives from the server).
       const preliminaryTs: TurnStatus = {
@@ -854,8 +837,7 @@ function reducer(state: AppState, action: Action): AppState {
 
       return {
         ...state,
-        // Stay busy if there are queued messages (server will auto-drain next)
-        busy: state.queuedMessages.length > 0,
+        busy: false,
         currentTurnId: null,
         turnToolCallIds: [],
         tasks: updatedTasks,
@@ -1062,8 +1044,6 @@ function reducer(state: AppState, action: Action): AppState {
             currentTurnId: null,
             turnToolCallIds: [],
             turnStatus: null,
-            queuedMessages: [],
-            pendingQueuedEntries: [],
             latestPlan: extractLatestPlan(historyMessages),
             latestTasks: null,
           },
@@ -1175,9 +1155,7 @@ function reducer(state: AppState, action: Action): AppState {
         currentTurnId: null,
         turnToolCallIds: restored.turnToolCallIds,
         turnStatus: effectiveTurnStatus,
-        busy: restored.queuedMessages.length > 0 || effectiveTurnStatus?.status === "in_progress",
-        queuedMessages: restored.queuedMessages,
-        pendingQueuedEntries: restored.pendingQueuedEntries,
+        busy: effectiveTurnStatus?.status === "in_progress",
         peekStatus: {},
         latestPlan: restored.latestPlan,
         latestTasks: restored.latestTasks,
@@ -1231,50 +1209,6 @@ function reducer(state: AppState, action: Action): AppState {
         ],
       };
     }
-
-    // ── Queue management actions ────────────
-    case "MESSAGE_QUEUED": {
-      // Idempotent: SEND_MESSAGE already adds to queuedMessages when busy
-      if (state.queuedMessages.includes(action.queueId)) return state;
-      return {
-        ...state,
-        queuedMessages: [...state.queuedMessages, action.queueId],
-      };
-    }
-
-    case "QUEUE_DRAIN_START": {
-      // Move the queued message from pendingQueuedEntries into messages[]
-      // now that the agent is about to process it.
-      const drainEntry = state.pendingQueuedEntries.find(
-        (m) => m._queueId === action.queueId,
-      );
-      return {
-        ...state,
-        busy: true,
-        queuedMessages: state.queuedMessages.filter((id) => id !== action.queueId),
-        pendingQueuedEntries: state.pendingQueuedEntries.filter(
-          (m) => m._queueId !== action.queueId,
-        ),
-        messages: drainEntry
-          ? [...finalizeStreaming(state.messages, state.currentTurnId), drainEntry]
-          : state.messages,
-        // Reset turn state for the new turn about to start
-        currentTurnId: drainEntry ? null : state.currentTurnId,
-      };
-    }
-
-    case "QUEUE_CANCELLED":
-      return {
-        ...state,
-        queuedMessages: state.queuedMessages.filter((id) => id !== action.queueId),
-        pendingQueuedEntries: state.pendingQueuedEntries.filter(
-          (m) => m._queueId !== action.queueId,
-        ),
-        // Also clean from messages in case it was added there (non-busy send path)
-        messages: state.messages.filter(
-          (m) => !(m.type === "message" && m.role === "user" && (m as MessageEntry)._queueId === action.queueId),
-        ),
-      };
 
     case "COMMANDS": {
       const updates: Partial<AppState> = { commands: action.commands };
@@ -1330,8 +1264,6 @@ function reducer(state: AppState, action: Action): AppState {
         turnToolCallIds: [],
         turnStatus: null,
         busy: false,
-        queuedMessages: [],
-        pendingQueuedEntries: [],
         peekStatus: {},
         latestPlan: null,
         latestTasks: null,
@@ -1456,7 +1388,6 @@ export interface WsActions {
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
   deleteSession: (sessionId: string) => void;
   renameSession: (sessionId: string, title: string) => void;
-  cancelQueued: (queueId: string) => void;
   searchFiles: (query: string, callback: (files: string[]) => void) => void;
   requestCommands: () => void;
   requestSubagents: (sessionId: string) => void;
@@ -1482,7 +1413,6 @@ interface WsContextValue {
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
   deleteSession: (sessionId: string) => void;
   renameSession: (sessionId: string, title: string) => void;
-  cancelQueued: (queueId: string) => void;
   searchFiles: (query: string, callback: (files: string[]) => void) => void;
   requestCommands: () => void;
   requestSubagents: (sessionId: string) => void;
@@ -1672,7 +1602,19 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    if (sessionMatchesProject && currentSessionRef.current && !currentSessionRef.current.startsWith("pending:")) {
+    // Executor mismatch: if the current session uses a different executor than
+    // the selected one, force a new session creation with the right executor type.
+    let executorMismatch = false;
+    if (sessionMatchesProject && currentSessionRef.current && stateRef.current.availableExecutors.length > 1) {
+      const currentSession = stateRef.current.diskSessions.find(
+        (s) => s.sessionId === currentSessionRef.current,
+      );
+      if (currentSession?.executorType && currentSession.executorType !== stateRef.current.selectedExecutor) {
+        executorMismatch = true;
+      }
+    }
+
+    if (sessionMatchesProject && !executorMismatch && currentSessionRef.current && !currentSessionRef.current.startsWith("pending:")) {
       const trimmed = text.trim();
       const cache = preflightCacheRef.current;
       const wordCount = trimmed.split(/\s+/).length;
@@ -1766,13 +1708,14 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         type: "route_message",
         text,
         queueId,
+        executorType: stateRef.current.selectedExecutor,
         ...(images?.length ? { images } : {}),
         ...(files?.length ? { files } : {}),
       }));
       preflightCacheRef.current = null;
     } else {
-      // No session selected: create a new session and send prompt directly
-      if (!currentSessionRef.current && !pendingNewSessionRef.current) {
+      // No session selected (or executor type mismatch): create a new session and send prompt directly
+      if ((!currentSessionRef.current || executorMismatch) && !pendingNewSessionRef.current) {
         newSession();
       }
       // Show message in UI immediately (optimistic)
@@ -1901,11 +1844,6 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       pendingBacklogRef.current = { resolve, title };
       wsRef.current.send(JSON.stringify({ type: "new_session", executorType: stateRef.current.selectedExecutor }));
     });
-  }, []);
-
-  const cancelQueued = useCallback((queueId: string) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(JSON.stringify({ type: "cancel_queued", queueId }));
   }, []);
 
   const requestCommands = useCallback(() => {
@@ -2254,7 +2192,6 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       resumeSubagent: resumeSubagentCb,
       deleteSession: deleteSessionCb,
       renameSession: renameSessionCb,
-      cancelQueued,
       searchFiles,
       requestCommands,
       requestSubagents,
@@ -2266,7 +2203,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       requestHaikuMetrics,
     }),
     // All deps are useCallback([]) or useReducer dispatch — stable references
-    [dispatch, send, sendOpusPrompt, sendPromptToSession, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, sendKanbanOp, updatePendingPrompt, preflightRoute, requestHaikuMetrics],
+    [dispatch, send, sendOpusPrompt, sendPromptToSession, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, sendKanbanOp, updatePendingPrompt, preflightRoute, requestHaikuMetrics],
   );
 
   // ── Hash-based URL routing ──
@@ -2532,16 +2469,6 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
     // User message from another client viewing the same session
     case "user_message":
       dispatch({ type: "SEND_MESSAGE", text: msg.text, images: msg.images, files: msg.files, queueId: msg.queueId });
-      break;
-    // Queue messages
-    case "message_queued":
-      dispatch({ type: "MESSAGE_QUEUED", queueId: msg.queueId });
-      break;
-    case "queue_drain_start":
-      dispatch({ type: "QUEUE_DRAIN_START", queueId: msg.queueId });
-      break;
-    case "queue_cancelled":
-      dispatch({ type: "QUEUE_CANCELLED", queueId: msg.queueId });
       break;
     case "commands":
       dispatch({ type: "COMMANDS", commands: msg.commands ?? [], models: msg.models, currentModel: msg.currentModel });

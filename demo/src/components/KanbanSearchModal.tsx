@@ -24,21 +24,156 @@ interface SearchResult {
   session: DiskSession;
   columnId: KanbanColumnId;
   title: string;
+  score: number;
+  /** Indices of matched characters in `title` (for fuzzy highlighting). */
+  matchIndices: number[];
 }
 
-/** Highlight matching substring within text. Returns JSX fragments. */
-function HighlightedTitle({ text, query }: { text: string; query: string }) {
-  if (!query.trim()) return <>{text}</>;
-  const q = query.toLowerCase();
-  const idx = text.toLowerCase().indexOf(q);
-  if (idx === -1) return <>{text}</>;
+// ── Fuzzy matching engine ──
+
+/**
+ * Fuzzy-match `query` against `text`. Returns null if no match, or a
+ * { score, indices } object. Scoring rewards:
+ *  - Consecutive matches (characters in a row)
+ *  - Start-of-word matches (after space, hyphen, underscore, or at index 0)
+ *  - Early matches (closer to the start of the string)
+ *  - Exact case matches
+ */
+function fuzzyMatch(
+  text: string,
+  query: string,
+): { score: number; indices: number[] } | null {
+  if (!query) return { score: 0, indices: [] };
+
+  const tLower = text.toLowerCase();
+  const qLower = query.toLowerCase();
+
+  // Quick bail: every query char must exist somewhere in text
+  let checkIdx = 0;
+  for (let i = 0; i < qLower.length; i++) {
+    checkIdx = tLower.indexOf(qLower[i], checkIdx);
+    if (checkIdx === -1) return null;
+    checkIdx++;
+  }
+
+  // Greedy forward match collecting the best indices
+  const indices: number[] = [];
+  let score = 0;
+  let ti = 0;
+
+  for (let qi = 0; qi < qLower.length; qi++) {
+    const qc = qLower[qi];
+
+    // Look for the best position for this query character.
+    // Prefer: exact case > word boundary > consecutive > first occurrence
+    let bestIdx = -1;
+    let bestBonus = -1;
+
+    for (let si = ti; si < tLower.length; si++) {
+      if (tLower[si] !== qc) continue;
+
+      let bonus = 0;
+
+      // Consecutive match bonus (follows immediately after previous match)
+      if (indices.length > 0 && si === indices[indices.length - 1] + 1) {
+        bonus += 8;
+      }
+
+      // Word boundary bonus (start of string, or after separator)
+      if (si === 0 || /[\s\-_./]/.test(text[si - 1])) {
+        bonus += 6;
+      }
+
+      // Camel-case boundary bonus (lowercase followed by uppercase)
+      if (si > 0 && text[si - 1] >= "a" && text[si - 1] <= "z" && text[si] >= "A" && text[si] <= "Z") {
+        bonus += 5;
+      }
+
+      // Exact case bonus
+      if (text[si] === query[qi]) {
+        bonus += 1;
+      }
+
+      // Early position bonus (first 10 chars get a small bonus)
+      if (si < 10) {
+        bonus += (10 - si) * 0.2;
+      }
+
+      if (bonus > bestBonus) {
+        bestBonus = bonus;
+        bestIdx = si;
+        // If we found a consecutive match, use it immediately
+        if (indices.length > 0 && si === indices[indices.length - 1] + 1) break;
+      }
+
+      // Don't look too far ahead
+      if (si - ti > 20 && bestIdx !== -1) break;
+    }
+
+    if (bestIdx === -1) return null; // shouldn't happen after the quick bail
+
+    indices.push(bestIdx);
+    score += bestBonus;
+    ti = bestIdx + 1;
+  }
+
+  // Bonus for shorter overall span (tighter matches are better)
+  if (indices.length > 1) {
+    const span = indices[indices.length - 1] - indices[0];
+    score += Math.max(0, 20 - span) * 0.5;
+  }
+
+  // Bonus for query matching a larger proportion of the title
+  score += (query.length / text.length) * 5;
+
+  return { score, indices };
+}
+
+/** Render text with non-contiguous characters highlighted. */
+function FuzzyHighlight({ text, indices }: { text: string; indices: number[] }) {
+  if (indices.length === 0) return <>{text}</>;
+
+  const indexSet = new Set(indices);
+  const parts: { str: string; highlighted: boolean }[] = [];
+  let current = "";
+  let currentHighlighted = indexSet.has(0);
+
+  for (let i = 0; i < text.length; i++) {
+    const isMatch = indexSet.has(i);
+    if (isMatch !== currentHighlighted) {
+      if (current) parts.push({ str: current, highlighted: currentHighlighted });
+      current = text[i];
+      currentHighlighted = isMatch;
+    } else {
+      current += text[i];
+    }
+  }
+  if (current) parts.push({ str: current, highlighted: currentHighlighted });
+
   return (
     <>
-      {text.slice(0, idx)}
-      <mark className="kanban-search-highlight">{text.slice(idx, idx + query.length)}</mark>
-      {text.slice(idx + query.length)}
+      {parts.map((p, i) =>
+        p.highlighted ? (
+          <mark key={i} className="kanban-search-highlight">
+            {p.str}
+          </mark>
+        ) : (
+          <span key={i}>{p.str}</span>
+        ),
+      )}
     </>
   );
+}
+
+/** Tiny status dot indicator for search results. */
+function StatusDot({ session, columnId }: { session: DiskSession; columnId: KanbanColumnId }) {
+  if (columnId === "in_progress" || session.turnStatus === "in_progress") {
+    return <span className="kanban-search-status-dot in-progress" title="In progress" />;
+  }
+  if (session.turnStatus === "error") {
+    return <span className="kanban-search-status-dot error" title="Error" />;
+  }
+  return null;
 }
 
 export function KanbanSearchModal({ columnData, onSelect, onClose }: KanbanSearchModalProps) {
@@ -53,7 +188,7 @@ export function KanbanSearchModal({ columnData, onSelect, onClose }: KanbanSearc
 
   // Build flat list of all cards with their column info
   const allCards = useMemo(() => {
-    const cards: SearchResult[] = [];
+    const cards: { session: DiskSession; columnId: KanbanColumnId; title: string }[] = [];
     for (const colId of Object.keys(COLUMN_LABELS) as KanbanColumnId[]) {
       for (const session of columnData[colId] ?? []) {
         cards.push({ session, columnId: colId, title: cleanTitle(session.title) });
@@ -62,11 +197,30 @@ export function KanbanSearchModal({ columnData, onSelect, onClose }: KanbanSearc
     return cards;
   }, [columnData]);
 
-  // Filter by query
-  const results = useMemo(() => {
-    if (!query.trim()) return allCards.slice(0, 50);
-    const q = query.toLowerCase();
-    return allCards.filter((r) => r.title.toLowerCase().includes(q)).slice(0, 50);
+  // Fuzzy filter + score + sort by relevance
+  const results = useMemo<SearchResult[]>(() => {
+    const q = query.trim();
+    if (!q) {
+      // No query: show all cards (no scoring needed)
+      return allCards.slice(0, 50).map((c) => ({
+        ...c,
+        score: 0,
+        matchIndices: [],
+      }));
+    }
+
+    const scored: SearchResult[] = [];
+    for (const card of allCards) {
+      const match = fuzzyMatch(card.title, q);
+      if (match) {
+        scored.push({ ...card, score: match.score, matchIndices: match.indices });
+      }
+    }
+
+    // Sort by score descending
+    scored.sort((a, b) => b.score - a.score);
+
+    return scored.slice(0, 50);
   }, [allCards, query]);
 
   // Reset active index when query changes
@@ -101,6 +255,8 @@ export function KanbanSearchModal({ columnData, onSelect, onClose }: KanbanSearc
     }
   };
 
+  const totalCards = allCards.length;
+
   return (
     <div className="kanban-search-overlay" onClick={onClose}>
       <div className="kanban-search-modal" onClick={(e) => e.stopPropagation()}>
@@ -113,7 +269,7 @@ export function KanbanSearchModal({ columnData, onSelect, onClose }: KanbanSearc
             ref={inputRef}
             className="kanban-search-input"
             type="text"
-            placeholder="Search cards..."
+            placeholder={`Search ${totalCards} cards...`}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -134,8 +290,9 @@ export function KanbanSearchModal({ columnData, onSelect, onClose }: KanbanSearc
                   onClose();
                 }}
               >
+                <StatusDot session={r.session} columnId={r.columnId} />
                 <span className="kanban-search-result-title">
-                  <HighlightedTitle text={r.title} query={query} />
+                  <FuzzyHighlight text={r.title} indices={r.matchIndices} />
                 </span>
                 <span className={`kanban-search-col-badge kanban-search-col-${r.columnId}`}>
                   {COLUMN_LABELS[r.columnId]}

@@ -12,7 +12,7 @@ import {
   findTeammateParent,
 } from "./SessionSidebar";
 import { KanbanSearchModal } from "./KanbanSearchModal";
-import type { DiskSession, TurnStatus, SubagentChild, ImageAttachment } from "../types";
+import type { DiskSession, TurnStatus, SubagentChild, ImageAttachment, KanbanOp } from "../types";
 
 /** Build a preliminary "brewing" TurnStatus for optimistic rendering. */
 function makeOptimisticTurnStatus(): TurnStatus {
@@ -667,11 +667,44 @@ function KanbanColumnView({
   );
 }
 
+// ── Optimistic overlay helper ──
+// Replays pending ops on top of server-authoritative state to derive the
+// optimistic view the UI should render. Pure function — no side effects.
+function applyOpsToSnapshot(
+  co: Record<string, string>,
+  so: Partial<Record<string, string[]>>,
+  ops: KanbanOp[],
+): { columnOverrides: Record<string, string>; sortOrders: Partial<Record<string, string[]>> } {
+  if (ops.length === 0) return { columnOverrides: co, sortOrders: so };
+  const rco = { ...co };
+  const rso: Record<string, string[] | undefined> = { ...so };
+  for (const op of ops) {
+    switch (op.op) {
+      case "set_column": rco[op.sessionId] = op.column; break;
+      case "remove_column": delete rco[op.sessionId]; break;
+      case "set_sort_order": rso[op.column] = op.order; break;
+      case "set_pending_prompt": break; // handled by pendingPrompts state
+      case "remove_pending_prompt": break;
+      case "bulk_set_columns":
+        for (const e of op.entries) rco[e.sessionId] = e.column;
+        break;
+      case "bulk_remove_sort_entries":
+        for (const id of op.sessionIds) {
+          for (const col of Object.keys(rso)) {
+            if (rso[col]) rso[col] = rso[col]!.filter((x) => x !== id);
+          }
+        }
+        break;
+    }
+  }
+  return { columnOverrides: rco, sortOrders: rso };
+}
+
 // ── Main panel ──
 
 export function KanbanPanel() {
   const state = useWsState();
-  const { dispatch, resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, send, saveKanbanState, updatePendingPrompt } = useWsActions();
+  const { dispatch, resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, send, sendKanbanOp, updatePendingPrompt } = useWsActions();
 
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
@@ -679,13 +712,19 @@ export function KanbanPanel() {
   const [subagentsLoaded, setSubagentsLoaded] = useState<Set<string>>(new Set());
   const [subagentsLoading, setSubagentsLoading] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<{ sessionId: string; title: string | null; x: number; y: number } | null>(null);
-  const [columnOverrides, setColumnOverrides] = useState<Record<string, KanbanColumnId>>(
-    () => (state.kanbanColumnOverrides as Record<string, KanbanColumnId>) ?? {},
-  );
-  const [sortOrders, setSortOrders] = useState<Partial<Record<KanbanColumnId, string[]>>>(
-    () => (state.kanbanSortOrders as Partial<Record<KanbanColumnId, string[]>>) ?? {},
-  );
   const [editingNewCard, setEditingNewCard] = useState<KanbanColumnId | null>(null);
+
+  // Derive columnOverrides and sortOrders from server state + pending ops overlay.
+  // No local useState copies — the server is the single source of truth,
+  // and pending ops provide instant optimistic feedback until acked.
+  const { columnOverrides, sortOrders } = useMemo(() => {
+    const allOps = state.kanbanPendingOps.flatMap((batch) => batch.ops);
+    return applyOpsToSnapshot(
+      state.kanbanColumnOverrides,
+      state.kanbanSortOrders,
+      allOps,
+    );
+  }, [state.kanbanColumnOverrides, state.kanbanSortOrders, state.kanbanPendingOps]);
   const [pendingPrompts, setPendingPrompts] = useState<Record<string, string>>(
     () => state.kanbanPendingPrompts ?? {},
   );
@@ -702,104 +741,40 @@ export function KanbanPanel() {
     lastClickedCardRef.current = null;
   }, []);
 
-  // Auto-clear overrides when a session goes in_progress (so it moves to the right column automatically).
+  // Auto-clear overrides when a session's turn status makes them redundant.
+  // Checks the server-side overrides (not the overlay) to avoid feedback loops.
+  // - in_progress: categorizeSession() already returns "in_progress", override is redundant
+  // - completed/error with "in_progress" override: should transition to "in_review"
   // Skip sessions still in the optimistic backlog — their overrides must persist until the real
   // turn starts, otherwise the SESSIONS reducer can misinterpret the optimistic turn status as a
   // completed transition and briefly send the card to "in review".
   useEffect(() => {
     const optimisticIds = new Set(optimisticBacklog.map((s) => s.sessionId));
-    setColumnOverrides((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const sessionId of Object.keys(next)) {
-        if (optimisticIds.has(sessionId)) continue;
-        const live = state.liveTurnStatus[sessionId];
-        if (live?.status === "in_progress") {
-          delete next[sessionId];
-          changed = true;
-        }
+    const ops: KanbanOp[] = [];
+    for (const [sessionId, col] of Object.entries(state.kanbanColumnOverrides)) {
+      if (optimisticIds.has(sessionId)) continue;
+      const live = state.liveTurnStatus[sessionId];
+      if (live?.status === "in_progress") {
+        ops.push({ op: "remove_column", sessionId });
+      } else if ((live?.status === "completed" || live?.status === "error") && col === "in_progress") {
+        ops.push({ op: "set_column", sessionId, column: "in_review" });
       }
-      return changed ? next : prev;
-    });
-  }, [state.liveTurnStatus, optimisticBacklog]);
+    }
+    if (ops.length > 0) {
+      sendKanbanOp(ops);
+    }
+  }, [state.liveTurnStatus, state.kanbanColumnOverrides, optimisticBacklog, sendKanbanOp]);
 
-  // Sync persisted kanban state from server (runs once when loaded)
-  const kanbanInitialized = useRef(false);
+  // Sync pending prompts from server when all client ops have been ack'd.
+  // While ops are in-flight we keep local state to avoid clobbering optimistic
+  // edits. Once pendingOps drains to zero the server snapshot is authoritative.
+  // On reconnect/HMR, KANBAN_STATE_LOADED clears pendingOps so this fires
+  // immediately with fresh server state.
   useEffect(() => {
-    if (!state.kanbanStateLoaded || kanbanInitialized.current) return;
-    kanbanInitialized.current = true;
-    setColumnOverrides(state.kanbanColumnOverrides as Record<string, KanbanColumnId>);
-    setSortOrders(state.kanbanSortOrders as Partial<Record<KanbanColumnId, string[]>>);
+    if (!state.kanbanStateLoaded) return;
+    if (state.kanbanPendingOps.length > 0) return;
     setPendingPrompts(state.kanbanPendingPrompts);
-  }, [state.kanbanStateLoaded, state.kanbanColumnOverrides, state.kanbanSortOrders, state.kanbanPendingPrompts]);
-
-  // Sync pending prompts from global state (e.g. when ChatInput edits a backlog card title).
-  // Uses a ref to track the previous global snapshot so we only apply external deltas,
-  // avoiding overwriting local edits that haven't been dispatched yet.
-  const prevGlobalPromptsRef = useRef(state.kanbanPendingPrompts);
-  useEffect(() => {
-    if (!kanbanInitialized.current) return;
-    const prev = prevGlobalPromptsRef.current;
-    const curr = state.kanbanPendingPrompts;
-    prevGlobalPromptsRef.current = curr;
-    if (prev === curr) return;
-    // Apply only keys that changed in global state
-    setPendingPrompts((local) => {
-      let changed = false;
-      const next = { ...local };
-      for (const key of Object.keys(curr)) {
-        if (curr[key] !== prev[key] && curr[key] !== local[key]) {
-          next[key] = curr[key];
-          changed = true;
-        }
-      }
-      // Handle deletions
-      for (const key of Object.keys(prev)) {
-        if (!(key in curr) && key in local) {
-          delete next[key];
-          changed = true;
-        }
-      }
-      return changed ? next : local;
-    });
-  }, [state.kanbanPendingPrompts]);
-
-  // Ref tracking latest kanban state for flush-on-unmount / beforeunload
-  const latestKanbanRef = useRef({ columnOverrides, sortOrders, pendingPrompts });
-  latestKanbanRef.current = { columnOverrides, sortOrders, pendingPrompts };
-
-  // Debounced save to server when kanban state changes
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (!kanbanInitialized.current) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = null;
-      saveKanbanState(columnOverrides, sortOrders as Partial<Record<string, string[]>>, pendingPrompts);
-    }, 300);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [columnOverrides, sortOrders, pendingPrompts, saveKanbanState]);
-
-  // Flush any pending debounced save on component unmount or page beforeunload.
-  // Without this, changes made within the 300ms debounce window are lost on
-  // page reload or when navigating away from the kanban view.
-  useEffect(() => {
-    const flush = () => {
-      if (saveTimerRef.current && kanbanInitialized.current) {
-        clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-        const { columnOverrides: co, sortOrders: so, pendingPrompts: pp } = latestKanbanRef.current;
-        saveKanbanState(co, so as Partial<Record<string, string[]>>, pp);
-      }
-    };
-    window.addEventListener("beforeunload", flush);
-    return () => {
-      window.removeEventListener("beforeunload", flush);
-      flush();
-    };
-  }, [saveKanbanState]);
+  }, [state.kanbanPendingPrompts, state.kanbanStateLoaded, state.kanbanPendingOps]);
 
   // Auto-expand sidebar tree when navigating to a sub-agent or teammate session
   useEffect(() => {
@@ -983,16 +958,17 @@ export function KanbanPanel() {
         setPendingImages((prev) => ({ ...prev, [tempId]: images }));
       }
     }
-    setColumnOverrides((prev) => ({ ...prev, [tempId]: targetCol }));
     // Set optimistic turn status immediately for in_progress cards
     if (targetCol === "in_progress") {
       dispatch({ type: "SET_OPTIMISTIC_TURN_STATUS", sessionId: tempId, status: makeOptimisticTurnStatus() });
     }
-    // Prepend to target column sort order so the new card appears at the top
-    setSortOrders((prev) => {
-      const order = prev[targetCol] ?? [];
-      return { ...prev, [targetCol]: [tempId, ...order] };
-    });
+    // Optimistic overlay: send ops for temp ID (server stores them; overlay renders them)
+    const currentOrder = columnDataRef.current[targetCol]?.map((s) => s.sessionId) ?? [];
+    const tempOrder = [tempId, ...currentOrder];
+    sendKanbanOp([
+      { op: "set_column", sessionId: tempId, column: targetCol },
+      { op: "set_sort_order", column: targetCol, order: tempOrder },
+    ]);
 
     try {
       const sessionId = await createBacklogSession(text);
@@ -1017,16 +993,17 @@ export function KanbanPanel() {
           return next;
         });
       }
-      setColumnOverrides((prev) => {
-        const next = { ...prev, [sessionId]: targetCol };
-        delete next[tempId];
-        return next;
-      });
-      setSortOrders((prev) => {
-        const order = prev[targetCol];
-        if (!order) return prev;
-        return { ...prev, [targetCol]: order.map((id) => (id === tempId ? sessionId : id)) };
-      });
+
+      // Swap temp→real ID in sort order and send ops to server
+      const realOrder = tempOrder.map((id) => (id === tempId ? sessionId : id));
+      const ops: KanbanOp[] = [
+        { op: "set_column", sessionId, column: targetCol },
+        { op: "set_sort_order", column: targetCol, order: realOrder },
+      ];
+      if (targetCol === "backlog") {
+        ops.push({ op: "set_pending_prompt", sessionId, text });
+      }
+      sendKanbanOp(ops);
 
       // If creating directly in in_progress or recurring, resume and send the prompt immediately
       if (targetCol === "in_progress" || targetCol === "recurring") {
@@ -1036,16 +1013,16 @@ export function KanbanPanel() {
       }
     } catch (err) {
       console.error("Failed to create session:", err);
-      // Roll back the optimistic entry
+      // Roll back the optimistic entry (pending ops for tempId will be drained by ack
+      // or become harmless stale entries that cleanStaleSessions cleans up)
       setOptimisticBacklog((prev) => prev.filter((s) => s.sessionId !== tempId));
       if (targetCol === "backlog") {
         setPendingPrompts((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
         updatePendingPrompt(tempId, "");
         setPendingImages((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
       }
-      setColumnOverrides((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
     }
-  }, [dispatch, createBacklogSession, resumeSession, send, updatePendingPrompt]);
+  }, [dispatch, createBacklogSession, resumeSession, send, updatePendingPrompt, sendKanbanOp]);
 
   // Ref to track pendingPrompts in the move callback without stale closure
   const pendingPromptsRef = useRef(pendingPrompts);
@@ -1106,44 +1083,40 @@ export function KanbanPanel() {
         }
       }
 
-      // Update column override if cross-column
-      if (sourceCol !== targetCol) {
-        setColumnOverrides((prev) => ({ ...prev, [dragSessionId]: targetCol }));
+      // Compute new sort orders before setting state (used for both local state + ops)
+      const sourceVisual = columnDataRef.current[sourceCol].map((s) => s.sessionId);
+      let newSourceOrder: string[];
+      let newTargetOrder: string[] | undefined;
+
+      if (sourceCol === targetCol) {
+        const currentIdx = sourceVisual.indexOf(dragSessionId);
+        const filtered = sourceVisual.filter((id) => id !== dragSessionId);
+        let adjustedTarget = targetIndex;
+        if (currentIdx !== -1 && currentIdx < targetIndex) adjustedTarget--;
+        filtered.splice(Math.min(adjustedTarget, filtered.length), 0, dragSessionId);
+        newSourceOrder = filtered;
+      } else {
+        newSourceOrder = sourceVisual.filter((id) => id !== dragSessionId);
+        const targetVisual = columnDataRef.current[targetCol].map((s) => s.sessionId);
+        newTargetOrder = [...targetVisual];
+        newTargetOrder.splice(Math.min(targetIndex, newTargetOrder.length), 0, dragSessionId);
       }
 
-      setSortOrders((prev) => {
-        const next = { ...prev };
-
-        // Always rebuild sort order from current visual display to prevent drift
-        // between the sort order array (which can have stale/missing entries) and
-        // the actual rendered card list.
-        const sourceVisual = columnDataRef.current[sourceCol].map((s) => s.sessionId);
-
-        if (sourceCol === targetCol) {
-          // Same-column reorder: use the visual list as the source of truth
-          const currentIdx = sourceVisual.indexOf(dragSessionId);
-          const filtered = sourceVisual.filter((id) => id !== dragSessionId);
-          // targetIndex is the raw indicator position (visual index).
-          // Adjust for the removed card: if it was before the target, decrement.
-          let adjustedTarget = targetIndex;
-          if (currentIdx !== -1 && currentIdx < targetIndex) {
-            adjustedTarget--;
-          }
-          filtered.splice(Math.min(adjustedTarget, filtered.length), 0, dragSessionId);
-          next[sourceCol] = filtered;
-        } else {
-          // Cross-column move: rebuild both columns from visual display
-          next[sourceCol] = sourceVisual.filter((id) => id !== dragSessionId);
-          const targetVisual = columnDataRef.current[targetCol].map((s) => s.sessionId);
-          const targetArr = [...targetVisual];
-          targetArr.splice(Math.min(targetIndex, targetArr.length), 0, dragSessionId);
-          next[targetCol] = targetArr;
-        }
-
-        return next;
-      });
+      // Send ops to server (pending ops overlay provides optimistic display)
+      const ops: KanbanOp[] = [];
+      if (sourceCol !== targetCol) {
+        ops.push({ op: "set_column", sessionId: dragSessionId, column: targetCol });
+      }
+      ops.push({ op: "set_sort_order", column: sourceCol, order: newSourceOrder });
+      if (newTargetOrder) {
+        ops.push({ op: "set_sort_order", column: targetCol, order: newTargetOrder });
+      }
+      if (sourceCol === "backlog" && targetCol !== "backlog" && pendingPromptsRef.current[dragSessionId]) {
+        ops.push({ op: "remove_pending_prompt", sessionId: dragSessionId });
+      }
+      sendKanbanOp(ops);
     },
-    [dispatch, resumeSession, send, renameSession],
+    [dispatch, resumeSession, send, renameSession, sendKanbanOp],
   );
 
   const handleCardClick = useCallback(
@@ -1171,38 +1144,40 @@ export function KanbanPanel() {
 
   const handleBulkMove = useCallback(
     (sessionIds: string[], targetCol: KanbanColumnId) => {
-      // Update column overrides for all cards
-      setColumnOverrides((prev) => {
-        const next = { ...prev };
-        for (const id of sessionIds) {
-          next[id] = targetCol;
+      // Compute new sort orders from current derived state
+      const idSet = new Set(sessionIds);
+      const nextSort: Record<string, string[]> = {};
+      for (const colId of Object.keys(sortOrders) as KanbanColumnId[]) {
+        if (sortOrders[colId]) {
+          nextSort[colId] = sortOrders[colId]!.filter((id) => !idSet.has(id));
         }
-        return next;
-      });
-      // Update sort orders: remove from all source columns, append to target
-      setSortOrders((prev) => {
-        const next = { ...prev };
-        const idSet = new Set(sessionIds);
-        // Remove from all columns
-        for (const colId of Object.keys(next) as KanbanColumnId[]) {
-          if (next[colId]) {
-            next[colId] = next[colId]!.filter((id) => !idSet.has(id));
-          }
-        }
-        // Append to target
-        if (!next[targetCol]) {
-          next[targetCol] = columnDataRef.current[targetCol].map((s) => s.sessionId);
-        }
-        const targetArr = next[targetCol]!.filter((id) => !idSet.has(id));
-        // For completed column, prepend so new cards appear at top
-        if (targetCol === "completed") {
-          targetArr.unshift(...sessionIds);
-        } else {
-          targetArr.push(...sessionIds);
-        }
-        next[targetCol] = targetArr;
-        return next;
-      });
+      }
+      // Append to target
+      if (!nextSort[targetCol]) {
+        nextSort[targetCol] = columnDataRef.current[targetCol].map((s) => s.sessionId).filter((id) => !idSet.has(id));
+      }
+      // For completed column, prepend so new cards appear at top
+      if (targetCol === "completed") {
+        nextSort[targetCol].unshift(...sessionIds);
+      } else {
+        nextSort[targetCol].push(...sessionIds);
+      }
+
+      // Build ops — the pending ops overlay will update the UI instantly
+      const sortOps: KanbanOp[] = [];
+      for (const colId of Object.keys(nextSort)) {
+        sortOps.push({ op: "set_sort_order", column: colId, order: nextSort[colId] });
+      }
+      const ops: KanbanOp[] = [
+        { op: "bulk_set_columns", entries: sessionIds.map((id) => ({ sessionId: id, column: targetCol })) },
+        ...sortOps,
+      ];
+      // Clean up pending prompts for cards moving out of backlog
+      const removedPromptIds = sessionIds.filter((id) => pendingPromptsRef.current[id]);
+      if (removedPromptIds.length > 0) {
+        for (const id of removedPromptIds) ops.push({ op: "remove_pending_prompt", sessionId: id });
+      }
+      sendKanbanOp(ops);
       // Start the first card when bulk-moving into in_progress
       if (targetCol === "in_progress") {
         let sentFirst = false;
@@ -1251,7 +1226,7 @@ export function KanbanPanel() {
       }
       clearSelection();
     },
-    [dispatch, resumeSession, send, clearSelection, columnOverrides, state.diskSessions, state.liveTurnStatus, renameSession],
+    [dispatch, resumeSession, send, clearSelection, columnOverrides, sortOrders, state.diskSessions, state.liveTurnStatus, renameSession, sendKanbanOp],
   );
 
   const handleStartEditing = useCallback((sessionId: string) => {

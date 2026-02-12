@@ -1,4 +1,4 @@
-import { Fragment, useState, useLayoutEffect, useRef, useCallback, useMemo } from "react";
+import { Fragment, useState, useLayoutEffect, useRef, useCallback, useMemo, useEffect } from "react";
 import { useWsState, useWsActions } from "../context/WebSocketContext";
 import { useAutoScroll } from "../hooks/useAutoScroll";
 import { UserMessage } from "./messages/UserMessage";
@@ -270,6 +270,9 @@ export function MessageList() {
   // Group messages into turn groups (entries between user messages)
   const turnGroups = useMemo(() => groupByUserTurn(state.messages), [state.messages]);
 
+  // Track whether scroll container is scrolled (for sticky first-message effect)
+  const [isScrolled, setIsScrolled] = useState(false);
+
   // Custom overlay scrollbar
   const scrollThumbRef = useRef<HTMLDivElement>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -277,6 +280,7 @@ export function MessageList() {
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     onScroll();
     const el = e.currentTarget;
+    setIsScrolled(el.scrollTop > 10);
     const thumb = scrollThumbRef.current;
     if (!thumb) return;
     const { scrollTop, scrollHeight, clientHeight } = el;
@@ -307,15 +311,15 @@ export function MessageList() {
       <div className="chat-content flex flex-col gap-1">
       {turnGroups.map((group, gi) => {
         const isLatestGroup = gi === turnGroups.length - 1;
-        const isFirstGroup = gi === 0;
+        const isFirstUserGroup = group.userEntry != null && turnGroups.findIndex((g) => g.userEntry != null) === gi;
         // Only render expanded when the latest group is actively streaming
         const isStreaming = isLatestGroup && state.turnStatus?.status === "in_progress";
 
         return (
           <Fragment key={group.id}>
             {group.userEntry && (
-              isFirstGroup && !isLatestGroup ? (
-                <div className="sticky-first-message">
+              isFirstUserGroup && !isLatestGroup ? (
+                <div className={`sticky-first-message${isScrolled ? " is-stuck" : ""}`}>
                   <UserMessage
                     entry={group.userEntry}
                     isLatest={false}

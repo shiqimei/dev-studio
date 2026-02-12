@@ -168,12 +168,20 @@ export class WebClient implements Client {
             tasks: meta.tasks,
           });
         } else {
-          log.info({ session, title: (update as any).title }, "notify: session_info_update");
-          this.broadcast({
-            type: "session_title_update",
-            sessionId: params.sessionId,
-            title: (update as any).title,
-          });
+          const title = (update as any).title;
+          // Only broadcast when the SDK provides a real title. Non-title
+          // session_info_updates have title: undefined, which would wipe
+          // a title already set by the Haiku auto-rename pool.
+          if (title) {
+            log.info({ session, title }, "notify: session_info_update (title)");
+            this.broadcast({
+              type: "session_title_update",
+              sessionId: params.sessionId,
+              title,
+            });
+          } else {
+            log.debug({ session }, "notify: session_info_update (no title, skipped)");
+          }
         }
         break;
       }

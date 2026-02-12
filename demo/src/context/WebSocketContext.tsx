@@ -27,6 +27,7 @@ import type {
   TaskItemEntry,
   SubagentChild,
   SubagentType,
+  KanbanOp,
 } from "../types";
 import { classifyTool } from "../utils";
 import { isSystemPrompt } from "../kanban-prompts";
@@ -188,7 +189,13 @@ const initialState: AppState = {
   kanbanColumnOverrides: {},
   kanbanSortOrders: {},
   kanbanPendingPrompts: {},
+  kanbanVersion: 0,
+  kanbanPendingOps: [],
   kanbanStateLoaded: false,
+
+  // Project tabs
+  projects: [],
+  activeProject: null,
 };
 
 // ── Reducer helpers ──
@@ -288,7 +295,7 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, connected: true, reconnectAttempt: 0, busy: false, startTime: Date.now() };
 
     case "WS_DISCONNECTED":
-      return { ...state, connected: false, busy: false, queuedMessages: [], pendingQueuedEntries: [] };
+      return { ...state, connected: false, busy: false, queuedMessages: [], pendingQueuedEntries: [], kanbanStateLoaded: false };
 
     case "WS_RECONNECTING":
       return { ...state, reconnectAttempt: action.attempt };
@@ -912,7 +919,7 @@ function reducer(state: AppState, action: Action): AppState {
           }
           // Back to in_progress — no longer unread-completed
           delete unread[s.sessionId];
-        } else if (lts[s.sessionId]?.status === "in_progress") {
+        } else if (lts[s.sessionId]?.status === "in_progress" && (s.turnStatus === "completed" || s.turnStatus === "error" || s.turnDurationMs != null)) {
           // Transition: was in_progress, now completed/error — use server metrics when available
           const existing = lts[s.sessionId];
           const isError = s.turnStatus === "error" || s.turnStopReason === "error";
@@ -1105,13 +1112,37 @@ function reducer(state: AppState, action: Action): AppState {
       };
     }
 
-    case "SESSION_TITLE_UPDATE":
+    case "SESSION_TITLE_UPDATE": {
+      const idx = state.diskSessions.findIndex((s) => s.sessionId === action.sessionId);
+      if (idx >= 0) {
+        // Session exists — update title in place
+        return {
+          ...state,
+          diskSessions: state.diskSessions.map((s) =>
+            s.sessionId === action.sessionId ? { ...s, title: action.title } : s,
+          ),
+        };
+      }
+      // Session not yet in diskSessions (broadcastSessions hasn't delivered it).
+      // Insert a stub so the title isn't lost. The SESSIONS reducer will merge
+      // this stub with the full session data when it arrives, preserving the title.
       return {
         ...state,
-        diskSessions: state.diskSessions.map((s) =>
-          s.sessionId === action.sessionId ? { ...s, title: action.title } : s,
-        ),
+        diskSessions: [
+          ...state.diskSessions,
+          {
+            sessionId: action.sessionId,
+            title: action.title,
+            updatedAt: null,
+            created: null,
+            messageCount: 0,
+            gitBranch: null,
+            projectPath: null,
+            isLive: true,
+          },
+        ],
       };
+    }
 
     // ── Queue management actions ────────────
     case "MESSAGE_QUEUED": {
@@ -1224,7 +1255,33 @@ function reducer(state: AppState, action: Action): AppState {
         kanbanColumnOverrides: action.columnOverrides,
         kanbanSortOrders: action.sortOrders,
         kanbanPendingPrompts: action.pendingPrompts,
+        kanbanVersion: action.version,
+        // Clear pending ops on reconnect (kanbanStateLoaded was reset by WS_DISCONNECTED).
+        // During normal operation (already loaded), keep pending ops — they're drained by ack.
+        kanbanPendingOps: state.kanbanStateLoaded ? state.kanbanPendingOps : [],
         kanbanStateLoaded: true,
+      };
+
+    case "KANBAN_STATE_UPDATED":
+      return {
+        ...state,
+        kanbanColumnOverrides: action.columnOverrides,
+        kanbanSortOrders: action.sortOrders,
+        kanbanPendingPrompts: action.pendingPrompts,
+        kanbanVersion: action.version,
+      };
+
+    case "KANBAN_ENQUEUE_OPS":
+      return {
+        ...state,
+        kanbanPendingOps: [...state.kanbanPendingOps, { seq: action.seq, ops: action.ops }],
+      };
+
+    case "KANBAN_OP_ACK":
+      return {
+        ...state,
+        kanbanVersion: action.version,
+        kanbanPendingOps: state.kanbanPendingOps.filter((p) => p.seq > action.ackSeq),
       };
 
     case "KANBAN_UPDATE_PENDING_PROMPT": {
@@ -1247,6 +1304,12 @@ function reducer(state: AppState, action: Action): AppState {
           [action.sessionId]: action.status,
         },
       };
+
+    case "SET_PROJECTS":
+      return { ...state, projects: action.projects, activeProject: action.activeProject };
+
+    case "SET_ACTIVE_PROJECT":
+      return { ...state, activeProject: action.path };
 
     default:
       return state;
@@ -1273,6 +1336,7 @@ export interface WsActions {
   requestSubagents: (sessionId: string) => void;
   respondToPermission: (requestId: string, optionId: string, optionName: string) => void;
   saveKanbanState: (columnOverrides: Record<string, string>, sortOrders: Partial<Record<string, string[]>>, pendingPrompts: Record<string, string>) => void;
+  sendKanbanOp: (ops: KanbanOp[]) => void;
   updatePendingPrompt: (sessionId: string, text: string) => void;
   preflightRoute: (text: string) => void;
   requestHaikuMetrics: () => void;
@@ -1296,6 +1360,7 @@ interface WsContextValue {
   requestSubagents: (sessionId: string) => void;
   respondToPermission: (requestId: string, optionId: string, optionName: string) => void;
   saveKanbanState: (columnOverrides: Record<string, string>, sortOrders: Partial<Record<string, string[]>>, pendingPrompts: Record<string, string>) => void;
+  sendKanbanOp: (ops: KanbanOp[]) => void;
   updatePendingPrompt: (sessionId: string, text: string) => void;
   preflightRoute: (text: string) => void;
   requestHaikuMetrics: () => void;
@@ -1325,6 +1390,8 @@ export function useWs(): WsContextValue {
 
 export function WebSocketProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const wsRef = useRef<WebSocket | null>(null);
 
   // ── Hash routing refs ──
@@ -1669,6 +1736,16 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     wsRef.current.send(JSON.stringify({ type: "permission_response", requestId, optionId, optionName }));
   }, []);
 
+  const kanbanSeqRef = useRef(0);
+
+  const sendKanbanOp = useCallback((ops: KanbanOp[]) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const seq = ++kanbanSeqRef.current;
+    dispatch({ type: "KANBAN_ENQUEUE_OPS", seq, ops });
+    wsRef.current.send(JSON.stringify({ type: "kanban_op", ops, clientSeq: seq }));
+  }, [dispatch]);
+
+  /** @deprecated Use sendKanbanOp instead. Kept for backward compat during transition. */
   const saveKanbanState = useCallback((
     columnOverrides: Record<string, string>,
     sortOrders: Partial<Record<string, string[]>>,
@@ -1994,12 +2071,13 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       requestSubagents,
       respondToPermission,
       saveKanbanState,
+      sendKanbanOp,
       updatePendingPrompt,
       preflightRoute,
       requestHaikuMetrics,
     }),
     // All deps are useCallback([]) or useReducer dispatch — stable references
-    [dispatch, send, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, updatePendingPrompt, preflightRoute, requestHaikuMetrics],
+    [dispatch, send, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, sendKanbanOp, updatePendingPrompt, preflightRoute, requestHaikuMetrics],
   );
 
   // ── Hash-based URL routing ──
@@ -2257,6 +2335,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       break;
     case "session_title_update":
       if (titleLockedSessions.has(msg.sessionId)) break;
+      if (!msg.title) break; // ignore null/empty — prevents stale SDK updates from wiping Haiku titles
       dispatch({ type: "SESSION_TITLE_UPDATE", sessionId: msg.sessionId, title: msg.title });
       break;
     // route_result is handled in the onmessage handler (needs pendingRouteRef)
@@ -2284,7 +2363,10 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       dispatch({ type: "SESSION_SUBAGENTS", sessionId: msg.sessionId, children: msg.children ?? [] });
       break;
     case "kanban_state":
-      dispatch({ type: "KANBAN_STATE_LOADED", columnOverrides: msg.columnOverrides ?? {}, sortOrders: msg.sortOrders ?? {}, pendingPrompts: msg.pendingPrompts ?? {} });
+      dispatch({ type: "KANBAN_STATE_LOADED", columnOverrides: msg.columnOverrides ?? {}, sortOrders: msg.sortOrders ?? {}, pendingPrompts: msg.pendingPrompts ?? {}, version: msg.version ?? 0 });
+      break;
+    case "kanban_op_ack":
+      dispatch({ type: "KANBAN_OP_ACK", ackSeq: msg.clientSeq, version: msg.version });
       break;
 
     case "haiku_metrics":

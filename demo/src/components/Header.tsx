@@ -23,16 +23,112 @@ export function Header() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const activeSessionId = state.switchingToSessionId ?? state.currentSessionId;
-  const activeSession = state.diskSessions.find((s) => s.sessionId === activeSessionId);
-  const projectLabel = shortPath(activeSession?.projectPath ?? null) ?? "Sessions";
+  // Load project state on mount
+  useEffect(() => {
+    fetch("/api/projects")
+      .then((r) => r.json())
+      .then((data) => {
+        dispatch({
+          type: "SET_PROJECTS",
+          projects: data.projects ?? [],
+          activeProject: data.activeProject ?? null,
+        });
+      })
+      .catch(() => {});
+  }, [dispatch]);
+
+  const addProject = useCallback(async () => {
+    try {
+      const pickRes = await fetch("/api/pick-folder", { method: "POST" });
+      const { path } = await pickRes.json();
+      if (!path) return;
+      const addRes = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      const data = await addRes.json();
+      dispatch({ type: "SET_PROJECTS", projects: data.projects, activeProject: path });
+      // Also persist active
+      fetch("/api/projects/active", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+    } catch {}
+  }, [dispatch]);
+
+  const switchProject = useCallback(
+    (path: string) => {
+      dispatch({ type: "SET_ACTIVE_PROJECT", path });
+      fetch("/api/projects/active", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+    },
+    [dispatch],
+  );
+
+  const removeProject = useCallback(
+    async (path: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      try {
+        const res = await fetch("/api/projects", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path }),
+        });
+        const data = await res.json();
+        const newActive =
+          state.activeProject === path
+            ? data.projects[0] ?? null
+            : state.activeProject;
+        dispatch({ type: "SET_PROJECTS", projects: data.projects, activeProject: newActive });
+        if (state.activeProject === path && newActive) {
+          fetch("/api/projects/active", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: newActive }),
+          });
+        }
+      } catch {}
+    },
+    [dispatch, state.activeProject],
+  );
 
   return (
     <header
       style={{ height: 41.28 }}
       className={`px-5 border-b border-border flex items-center gap-3 shrink-0 min-w-0 overflow-visible relative${isElectron ? " app-region-drag" : ""}${isElectron && isMac ? " pl-[78px]" : ""}`}
     >
-      <span className="header-project-label">{projectLabel}</span>
+      {/* Project tabs */}
+      <div className="project-tabs app-region-no-drag">
+        {state.projects.map((p) => (
+          <button
+            key={p}
+            className={`project-tab${p === state.activeProject ? " active" : ""}`}
+            onClick={() => switchProject(p)}
+            onAuxClick={(e) => {
+              if (e.button === 1) removeProject(p, e);
+            }}
+            title={p}
+          >
+            <span className="project-tab-label">{shortPath(p)}</span>
+            {state.projects.length > 1 && (
+              <span
+                className="project-tab-close"
+                onClick={(e) => removeProject(p, e)}
+              >
+                &times;
+              </span>
+            )}
+          </button>
+        ))}
+        <button className="project-tab-add" onClick={addProject} title="Add project folder">
+          +
+        </button>
+      </div>
 
       <div className="flex-1" />
 

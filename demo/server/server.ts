@@ -1,10 +1,15 @@
 import path from "node:path";
+import os from "node:os";
+import fs from "node:fs/promises";
 import { execSync } from "node:child_process";
 import { createAcpConnection, createNewSession, resumeSession } from "./session.js";
 import { createHaikuPool } from "./haiku-pool.js";
+import { createOpusPool } from "./opus-pool.js";
 import type { AcpConnection } from "./types.js";
 import { log, bootMs } from "./log.js";
-import { type KanbanState, getProjectDir, readKanbanState, writeKanbanState, cleanKanbanState } from "./kanban.js";
+import type { KanbanOp } from "./kanban.js";
+import { getProjectDir } from "./kanban.js";
+import * as kanbanDb from "./kanban-db.js";
 
 export function startServer(port: number) {
   // ── Client tracking ──
@@ -291,6 +296,15 @@ export function startServer(port: number) {
 
   function broadcast(msg: object) {
     const m = msg as any;
+
+    // Suppress SDK-driven session_title_update while auto-rename is in flight.
+    // autoRenameInFlight is cleared BEFORE autoRenameSession sends its own
+    // session_title_update, so only the SDK's competing updates are suppressed.
+    if (m.type === "session_title_update" && m.sessionId && autoRenameInFlight.has(m.sessionId)) {
+      log.debug({ session: sid(m.sessionId), title: m.title }, "broadcast: suppressed session_title_update (auto-rename in flight)");
+      return;
+    }
+
     // Determine which session this message belongs to
     const msgSessionId = m.sessionId ?? null;
 
@@ -403,23 +417,21 @@ export function startServer(port: number) {
     const t0 = performance.now();
     log.info({ boot: bootMs() }, "prewarm: starting ACP connection");
     connectingPromise = (async () => {
-      // Warm up Haiku routing pool in parallel with ACP connection
+      // Warm up worker pools in parallel with ACP connection
       const haikuWarmup = haikuPool.warmup();
+      const opusWarmup = opusPool.warmup();
 
       acpConnection = await createAcpConnection(broadcast);
       log.info({ durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "prewarm: ACP connection ready");
-      // Load kanban state from disk
+      // Initialize kanban SQLite DB + migrate from JSON if needed
       try {
-        const projDir = getResolvedProjectDir();
-        kanbanState = await readKanbanState(projDir);
-        if (kanbanState) {
-          log.info("kanban: loaded from disk");
-        }
+        kanbanDb.init();
+        kanbanDb.migrateFromJson(getResolvedProjectDir());
       } catch (err: any) {
-        log.warn({ err: err.message }, "kanban: load error");
+        log.warn({ err: err.message }, "kanban-db: init error");
       }
-      // Wait for Haiku pool (likely already done since ACP connect is slower)
-      await haikuWarmup;
+      // Wait for worker pools (likely already done since ACP connect is slower)
+      await Promise.all([haikuWarmup, opusWarmup]);
     })();
     return connectingPromise;
   }
@@ -613,6 +625,19 @@ export function startServer(port: number) {
       broadcast({ type: "turn_end", stopReason: "error", sessionId });
     } finally {
       processingSessions.delete(sessionId);
+      // Persist "in_review" column override so the card survives page reloads
+      // and server restarts. Without this, the card falls back to categorizeSession()
+      // which returns "backlog" when liveTurnStatus is lost.
+      try {
+        const snap = kanbanDb.getKanbanSnapshot();
+        const currentOverride = snap.columnOverrides[sessionId];
+        if (!currentOverride || currentOverride === "in_progress") {
+          kanbanDb.applyKanbanOps([{ op: "set_column", sessionId, column: "in_review" }]);
+          broadcastKanbanState();
+        }
+      } catch (err: any) {
+        log.warn({ session: sid(sessionId), err: err.message }, "kanban: failed to set in_review override");
+      }
       drainQueue(sessionId);
     }
   }
@@ -668,14 +693,56 @@ export function startServer(port: number) {
   // ── Session title cache (for Haiku routing) ──
   const sessionTitleCache = new Map<string, string>();
 
-  // ── Kanban state (server-side cache, persisted to disk) ──
-  let kanbanState: KanbanState | null = null;
-  let kanbanSaveTimer: ReturnType<typeof setTimeout> | null = null;
-  const KANBAN_SAVE_DEBOUNCE_MS = 500;
+  // ── Kanban state (SQLite-backed, atomic operations) ──
+
+  /** Read kanban snapshot, returning empty state on error. */
+  function safeKanbanSnapshot(): kanbanDb.KanbanSnapshot {
+    try {
+      return kanbanDb.getKanbanSnapshot();
+    } catch (err: any) {
+      log.error({ err: err.message }, "kanban-db: getKanbanSnapshot failed");
+      return { columnOverrides: {}, sortOrders: {}, pendingPrompts: {}, version: 0 };
+    }
+  }
+
+  /** Broadcast current kanban state to ALL connected clients. */
+  function broadcastKanbanState() {
+    const snap = safeKanbanSnapshot();
+    sendToAll(JSON.stringify({ type: "kanban_state", ...snap }));
+  }
 
   function getResolvedProjectDir(): string {
     const cwd = process.env.ACP_CWD || process.cwd();
     return getProjectDir(cwd);
+  }
+
+  // ── Project tabs state (persisted to ~/.devstudio/state.json) ──
+  const DEVSTUDIO_DIR = path.join(os.homedir(), ".devstudio");
+  const STATE_FILE = path.join(DEVSTUDIO_DIR, "state.json");
+
+  interface DevStudioState {
+    projects: string[];
+    activeProject: string | null;
+  }
+
+  async function readProjectState(): Promise<DevStudioState> {
+    try {
+      const raw = await fs.readFile(STATE_FILE, "utf-8");
+      const parsed = JSON.parse(raw);
+      return {
+        projects: Array.isArray(parsed.projects) ? parsed.projects : [],
+        activeProject: parsed.activeProject ?? null,
+      };
+    } catch {
+      // File doesn't exist or is invalid — return defaults with current cwd
+      const cwd = process.env.ACP_CWD || process.cwd();
+      return { projects: [cwd], activeProject: cwd };
+    }
+  }
+
+  async function writeProjectState(state: DevStudioState): Promise<void> {
+    await fs.mkdir(DEVSTUDIO_DIR, { recursive: true });
+    await fs.writeFile(STATE_FILE, JSON.stringify(state, null, 2) + "\n");
   }
 
   /** Extract a compact summary of the last conversation turn for routing context. */
@@ -726,8 +793,9 @@ export function startServer(port: number) {
     }
   }
 
-  // ── Haiku Worker Pool (pre-warmed streaming SDK sessions for routing + auto-rename) ──
+  // ── Worker Pools (pre-warmed streaming SDK sessions) ──
   const haikuPool = createHaikuPool();
+  const opusPool = createOpusPool();
 
   /** Use a pre-warmed Haiku worker to decide whether a message relates to the current session. */
   function routeWithHaiku(messageText: string, sessionTitle: string | null, lastTurnSummary: string | null): Promise<boolean> {
@@ -864,12 +932,10 @@ export function startServer(port: number) {
         log.info({ durationMs: Math.round(t1 - t0), sessions: sessions.length, clients: clients.size }, "api: sessions/list completed");
         broadcast({ type: "sessions", sessions });
         // Lazy cleanup: prune stale kanban entries for sessions that no longer exist
-        if (kanbanState) {
+        {
           const validIds = new Set(sessions.map((s: any) => s.sessionId));
-          const cleaned = cleanKanbanState(kanbanState, validIds);
-          if (cleaned) {
-            kanbanState = cleaned;
-            writeKanbanState(getResolvedProjectDir(), kanbanState).catch(() => {});
+          if (kanbanDb.cleanStaleSessions(validIds)) {
+            broadcastKanbanState();
           }
         }
       } catch (err: any) {
@@ -894,6 +960,60 @@ export function startServer(port: number) {
         if (server.upgrade(req)) return undefined;
         log.error({ origin: req.headers.get("origin") ?? "unknown" }, "ws: WebSocket upgrade FAILED");
         return new Response("WebSocket upgrade failed", { status: 400 });
+      }
+
+      // ── Project tabs API ──
+      const json = (data: unknown) => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
+
+      if (url.pathname === "/api/projects" && req.method === "GET") {
+        const state = await readProjectState();
+        return json(state);
+      }
+
+      if (url.pathname === "/api/projects" && req.method === "POST") {
+        const body = await req.json() as { path: string };
+        const p = body.path?.trim();
+        if (!p) return json({ error: "path required" });
+        const state = await readProjectState();
+        if (!state.projects.includes(p)) state.projects.push(p);
+        state.activeProject = p;
+        await writeProjectState(state);
+        return json(state);
+      }
+
+      if (url.pathname === "/api/projects" && req.method === "DELETE") {
+        const body = await req.json() as { path: string };
+        const p = body.path?.trim();
+        if (!p) return json({ error: "path required" });
+        const state = await readProjectState();
+        state.projects = state.projects.filter((x) => x !== p);
+        if (state.activeProject === p) {
+          state.activeProject = state.projects[0] ?? null;
+        }
+        await writeProjectState(state);
+        return json(state);
+      }
+
+      if (url.pathname === "/api/projects/active" && req.method === "PUT") {
+        const body = await req.json() as { path: string };
+        const p = body.path?.trim();
+        if (!p) return json({ error: "path required" });
+        const state = await readProjectState();
+        state.activeProject = p;
+        await writeProjectState(state);
+        return json(state);
+      }
+
+      if (url.pathname === "/api/pick-folder" && req.method === "POST") {
+        try {
+          const result = execSync(
+            `osascript -e 'set f to POSIX path of (choose folder with prompt "Select project folder")'`,
+            { encoding: "utf-8", timeout: 60_000 },
+          ).trim().replace(/\/$/, "");
+          return json({ path: result });
+        } catch {
+          return json({ path: null });
+        }
       }
 
       // In production mode, serve built client assets
@@ -980,7 +1100,7 @@ export function startServer(port: number) {
           sendSessionMeta(ws, targetSession);
           sendTurnState(ws, targetSession);
           sendQueueState(ws, targetSession);
-          ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState?.columnOverrides ?? {}, sortOrders: kanbanState?.sortOrders ?? {}, pendingPrompts: kanbanState?.pendingPrompts ?? {} }));
+          ws.send(JSON.stringify({ type: "kanban_state", ...safeKanbanSnapshot() }));
           log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
 
           // Fire-and-forget: don't block the open handler waiting for session list
@@ -1006,7 +1126,7 @@ export function startServer(port: number) {
             sendSessionMeta(ws, targetSession);
             sendTurnState(ws, targetSession);
             sendQueueState(ws, targetSession);
-            ws.send(JSON.stringify({ type: "kanban_state", columnOverrides: kanbanState?.columnOverrides ?? {}, sortOrders: kanbanState?.sortOrders ?? {}, pendingPrompts: kanbanState?.pendingPrompts ?? {} }));
+            ws.send(JSON.stringify({ type: "kanban_state", ...safeKanbanSnapshot() }));
             log.info({ client: clientId, session: sid(targetSession), totalMs: Math.round(performance.now() - t0), boot: bootMs() }, "ws: ← session_switched");
             broadcastSessions().catch((err) => log.error({ client: clientId, err: err.message }, "ws: broadcastSessions failed"));
           } catch (err: any) {
@@ -1247,21 +1367,12 @@ export function startServer(port: number) {
                 }
               }
               // Clean up kanban state for deleted sessions
-              if (kanbanState) {
-                for (const id of deletedIds) {
-                  delete kanbanState.columnOverrides[id];
-                  delete kanbanState.pendingPrompts[id];
-                  for (const order of Object.values(kanbanState.sortOrders)) {
-                    if (!order) continue;
-                    const idx = order.indexOf(id);
-                    if (idx !== -1) order.splice(idx, 1);
-                  }
-                }
-                kanbanState.updatedAt = new Date().toISOString();
-                writeKanbanState(getResolvedProjectDir(), kanbanState).catch((err) =>
-                  log.error({ err: err.message }, "kanban: cleanup save error")
-                );
-              }
+              kanbanDb.applyKanbanOps([
+                ...deletedIds.map((id): KanbanOp => ({ op: "remove_column", sessionId: id })),
+                ...deletedIds.map((id): KanbanOp => ({ op: "remove_pending_prompt", sessionId: id })),
+                { op: "bulk_remove_sort_entries", sessionIds: deletedIds },
+              ]);
+              broadcastKanbanState();
               // Notify all clients about the deletion immediately so the merge-based
               // SESSIONS reducer won't re-add them from a stale broadcastSessions() result
               sendToAll(JSON.stringify({ type: "session_deleted", sessionIds: deletedIds }));
@@ -1552,25 +1663,33 @@ export function startServer(port: number) {
             break;
           }
 
+          case "request_opus_metrics": {
+            const metrics = opusPool.getMetrics();
+            try { ws.send(JSON.stringify({ type: "opus_metrics", metrics })); } catch {}
+            break;
+          }
+
+          case "kanban_op": {
+            const ops = (msg.ops ?? []) as KanbanOp[];
+            const clientSeq = msg.clientSeq as number | undefined;
+            log.info({ client: cid, opCount: ops.length, ops: ops.map((o: KanbanOp) => o.op) }, "ws: → kanban_op");
+            const version = kanbanDb.applyKanbanOps(ops);
+            if (clientSeq != null) {
+              try { ws.send(JSON.stringify({ type: "kanban_op_ack", clientSeq, version })); } catch {}
+            }
+            broadcastKanbanState();
+            break;
+          }
+
+          // Backward compat: convert full-state save into ops
           case "save_kanban_state": {
-            log.info({ client: cid }, "ws: → save_kanban_state");
-            kanbanState = {
-              version: 1,
+            log.info({ client: cid }, "ws: → save_kanban_state (legacy)");
+            kanbanDb.setKanbanState({
               columnOverrides: msg.columnOverrides ?? {},
               sortOrders: msg.sortOrders ?? {},
               pendingPrompts: msg.pendingPrompts ?? {},
-              updatedAt: new Date().toISOString(),
-            };
-            if (kanbanSaveTimer) clearTimeout(kanbanSaveTimer);
-            kanbanSaveTimer = setTimeout(async () => {
-              kanbanSaveTimer = null;
-              try {
-                await writeKanbanState(getResolvedProjectDir(), kanbanState!);
-                log.info("kanban: saved to disk");
-              } catch (err: any) {
-                log.error({ err: err.message }, "kanban: save error");
-              }
-            }, KANBAN_SAVE_DEBOUNCE_MS);
+            });
+            broadcastKanbanState();
             break;
           }
 

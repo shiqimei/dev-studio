@@ -1,3 +1,10 @@
+// ── Project tabs ────────────────────────────
+
+export interface ProjectState {
+  projects: string[];
+  activeProject: string | null;
+}
+
 // ── Content blocks (match JSONL content block types) ──
 
 export interface ImageAttachment {
@@ -269,6 +276,15 @@ export interface ProtoEntry {
 
 export type DirFilter = "all" | "send" | "recv";
 
+export type KanbanOp =
+  | { op: "set_column"; sessionId: string; column: string }
+  | { op: "remove_column"; sessionId: string }
+  | { op: "set_sort_order"; column: string; order: string[] }
+  | { op: "set_pending_prompt"; sessionId: string; text: string }
+  | { op: "remove_pending_prompt"; sessionId: string }
+  | { op: "bulk_set_columns"; entries: { sessionId: string; column: string }[] }
+  | { op: "bulk_remove_sort_entries"; sessionIds: string[] };
+
 export interface AppState {
   connected: boolean;
   /** Current reconnection attempt (0 = not reconnecting or first connect). */
@@ -319,7 +335,13 @@ export interface AppState {
   kanbanColumnOverrides: Record<string, string>;
   kanbanSortOrders: Partial<Record<string, string[]>>;
   kanbanPendingPrompts: Record<string, string>;
+  kanbanVersion: number;
   kanbanStateLoaded: boolean;
+  kanbanPendingOps: Array<{ seq: number; ops: KanbanOp[] }>;
+
+  // Project tabs
+  projects: string[];
+  activeProject: string | null;
 }
 
 // ── Actions ─────────────────────────────────
@@ -363,6 +385,11 @@ export type Action =
   | { type: "SESSION_DELETED"; sessionIds: string[] }
   | { type: "SESSION_ID_RESOLVED"; pendingId: string; realId: string }
   | { type: "SESSION_DESELECTED" }
-  | { type: "KANBAN_STATE_LOADED"; columnOverrides: Record<string, string>; sortOrders: Partial<Record<string, string[]>>; pendingPrompts: Record<string, string> }
+  | { type: "KANBAN_STATE_LOADED"; columnOverrides: Record<string, string>; sortOrders: Partial<Record<string, string[]>>; pendingPrompts: Record<string, string>; version: number }
+  | { type: "KANBAN_STATE_UPDATED"; columnOverrides: Record<string, string>; sortOrders: Partial<Record<string, string[]>>; pendingPrompts: Record<string, string>; version: number }
+  | { type: "KANBAN_ENQUEUE_OPS"; seq: number; ops: KanbanOp[] }
+  | { type: "KANBAN_OP_ACK"; ackSeq: number; version: number }
   | { type: "KANBAN_UPDATE_PENDING_PROMPT"; sessionId: string; text: string }
-  | { type: "SET_OPTIMISTIC_TURN_STATUS"; sessionId: string; status: TurnStatus };
+  | { type: "SET_OPTIMISTIC_TURN_STATUS"; sessionId: string; status: TurnStatus }
+  | { type: "SET_PROJECTS"; projects: string[]; activeProject: string | null }
+  | { type: "SET_ACTIVE_PROJECT"; path: string };

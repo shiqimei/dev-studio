@@ -326,6 +326,8 @@ export interface AppState {
   latestPlan: PlanEntryItem[] | null;
   /** Latest task entries from the Tasks system (TaskCreate/TaskUpdate). */
   latestTasks: TaskItemEntry[] | null;
+  /** Per-session plan entries cache (keyed by sessionId). */
+  sessionPlans: Record<string, PlanEntryItem[]>;
   /** Sessions whose turn completed while the user was viewing a different session. */
   unreadCompletedSessions: Record<string, true>;
 
@@ -358,7 +360,7 @@ export type Action =
   | { type: "THOUGHT_CHUNK"; text: string }
   | { type: "TOOL_CALL"; toolCallId: string; kind: string; title: string; content: string; rawInput?: unknown; meta: any }
   | { type: "TOOL_CALL_UPDATE"; toolCallId: string; status: string; title?: string; kind?: string; content?: string; rawInput?: unknown; meta: any }
-  | { type: "PLAN"; entries: PlanEntryItem[] }
+  | { type: "PLAN"; entries: PlanEntryItem[]; sessionId?: string }
   | { type: "TASKS"; tasks: TaskItemEntry[] }
   | { type: "PERMISSION_REQUEST"; requestId: string; title: string; toolCallId?: string; options: PermissionOption[] }
   | { type: "PERMISSION_RESOLVED"; requestId: string; optionId: string; optionName: string }

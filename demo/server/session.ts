@@ -84,9 +84,10 @@ export async function createAcpConnection(
 export async function createNewSession(
   connection: ClientSideConnection,
   broadcast: BroadcastFn,
+  cwdOverride?: string,
 ): Promise<{ sessionId: string }> {
   const t0 = performance.now();
-  const cwd = process.env.ACP_CWD || process.cwd();
+  const cwd = cwdOverride || process.env.ACP_CWD || process.cwd();
   log.info({ cwd, boot: bootMs() }, "api: newSession started");
   const session = await connection.newSession({
     cwd,
@@ -114,9 +115,10 @@ export async function createNewSession(
 export async function resumeSession(
   connection: ClientSideConnection,
   sessionId: string,
+  cwdOverride?: string,
 ): Promise<{ sessionId: string }> {
   const t0 = performance.now();
-  const cwd = process.env.ACP_CWD || process.cwd();
+  const cwd = cwdOverride || process.env.ACP_CWD || process.cwd();
   log.info({ session: sessionId.slice(0, 8), cwd }, "api: resumeSession started");
   const response = await connection.unstable_resumeSession({
     sessionId,

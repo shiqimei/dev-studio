@@ -523,7 +523,7 @@ export function startServer(port: number) {
             log.info({ client: cid, query: msg.query ?? "" }, "ws: → list_files");
             try {
               const t0 = performance.now();
-              const raw = execSync("git ls-files", { encoding: "utf-8", cwd: process.cwd(), maxBuffer: 1024 * 1024 });
+              const raw = execSync("git ls-files", { encoding: "utf-8", cwd: daemon.getActiveProjectCwd(), maxBuffer: 1024 * 1024 });
               const query = (msg.query ?? "").toLowerCase();
               let files = raw.split("\n").filter(Boolean);
               if (query) files = files.filter((f) => f.toLowerCase().includes(query));

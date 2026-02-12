@@ -2600,6 +2600,246 @@ a, [data-streamdown="link"] { cursor: pointer; }
   to { transform: rotate(360deg); }
 }
 
+/* ── Rich text editor (TipTap/ProseMirror) ── */
+
+.rich-text-editor {
+  position: relative;
+}
+
+.rich-text-editor .ProseMirror {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-text);
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rich-text-editor .ProseMirror p {
+  margin: 0;
+}
+
+.rich-text-editor .ProseMirror p + p {
+  margin-top: 0.25em;
+}
+
+/* Placeholder */
+.rich-text-editor .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--color-dim);
+  pointer-events: none;
+  height: 0;
+}
+
+/* Inline code */
+.rich-text-editor .ProseMirror code {
+  font-family: var(--font-mono);
+  background: var(--color-code-bg);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 0.9em;
+}
+
+/* Code block */
+.rich-text-editor .ProseMirror pre {
+  font-family: var(--font-mono);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 4px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+
+.rich-text-editor .ProseMirror pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* Blockquote */
+.rich-text-editor .ProseMirror blockquote {
+  border-left: 3px solid var(--color-border);
+  padding-left: 12px;
+  margin: 4px 0;
+  color: var(--color-dim);
+}
+
+/* Lists — override Tailwind preflight's list-style:none with !important */
+.rich-text-editor .ProseMirror ul {
+  list-style-type: disc !important;
+  list-style-position: inside !important;
+  padding-left: 16px;
+  margin: 2px 0;
+}
+.rich-text-editor .ProseMirror ol {
+  list-style-type: decimal !important;
+  list-style-position: inside !important;
+  padding-left: 16px;
+  margin: 2px 0;
+}
+
+.rich-text-editor .ProseMirror li {
+  margin: 1px 0;
+  display: list-item !important;
+}
+.rich-text-editor .ProseMirror li > p {
+  display: inline;
+}
+
+.rich-text-editor .ProseMirror li p {
+  margin: 0;
+}
+
+/* Headings */
+.rich-text-editor .ProseMirror h1,
+.rich-text-editor .ProseMirror h2,
+.rich-text-editor .ProseMirror h3 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 4px 0 2px;
+}
+
+.rich-text-editor .ProseMirror h1 { font-size: 1.3em; }
+.rich-text-editor .ProseMirror h2 { font-size: 1.15em; }
+.rich-text-editor .ProseMirror h3 { font-size: 1.05em; }
+
+/* Strikethrough */
+.rich-text-editor .ProseMirror s {
+  text-decoration: line-through;
+  color: var(--color-dim);
+}
+
+/* Bold & italic — inherit color */
+.rich-text-editor .ProseMirror strong { font-weight: 600; }
+.rich-text-editor .ProseMirror em { font-style: italic; }
+
+/* ── Chat input variant ── */
+
+.rich-text-editor.chat-input-editor .ProseMirror {
+  background: transparent;
+  border: none;
+  border-radius: 20px;
+  padding: 14px;
+  min-height: calc((1.5em * 3) + 28px);
+  font-size: 14px;
+  resize: none;
+  overflow-y: auto;
+}
+
+.rich-text-editor.chat-input-editor {
+  transition: box-shadow 0.2s ease;
+  border-radius: 20px;
+  background: var(--color-surface);
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+}
+
+.rich-text-editor.chat-input-editor:hover {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15), 0 0 0 0.5px rgba(255, 255, 255, 0.15);
+}
+
+.rich-text-editor.chat-input-editor:focus-within {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="dawn"] .rich-text-editor.chat-input-editor,
+[data-theme="github-light"] .rich-text-editor.chat-input-editor {
+  background: #ffffff;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.035), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+}
+
+[data-theme="dawn"] .rich-text-editor.chat-input-editor .ProseMirror,
+[data-theme="github-light"] .rich-text-editor.chat-input-editor .ProseMirror {
+  background: transparent;
+}
+
+[data-theme="dawn"] .rich-text-editor.chat-input-editor:hover,
+[data-theme="github-light"] .rich-text-editor.chat-input-editor:hover {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.035), 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+}
+
+[data-theme="dawn"] .rich-text-editor.chat-input-editor:focus-within,
+[data-theme="github-light"] .rich-text-editor.chat-input-editor:focus-within {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.075), 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+}
+
+/* ── Kanban card variant ── */
+
+.rich-text-editor.kanban-card-editor .ProseMirror {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+  min-height: calc(1.5em * 3);
+  outline: none;
+  resize: none;
+}
+
+/* ── Bubble toolbar ── */
+
+.bubble-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--color-context-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dawn"] .bubble-toolbar,
+[data-theme="github-light"] .bubble-toolbar {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+}
+
+.bubble-toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  border-radius: 5px;
+  color: var(--color-dim);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.bubble-toolbar-btn:hover {
+  background: var(--color-overlay);
+  color: var(--color-text);
+}
+
+.bubble-toolbar-btn.active {
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+}
+
+.bubble-toolbar-btn code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background: none;
+  padding: 0;
+}
+
+.bubble-toolbar-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--color-border);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
 /* ── Autocomplete dropdown ───────────────── */
 
 .autocomplete-dropdown {
@@ -2759,21 +2999,21 @@ a, [data-streamdown="link"] { cursor: pointer; }
 
 .executor-selector-anchor {
   position: absolute;
-  bottom: 6px;
-  left: 10px;
+  bottom: 8px;
+  right: 10px;
 }
 
 .executor-selector-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
+  gap: 7px;
+  padding: 4px 10px;
   border: none;
   border-radius: 8px;
   background: transparent;
   color: var(--color-dim);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
@@ -2784,6 +3024,11 @@ a, [data-streamdown="link"] { cursor: pointer; }
   color: var(--color-text);
 }
 
+.executor-selector-trigger img,
+.executor-popover-icon img {
+  border-radius: 6px;
+}
+
 .executor-selector-chevron {
   opacity: 0.6;
   transition: transform 0.15s ease;
@@ -2791,35 +3036,39 @@ a, [data-streamdown="link"] { cursor: pointer; }
 
 .executor-popover {
   position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  min-width: 220px;
-  background: var(--color-bg);
+  bottom: calc(100% + 8px);
+  right: 0;
+  min-width: 200px;
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 10px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
   padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   z-index: 20;
   animation: fadeIn 0.1s ease both;
 }
 
 [data-theme="dawn"] .executor-popover,
 [data-theme="github-light"] .executor-popover {
+  background: #ffffff;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
 }
 
 .executor-popover-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  padding: 8px 10px;
+  padding: 6px 8px;
   border: none;
-  border-radius: 7px;
+  border-radius: 6px;
   background: transparent;
   color: var(--color-text);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   text-align: left;
   transition: background 0.1s ease;
@@ -2839,10 +3088,11 @@ a, [data-streamdown="link"] { cursor: pointer; }
   justify-content: center;
   width: 24px;
   height: 24px;
-  border-radius: 6px;
-  background: var(--color-border);
+  border-radius: 0;
+  background: transparent;
   color: var(--color-text);
   flex-shrink: 0;
+  overflow: visible;
 }
 
 .executor-popover-label {
@@ -2855,12 +3105,12 @@ a, [data-streamdown="link"] { cursor: pointer; }
 
 .executor-popover-name {
   font-weight: 500;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.3;
 }
 
 .executor-popover-desc {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--color-dim);
   line-height: 1.3;
 }
@@ -3709,6 +3959,7 @@ a, [data-streamdown="link"] { cursor: pointer; }
   animation: fadeSlideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
+
 /* Drop indicator line (Trello/Notion-style) */
 .kanban-drop-indicator {
   height: 2px;
@@ -3782,6 +4033,94 @@ a, [data-streamdown="link"] { cursor: pointer; }
 .kanban-stop-reason-error {
   background: color-mix(in srgb, var(--color-red) 14%, transparent);
   color: var(--color-red);
+}
+
+/* ── Todo progress ring ───────────────────── */
+
+.todo-ring {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.todo-ring-track {
+  stroke: var(--color-muted);
+  opacity: 0.35;
+}
+
+.todo-ring-fill {
+  stroke: var(--color-accent);
+  transition: stroke-dashoffset 0.3s ease;
+}
+
+.todo-ring-done .todo-ring-track {
+  stroke: var(--color-accent);
+  opacity: 0.35;
+}
+
+.todo-ring-done .todo-ring-fill {
+  stroke: var(--color-accent);
+}
+
+/* Chat header: ring + count + active task label */
+.todo-progress-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  min-width: 0;
+  cursor: pointer;
+}
+
+.todo-progress-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-dim);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.todo-progress-label {
+  font-size: 11px;
+  color: var(--color-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Todo popover (hover on progress header) */
+.todo-progress-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.todo-popover {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 280px;
+  max-width: 420px;
+  max-height: 320px;
+  overflow-y: auto;
+  z-index: 50;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
+  margin: 0;
+}
+
+.todo-progress-wrap:hover .todo-popover {
+  display: block;
+}
+
+.todo-popover.plan {
+  background: var(--color-bg);
+}
+
+[data-theme="dawn"] .todo-popover,
+[data-theme="github-light"] .todo-popover {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
 /* Stack: "top" card is the front of the stack */
@@ -4158,5 +4497,3 @@ a, [data-streamdown="link"] { cursor: pointer; }
 .kanban-search-status-dot.error {
   background: var(--color-red);
 }
-
-

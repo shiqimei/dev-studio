@@ -4,6 +4,7 @@ import { useWsState, useWsActions, titleLockedSessions } from "../context/WebSoc
 import { RETRY_PROMPT } from "../kanban-prompts";
 import { ChatInput } from "./ChatInput";
 import { cleanTitle, toSupportedImage } from "../utils";
+import { RichTextEditor, type RichTextEditorHandle } from "./editor/RichTextEditor";
 import {
   SessionItem,
   SubagentItem,
@@ -22,36 +23,41 @@ function makeOptimisticTurnStatus(): TurnStatus {
 // ── Inline backlog card editor ──
 
 function BacklogNewCard({ onSave, onCancel }: { onSave: (text: string, images?: ImageAttachment[]) => void; onCancel: () => void }) {
-  const [text, setText] = useState("");
   const [images, setImages] = useState<ImageAttachment[]>([]);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<RichTextEditorHandle>(null);
+  const imagesRef = useRef(images);
+  imagesRef.current = images;
 
   useEffect(() => {
-    inputRef.current?.focus();
+    editorRef.current?.focus();
   }, []);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey && (text.trim() || images.length > 0)) {
-      e.preventDefault();
-      onSave(text.trim(), images.length > 0 ? images : undefined);
-    } else if (e.key === "Escape") {
-      onCancel();
+  const handleSubmit = useCallback((markdown: string) => {
+    const trimmed = markdown.trim();
+    if (trimmed || imagesRef.current.length > 0) {
+      onSave(trimmed, imagesRef.current.length > 0 ? imagesRef.current : undefined);
     }
-  };
+  }, [onSave]);
 
-  const onPaste = useCallback((e: React.ClipboardEvent) => {
+  const handlePaste = useCallback((e: ClipboardEvent): boolean => {
     const items = e.clipboardData?.items;
-    if (!items) return;
+    if (!items) return false;
+    let handled = false;
     for (const item of items) {
       if (!item.type.startsWith("image/")) continue;
-      e.preventDefault();
+      handled = true;
       const file = item.getAsFile();
       if (!file) continue;
       toSupportedImage(file).then((attachment) => {
         setImages((prev) => [...prev, attachment]);
       });
     }
+    return handled;
   }, []);
+
+  const handleBlur = useCallback(() => {
+    if (editorRef.current?.isEmpty() && imagesRef.current.length === 0) onCancel();
+  }, [onCancel]);
 
   return (
     <div className="kanban-new-card">
@@ -74,25 +80,14 @@ function BacklogNewCard({ onSave, onCancel }: { onSave: (text: string, images?: 
           ))}
         </div>
       )}
-      <textarea
-        ref={inputRef}
-        className="kanban-new-card-input"
+      <RichTextEditor
+        ref={editorRef}
+        className="kanban-card-editor"
         placeholder={images.length > 0 ? "Add a description or send image..." : "Describe the task..."}
-        value={text}
-        rows={3}
-        onChange={(e) => {
-          setText(e.target.value);
-          // Auto-resize between 3 and 10 rows
-          const el = e.target;
-          el.style.height = "auto";
-          const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 18;
-          const minH = lineHeight * 3;
-          const maxH = lineHeight * 10;
-          el.style.height = `${Math.min(Math.max(el.scrollHeight, minH), maxH)}px`;
-        }}
-        onKeyDown={handleKeyDown}
-        onPaste={onPaste}
-        onBlur={() => { if (!text.trim() && images.length === 0) onCancel(); }}
+        onSubmit={handleSubmit}
+        onEscape={onCancel}
+        onPaste={handlePaste}
+        onBlur={handleBlur}
       />
     </div>
   );
@@ -426,6 +421,7 @@ function KanbanSessionRow({
               isUnread={isUnread}
               onClick={onSelect}
               onMore={onMore}
+
             />
           </div>
         </div>
@@ -440,6 +436,7 @@ function KanbanSessionRow({
       {session.executorType === "codex" && (
         <div className="kanban-executor-badge" title="Codex session">CX</div>
       )}
+
       {badgeLabel && (
         <div className={`kanban-stop-reason-badge${isErrorCard ? " kanban-stop-reason-error" : ""}`} title={`Turn ended: ${cardStopReason}`}>
           {isErrorCard && (

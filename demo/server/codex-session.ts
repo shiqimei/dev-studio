@@ -53,6 +53,7 @@ export function isCodexAvailable(): boolean {
  */
 export async function createCodexConnection(
   broadcast: BroadcastFn,
+  cwdOverride?: string,
 ): Promise<AcpConnection> {
   if (!codexBinaryPath) {
     throw new Error("Codex ACP binary not found. Set CODEX_ACP_EXECUTABLE or build vendor/codex-acp.");
@@ -60,7 +61,7 @@ export async function createCodexConnection(
 
   log.info({ binary: codexBinaryPath, boot: bootMs() }, "codex: spawning agent process");
   const spawnT0 = performance.now();
-  const cwd = process.env.ACP_CWD || process.cwd();
+  const cwd = cwdOverride || process.env.ACP_CWD || process.cwd();
   const agentProcess = spawn(codexBinaryPath, [], {
     cwd,
     stdio: ["pipe", "pipe", "inherit"],

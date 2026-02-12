@@ -98,6 +98,7 @@ export const SessionItem = memo(function SessionItem({
   isUnread,
   onClick,
   onMore,
+  titleSuffix,
 }: {
   session: DiskSession;
   isActive: boolean;
@@ -109,6 +110,7 @@ export const SessionItem = memo(function SessionItem({
   isUnread: boolean;
   onClick: () => void;
   onMore: (e: React.MouseEvent) => void;
+  titleSuffix?: React.ReactNode;
 }) {
   const isInProgress = turnInfo?.status === "in_progress" || (isLive && turnStatus === "in_progress");
   const isCompleted = turnStatus === "completed";
@@ -125,6 +127,7 @@ export const SessionItem = memo(function SessionItem({
         <div className="session-item-title truncate flex-1 min-w-0">
           {cleanTitle(session.title)}
         </div>
+        {titleSuffix}
         <span
           onClick={onMore}
           className="session-more-btn shrink-0 w-5 h-5 flex items-center justify-center rounded text-dim opacity-0 group-hover:opacity-100 hover:bg-[var(--color-border)] hover:text-text transition-all cursor-pointer"
@@ -170,7 +173,8 @@ export const SessionItem = memo(function SessionItem({
     && prev.turnStatus === next.turnStatus
     && prev.turnInfo === next.turnInfo
     && prev.hasChildren === next.hasChildren
-    && prev.isUnread === next.isUnread;
+    && prev.isUnread === next.isUnread
+    && prev.titleSuffix === next.titleSuffix;
 });
 
 const AGENT_TYPE_STYLES: Record<SubagentType, { label: string; className: string }> = {

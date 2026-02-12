@@ -67,6 +67,8 @@ export interface AgentsDaemon {
   readonly ready: Promise<void>;
 
   // ── Session lifecycle ──
+  /** Get the active project's cwd from the projects DB. */
+  getActiveProjectCwd(): string;
   createSession(executorType?: ExecutorType): Promise<{ sessionId: string }>;
   resumeSession(sessionId: string): Promise<void>;
   prompt(sessionId: string, text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>): void;

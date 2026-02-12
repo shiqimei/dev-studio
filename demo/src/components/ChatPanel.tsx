@@ -3,7 +3,9 @@ import { useWsState, useWsActions } from "../context/WebSocketContext";
 import { stripCliXml } from "../strip-xml";
 import { MessageList } from "./MessageList";
 import { TurnStatusBar } from "./TurnStatusBar";
-import type { SubagentChild } from "../types";
+import { TodoProgressRing } from "./TodoProgressRing";
+import { PlanIcon } from "./messages/Plan";
+import type { SubagentChild, PlanEntryItem } from "../types";
 
 function findSubagentChild(children: SubagentChild[], agentId: string): SubagentChild | null {
   for (const child of children) {
@@ -62,6 +64,15 @@ export function ChatPanel({ style }: { style?: React.CSSProperties }) {
     }
     setEditing(false);
   };
+
+  const planEntries = state.latestPlan;
+  const planStats = useMemo(() => {
+    if (!planEntries || planEntries.length === 0) return null;
+    const total = planEntries.length;
+    const completed = planEntries.filter((e: PlanEntryItem) => e.status === "completed").length;
+    const inProgress = planEntries.find((e: PlanEntryItem) => e.status === "in_progress");
+    return { total, completed, inProgress };
+  }, [planEntries]);
 
   // Welcome screen when no session is selected
   if (!hasSession) {
@@ -147,13 +158,37 @@ export function ChatPanel({ style }: { style?: React.CSSProperties }) {
             onBlur={submitRename}
           />
         ) : (
-          <h1
-            className={`text-sm font-medium text-text truncate chat-title-label${isSubagent ? "" : " cursor-pointer"}`}
-            onClick={startEditing}
-            title={isSubagent ? undefined : "Click to rename"}
-          >
-            {sessionTitle ?? "\u00a0"}
-          </h1>
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <h1
+              className={`text-sm font-medium text-text truncate chat-title-label${isSubagent ? "" : " cursor-pointer"}`}
+              onClick={startEditing}
+              title={isSubagent ? undefined : "Click to rename"}
+            >
+              {sessionTitle ?? "\u00a0"}
+            </h1>
+            {planStats && (
+              <div className="todo-progress-wrap">
+                <div className="todo-progress-header">
+                  <TodoProgressRing completed={planStats.completed} total={planStats.total} size={14} />
+                  <span className="todo-progress-count">{planStats.completed}/{planStats.total}</span>
+                  {planStats.inProgress && (
+                    <span className="todo-progress-label">{planStats.inProgress.content}</span>
+                  )}
+                </div>
+                <div className="todo-popover plan">
+                  <div className="plan-title">Plan</div>
+                  {planEntries!.map((entry: PlanEntryItem, i: number) => (
+                    <div key={i} className="plan-entry">
+                      <span className={`marker ${entry.status}`}>
+                        <PlanIcon status={entry.status} />
+                      </span>
+                      <span>{entry.content}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         )}
         {state.busy && (
           <button

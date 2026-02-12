@@ -181,6 +181,7 @@ const initialState: AppState = {
 
   latestPlan: null,
   latestTasks: null,
+  sessionPlans: {},
   unreadCompletedSessions: {},
   // Kanban persistence
   kanbanColumnOverrides: {},
@@ -614,16 +615,25 @@ function reducer(state: AppState, action: Action): AppState {
       };
     }
 
-    case "PLAN":
+    case "PLAN": {
+      const planSessionId = action.sessionId ?? state.currentSessionId;
+      const isCurrentPlan = !action.sessionId || action.sessionId === state.currentSessionId;
       return {
         ...state,
-        messages: [
-          ...finalizeStreaming(state.messages, state.currentTurnId),
-          { type: "plan", id: uid(), entries: action.entries },
-        ],
-        currentTurnId: null,
-        latestPlan: action.entries,
+        ...(isCurrentPlan ? {
+          messages: [
+            ...finalizeStreaming(state.messages, state.currentTurnId),
+            { type: "plan", id: uid(), entries: action.entries },
+          ],
+          currentTurnId: null,
+          latestPlan: action.entries,
+        } : {}),
+        sessionPlans: {
+          ...state.sessionPlans,
+          ...(planSessionId ? { [planSessionId]: action.entries } : {}),
+        },
       };
+    }
 
     case "TASKS":
       return {
@@ -1034,6 +1044,7 @@ function reducer(state: AppState, action: Action): AppState {
       const t0 = performance.now();
       const historyMessages = jsonlToEntries(action.entries);
       console.log(`[${pageMs()}] reducer SESSION_HISTORY ${action.sessionId.slice(0, 8)} parse=${(performance.now() - t0).toFixed(0)}ms raw=${action.entries.length} parsed=${historyMessages.length}`);
+      const historyPlan = extractLatestPlan(historyMessages);
       return {
         ...state,
         sessionHistory: {
@@ -1044,9 +1055,13 @@ function reducer(state: AppState, action: Action): AppState {
             currentTurnId: null,
             turnToolCallIds: [],
             turnStatus: null,
-            latestPlan: extractLatestPlan(historyMessages),
+            latestPlan: historyPlan,
             latestTasks: null,
           },
+        },
+        sessionPlans: {
+          ...state.sessionPlans,
+          ...(historyPlan ? { [action.sessionId]: historyPlan } : {}),
         },
       };
     }
@@ -1718,6 +1733,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       if ((!currentSessionRef.current || executorMismatch) && !pendingNewSessionRef.current) {
         newSession();
       }
+      // Set the user's prompt as the optimistic title so the kanban card shows
+      // the prompt text instead of "New session" while waiting for the server.
+      if (pendingNewSessionRef.current && text) {
+        dispatch({ type: "SESSION_TITLE_UPDATE", sessionId: pendingNewSessionRef.current.tempId, title: text });
+      }
       // Show message in UI immediately (optimistic)
       dispatch({ type: "SEND_MESSAGE", text, images, files, queueId });
 
@@ -2364,7 +2384,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       break;
     }
     case "plan":
-      dispatch({ type: "PLAN", entries: msg.entries });
+      dispatch({ type: "PLAN", entries: msg.entries, sessionId: msg.sessionId });
       break;
     case "tasks":
       dispatch({ type: "TASKS", tasks: msg.tasks ?? [] });

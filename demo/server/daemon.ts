@@ -363,10 +363,20 @@ class AgentsDaemonImpl implements AgentsDaemon {
 
   // ── Session lifecycle ──
 
+  /** Get the active project's cwd from the projects DB. */
+  getActiveProjectCwd(): string {
+    try {
+      const { activeProject } = kanbanDb.getProjects();
+      if (activeProject) return activeProject;
+    } catch {}
+    return process.env.ACP_CWD || process.cwd();
+  }
+
   async createSession(executorType: ExecutorType = "claude"): Promise<{ sessionId: string }> {
     const conn = this.getConnectionForExecutor(executorType);
     if (!conn) throw new Error(`No connection for executor type: ${executorType}`);
-    const result = await createNewSession(conn.connection, this.broadcast.bind(this));
+    const cwd = this.getActiveProjectCwd();
+    const result = await createNewSession(conn.connection, this.broadcast.bind(this), cwd);
     kanbanDb.setSessionExecutorType(result.sessionId, executorType);
     this.liveSessionIds.add(result.sessionId);
     this.autoRenameEligible.add(result.sessionId);
@@ -376,7 +386,8 @@ class AgentsDaemonImpl implements AgentsDaemon {
   async resumeSession(sessionId: string): Promise<void> {
     const conn = this.getConnectionForSession(sessionId);
     if (!conn) throw new Error("Daemon not initialized");
-    await resumeSession(conn.connection, sessionId);
+    const cwd = this.getActiveProjectCwd();
+    await resumeSession(conn.connection, sessionId, cwd);
     this.liveSessionIds.add(sessionId);
   }
 
@@ -421,9 +432,10 @@ class AgentsDaemonImpl implements AgentsDaemon {
       // Lazily resume the ACP session if not already live
       if (!this.liveSessionIds.has(sessionId)) {
         const resumeT0 = performance.now();
+        const activeCwd = this.getActiveProjectCwd();
         log.info({ session: sid(sessionId) }, "daemon: resumeSession started");
         try {
-          await resumeSession(conn.connection, sessionId);
+          await resumeSession(conn.connection, sessionId, activeCwd);
           log.info({ session: sid(sessionId), durationMs: Math.round(performance.now() - resumeT0) }, "daemon: resumeSession completed");
           this.liveSessionIds.add(sessionId);
         } catch (resumeErr: any) {
@@ -431,7 +443,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
 
           log.warn({ session: sid(sessionId), err: resumeErr.message }, "daemon: session gone, auto-creating replacement");
           const executorType = kanbanDb.getSessionExecutorType(sessionId);
-          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this));
+          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this), activeCwd);
           kanbanDb.setSessionExecutorType(newId, executorType);
           this.liveSessionIds.add(newId);
           this.autoRenameEligible.add(newId);
@@ -524,7 +536,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
         log.warn({ session: sid(sessionId), err: err.message }, "daemon: prompt hit stale session, auto-recovering");
         try {
           const executorType = kanbanDb.getSessionExecutorType(sessionId);
-          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this));
+          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this), this.getActiveProjectCwd());
           kanbanDb.setSessionExecutorType(newId, executorType);
           this.liveSessionIds.add(newId);
           this.autoRenameEligible.add(newId);
@@ -1165,7 +1177,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
   // ── Auto-rename ──
 
   private autoRenameSession(sessionId: string, userMessage: string): void {
-    const cwd = process.env.ACP_CWD || process.cwd();
+    const cwd = this.getActiveProjectCwd();
     this.autoRenameInFlight.add(sessionId);
     this.haikuPool.generateTitle(cwd, userMessage, "").then(async (title) => {
       if (!title) {

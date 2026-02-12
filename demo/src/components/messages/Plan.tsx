@@ -1,7 +1,7 @@
 import { memo } from "react";
 import type { PlanEntryItem } from "../../types";
 
-function PlanIcon({ status }: { status: "pending" | "in_progress" | "completed" }) {
+export function PlanIcon({ status }: { status: "pending" | "in_progress" | "completed" }) {
   if (status === "completed") {
     return (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

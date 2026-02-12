@@ -95,9 +95,15 @@ export function startServer(port: number) {
       return;
     }
 
+    // Turn status events are broadcast to ALL clients so the kanban board
+    // can track background sessions the client isn't currently viewing.
+    const GLOBAL_TURN_TYPES = new Set(["turn_start", "turn_activity", "turn_end"]);
+
     // Normal event routing: session-specific or global
     const json = JSON.stringify(msg);
-    if (sessionId) {
+    if (GLOBAL_TURN_TYPES.has(m.type)) {
+      sendToAll(json);
+    } else if (sessionId) {
       sendToSession(sessionId, json);
     } else {
       sendToAll(json);
@@ -257,12 +263,22 @@ export function startServer(port: number) {
 
         switch (msg.type) {
           case "prompt": {
-            if (!clientState.currentSessionId) {
-              log.warn({ client: cid }, "ws: prompt but no currentSessionId");
+            const targetSession = msg.sessionId || clientState.currentSessionId;
+            if (!targetSession) {
+              log.warn({ client: cid }, "ws: prompt but no sessionId/currentSessionId");
               return;
             }
-            const targetSession = clientState.currentSessionId;
-            log.info({ client: cid, session: sid(targetSession), textLen: msg.text?.length ?? 0, images: msg.images?.length ?? 0, files: msg.files?.length ?? 0 }, "ws: → prompt");
+            log.info(
+              {
+                client: cid,
+                session: sid(targetSession),
+                textLen: msg.text?.length ?? 0,
+                images: msg.images?.length ?? 0,
+                files: msg.files?.length ?? 0,
+                crossSession: !!msg.sessionId,
+              },
+              "ws: → prompt",
+            );
 
             // Broadcast user message to other clients viewing this session
             const userMsgJson = JSON.stringify({
@@ -284,6 +300,46 @@ export function startServer(port: number) {
               daemon.enqueueMessage(targetSession, { id: queueId, text: msg.text, images: msg.images, files: msg.files, addedAt: Date.now() });
             } else {
               daemon.prompt(targetSession, msg.text, msg.images, msg.files);
+            }
+            break;
+          }
+
+          case "opus_prompt": {
+            const opusSession = msg.sessionId || clientState.currentSessionId;
+            if (!opusSession) {
+              log.warn({ client: cid }, "ws: opus_prompt but no sessionId");
+              return;
+            }
+            // Don't update clientState.currentSessionId for cross-session prompts
+            // (kanban background tasks). The client isn't navigating to this session;
+            // changing currentSessionId would break event routing for the session
+            // the user is actually viewing.
+            log.info({ client: cid, session: sid(opusSession), textLen: msg.text?.length ?? 0, crossSession: !!msg.sessionId }, "ws: → opus_prompt");
+
+            // Broadcast user message to other clients viewing this session
+            const opusUserMsgJson = JSON.stringify({
+              type: "user_message",
+              sessionId: opusSession,
+              text: msg.text,
+            });
+            for (const [otherWs, otherState] of clients) {
+              if (otherWs !== ws && otherState.currentSessionId === opusSession) {
+                try { otherWs.send(opusUserMsgJson); } catch {}
+              }
+            }
+
+            const alreadyProcessing = daemon.isProcessing(opusSession);
+            log.info({ client: cid, session: sid(opusSession), alreadyProcessing }, "ws: opus_prompt dispatching");
+            if (alreadyProcessing) {
+              const queueId = msg.queueId || `sq-${++queueIdCounter}`;
+              daemon.enqueueMessage(opusSession, { id: queueId, text: msg.text, addedAt: Date.now() });
+            } else if (typeof daemon.opusPrompt === "function") {
+              daemon.opusPrompt(opusSession, msg.text);
+            } else {
+              // Fallback: daemon instance predates opusPrompt (stale HMR prototype).
+              // Use regular prompt path so the task still runs.
+              log.warn({ client: cid, session: sid(opusSession) }, "ws: opus_prompt fallback — daemon.opusPrompt missing, using prompt()");
+              daemon.prompt(opusSession, msg.text);
             }
             break;
           }
@@ -622,8 +678,13 @@ export function startServer(port: number) {
             log.info({ client: cid, opCount: ops.length, ops: ops.map((o: KanbanOp) => o.op) }, "ws: → kanban_op");
             const version = kanbanDb.applyKanbanOps(ops);
             if (clientSeq != null) {
-              try { ws.send(JSON.stringify({ type: "kanban_op_ack", clientSeq, version })); } catch {}
+              // Include the full snapshot in the ack so the sender can atomically
+              // update server state AND drain pending ops in one reducer action.
+              // This prevents a flicker frame where ops are drained but state is stale.
+              const snap = kanbanDb.getKanbanSnapshot();
+              try { ws.send(JSON.stringify({ type: "kanban_op_ack", clientSeq, version, ...snap })); } catch {}
             }
+            // Broadcast to all clients (sender will dedupe via version check)
             broadcastKanbanState();
             break;
           }

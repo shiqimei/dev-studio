@@ -340,6 +340,10 @@ class AgentsDaemonImpl implements AgentsDaemon {
     this.processPrompt(sessionId, text, images, files);
   }
 
+  opusPrompt(sessionId: string, text: string): void {
+    this.processOpusPrompt(sessionId, text);
+  }
+
   async interrupt(sessionId: string): Promise<void> {
     if (!this.acpConnection) return;
     if (!this.processingSessions.has(sessionId)) return;
@@ -509,6 +513,133 @@ class AgentsDaemonImpl implements AgentsDaemon {
     } finally {
       this.processingSessions.delete(sessionId);
       // Persist kanban state (no epoch guard needed — daemon doesn't reload)
+      try {
+        const snap = kanbanDb.getKanbanSnapshot();
+        const currentOverride = snap.columnOverrides[sessionId];
+        if (!currentOverride || currentOverride === "in_progress") {
+          kanbanDb.applyKanbanOps([{ op: "set_column", sessionId, column: "in_review" }]);
+          this.eventSink({ type: "kanban_state_changed" }, null);
+        }
+      } catch (err: any) {
+        log.warn({ session: sid(sessionId), err: err.message }, "daemon: failed to set in_review override");
+      }
+      this.drainQueue(sessionId);
+    }
+  }
+
+  // ── processOpusPrompt ──
+  // Streams a prompt through the pre-warmed opus pool instead of ACP.
+  // Eliminates the ~3s cold start of resumeSession + ACP prompt, providing
+  // immediate streaming feedback for kanban task starts.
+
+  private async processOpusPrompt(sessionId: string, text: string) {
+    this.processingSessions.add(sessionId);
+    const promptT0 = performance.now();
+    log.info({ session: sid(sessionId), textLen: text.length }, "daemon: opus prompt started");
+
+    try {
+      // Fire-and-forget auto-rename
+      if (this.autoRenameEligible.has(sessionId)) {
+        this.autoRenameEligible.delete(sessionId);
+        this.autoRenameSession(sessionId, text);
+      }
+
+      // Initialize turn state and content buffer
+      const turnStartedAt = Date.now();
+      this.turnStates[sessionId] = {
+        status: "in_progress",
+        startedAt: turnStartedAt,
+        approxTokens: 0,
+        thinkingDurationMs: 0,
+        activity: "brewing",
+      };
+      this.turnContentBuffers.set(sessionId, []);
+      this.broadcast({ type: "turn_start", startedAt: turnStartedAt, sessionId });
+      this.broadcastSessions().catch(() => {});
+
+      // Stream from the pre-warmed opus pool — no ACP session resume needed
+      const streamT0 = performance.now();
+      log.info({ session: sid(sessionId) }, "daemon: opus pool stream started");
+      let totalText = "";
+      for await (const chunk of this.opusPool.stream(text)) {
+        if (chunk.type === "text") {
+          totalText += chunk.text;
+          this.broadcast({ type: "text", text: chunk.text, sessionId });
+        } else if (chunk.type === "thinking") {
+          this.broadcast({ type: "thought", text: chunk.text, sessionId });
+        }
+      }
+
+      const durationMs = Math.round(performance.now() - streamT0);
+      log.info({ session: sid(sessionId), durationMs, outputLen: totalText.length }, "daemon: opus pool stream completed");
+
+      // Record metrics
+      this.opusPool.recordMetric({
+        timestamp: Date.now(),
+        operation: "kanban_task",
+        durationMs,
+        inputLength: text.length,
+        outputLength: totalText.length,
+        output: totalText.slice(0, 200),
+        success: true,
+      });
+
+      // Finalize turn state
+      const turnState = this.turnStates[sessionId];
+      if (turnState) {
+        if (turnState.thinkingLastChunkAt) {
+          turnState.thinkingDurationMs += Date.now() - turnState.thinkingLastChunkAt;
+          turnState.thinkingLastChunkAt = undefined;
+        }
+        turnState.status = "completed";
+        turnState.endedAt = Date.now();
+        turnState.durationMs = durationMs;
+        turnState.stopReason = "end_turn";
+      }
+
+      this.turnContentBuffers.delete(sessionId);
+      this.broadcast({
+        type: "turn_end",
+        sessionId,
+        stopReason: "end_turn",
+        durationMs: turnState?.durationMs,
+        thinkingDurationMs: turnState?.thinkingDurationMs,
+      });
+      const sessionsT0 = performance.now();
+      await this.broadcastSessions();
+      log.info({ session: sid(sessionId), broadcastMs: Math.round(performance.now() - sessionsT0), totalMs: Math.round(performance.now() - promptT0) }, "daemon: opus prompt completed");
+    } catch (err: any) {
+      const details: string[] = [err.message ?? String(err)];
+      if (err.status) details.push(`status=${err.status}`);
+      if (err.code) details.push(`code=${err.code}`);
+      const detailedText = details.length > 1 ? details.join(" — ") : details[0];
+
+      log.error({ session: sid(sessionId), durationMs: Math.round(performance.now() - promptT0), err: detailedText }, "daemon: opus prompt error");
+
+      // Record failure metric
+      this.opusPool.recordMetric({
+        timestamp: Date.now(),
+        operation: "kanban_task",
+        durationMs: Math.round(performance.now() - promptT0),
+        inputLength: text.length,
+        outputLength: 0,
+        output: detailedText.slice(0, 200),
+        success: false,
+      });
+
+      if (this.turnStates[sessionId]) {
+        const ts = this.turnStates[sessionId];
+        ts.status = "error";
+        ts.endedAt = Date.now();
+        ts.durationMs = Date.now() - ts.startedAt;
+        ts.stopReason = "error";
+      }
+      this.turnContentBuffers.delete(sessionId);
+      this.broadcast({ type: "error", text: detailedText, sessionId });
+      this.broadcast({ type: "turn_end", stopReason: "error", sessionId });
+    } finally {
+      this.processingSessions.delete(sessionId);
+      // Transition kanban column to in_review
       try {
         const snap = kanbanDb.getKanbanSnapshot();
         const currentOverride = snap.columnOverrides[sessionId];
@@ -897,6 +1028,10 @@ class AgentsDaemonImpl implements AgentsDaemon {
     const result = await this.acpConnection.connection.extMethod("sessions/rename", { sessionId, title });
     if (result.success) {
       this.sessionTitleCache.set(sessionId, title);
+      // Emit session_title_update immediately so clients get the title even if
+      // broadcastSessions() is coalesced with an in-flight request that was
+      // fetched before the rename (e.g. during createBacklogSession).
+      this.broadcast({ type: "session_title_update", sessionId, title });
       await this.broadcastSessions();
     }
     return !!result.success;
@@ -997,7 +1132,10 @@ export function getOrCreateDaemon(): AgentsDaemon {
     log.info("daemon: creating new instance");
     g[DAEMON_KEY] = new AgentsDaemonImpl();
   } else {
-    log.info("daemon: reusing existing instance (HMR reload)");
+    // Patch the existing instance's prototype so it picks up any
+    // new or modified methods introduced by HMR-reloaded code.
+    Object.setPrototypeOf(g[DAEMON_KEY], AgentsDaemonImpl.prototype);
+    log.info("daemon: reusing existing instance (HMR reload, prototype patched)");
   }
   return g[DAEMON_KEY];
 }

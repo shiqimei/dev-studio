@@ -69,6 +69,8 @@ export interface AgentsDaemon {
   createSession(): Promise<{ sessionId: string }>;
   resumeSession(sessionId: string): Promise<void>;
   prompt(sessionId: string, text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>): void;
+  /** Stream a prompt through the pre-warmed opus pool (no ACP session needed). */
+  opusPrompt(sessionId: string, text: string): void;
   interrupt(sessionId: string): Promise<void>;
 
   // ── Queries ──

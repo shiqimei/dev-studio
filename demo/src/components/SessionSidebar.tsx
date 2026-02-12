@@ -110,7 +110,7 @@ export const SessionItem = memo(function SessionItem({
   onClick: () => void;
   onMore: (e: React.MouseEvent) => void;
 }) {
-  const isInProgress = isLive && turnStatus === "in_progress";
+  const isInProgress = turnInfo?.status === "in_progress" || (isLive && turnStatus === "in_progress");
   const isCompleted = turnStatus === "completed";
 
   return (

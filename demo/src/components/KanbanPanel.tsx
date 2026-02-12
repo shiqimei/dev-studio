@@ -628,7 +628,11 @@ function KanbanColumnView({
                 index={idx}
                 isActive={session.sessionId === activeSessionId}
                 isLive={liveSessionIds.has(session.sessionId)}
-                turnInfo={liveTurnStatus[session.sessionId] ?? (session.sessionId === currentSessionId ? turnStatus : null)}
+                turnInfo={
+                  session.sessionId === currentSessionId
+                    ? (turnStatus ?? liveTurnStatus[session.sessionId] ?? null)
+                    : (liveTurnStatus[session.sessionId] ?? null)
+                }
                 isUnread={!!unreadCompletedSessions[session.sessionId]}
                 activeSessionId={activeSessionId}
                 isSelected={isSel}
@@ -707,7 +711,7 @@ function applyOpsToSnapshot(
 
 export function KanbanPanel() {
   const state = useWsState();
-  const { dispatch, resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, send, sendKanbanOp, updatePendingPrompt } = useWsActions();
+  const { dispatch, resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, sendPromptToSession, sendKanbanOp, updatePendingPrompt } = useWsActions();
 
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
@@ -1016,8 +1020,7 @@ export function KanbanPanel() {
       // If creating directly in in_progress or recurring, resume and send the prompt immediately
       if (targetCol === "in_progress" || targetCol === "recurring") {
         dispatch({ type: "SET_OPTIMISTIC_TURN_STATUS", sessionId, status: makeOptimisticTurnStatus() });
-        resumeSession(sessionId);
-        setTimeout(() => send(text, images, undefined, { skipRouting: true }), 300);
+        sendPromptToSession(sessionId, text, images);
       }
     } catch (err) {
       console.error("Failed to create session:", err);
@@ -1030,7 +1033,7 @@ export function KanbanPanel() {
         setPendingImages((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
       }
     }
-  }, [dispatch, createBacklogSession, resumeSession, send, updatePendingPrompt, sendKanbanOp]);
+  }, [dispatch, createBacklogSession, resumeSession, sendPromptToSession, updatePendingPrompt, sendKanbanOp]);
 
   // Ref to track pendingPrompts in the move callback without stale closure
   const pendingPromptsRef = useRef(pendingPrompts);
@@ -1069,28 +1072,22 @@ export function KanbanPanel() {
           const effectivePrompt = pendingPrompt || session?.title;
           if (effectivePrompt) {
             dispatch({ type: "SET_OPTIMISTIC_TURN_STATUS", sessionId: dragSessionId, status: makeOptimisticTurnStatus() });
-            resumeSession(dragSessionId);
-            setTimeout(() => {
-              send(effectivePrompt, pendingPrompt ? promptImages : undefined, undefined, { skipRouting: true });
-            }, 300);
+            sendPromptToSession(dragSessionId, effectivePrompt, pendingPrompt ? promptImages : undefined);
           }
         } else {
           // From in_review, completed, or recurring → retry with a refined prompt
           titleLockedSessions.add(dragSessionId);
           const originalTitle = session?.title;
           dispatch({ type: "SET_OPTIMISTIC_TURN_STATUS", sessionId: dragSessionId, status: makeOptimisticTurnStatus() });
-          resumeSession(dragSessionId);
-          setTimeout(() => {
-            send(RETRY_PROMPT, undefined, undefined, { skipRouting: true });
-            if (originalTitle) {
-              setTimeout(() => {
-                renameSession(dragSessionId, originalTitle);
-                titleLockedSessions.delete(dragSessionId);
-              }, 5000);
-            } else {
-              setTimeout(() => titleLockedSessions.delete(dragSessionId), 5000);
-            }
-          }, 300);
+          sendPromptToSession(dragSessionId, RETRY_PROMPT);
+          if (originalTitle) {
+            setTimeout(() => {
+              renameSession(dragSessionId, originalTitle);
+              titleLockedSessions.delete(dragSessionId);
+            }, 5000);
+          } else {
+            setTimeout(() => titleLockedSessions.delete(dragSessionId), 5000);
+          }
         }
       }
 
@@ -1127,7 +1124,7 @@ export function KanbanPanel() {
       }
       sendKanbanOp(ops);
     },
-    [dispatch, resumeSession, send, renameSession, sendKanbanOp],
+    [dispatch, resumeSession, sendPromptToSession, renameSession, sendKanbanOp],
   );
 
   const handleCardClick = useCallback(
@@ -1215,8 +1212,7 @@ export function KanbanPanel() {
             const effectivePrompt = prompt || session?.title;
             if (effectivePrompt) {
               dispatch({ type: "SET_OPTIMISTIC_TURN_STATUS", sessionId: id, status: makeOptimisticTurnStatus() });
-              resumeSession(id);
-              setTimeout(() => send(effectivePrompt, prompt ? promptImages : undefined, undefined, { skipRouting: true }), 300);
+              sendPromptToSession(id, effectivePrompt, prompt ? promptImages : undefined);
               sentFirst = true;
             }
           } else {
@@ -1225,22 +1221,19 @@ export function KanbanPanel() {
             const session = state.diskSessions.find((s) => s.sessionId === id);
             const originalTitle = session?.title;
             dispatch({ type: "SET_OPTIMISTIC_TURN_STATUS", sessionId: id, status: makeOptimisticTurnStatus() });
-            resumeSession(id);
-            setTimeout(() => {
-              send(RETRY_PROMPT, undefined, undefined, { skipRouting: true });
-              if (originalTitle) {
-                setTimeout(() => { renameSession(id, originalTitle); titleLockedSessions.delete(id); }, 5000);
-              } else {
-                setTimeout(() => titleLockedSessions.delete(id), 5000);
-              }
-            }, 300);
+            sendPromptToSession(id, RETRY_PROMPT);
+            if (originalTitle) {
+              setTimeout(() => { renameSession(id, originalTitle); titleLockedSessions.delete(id); }, 5000);
+            } else {
+              setTimeout(() => titleLockedSessions.delete(id), 5000);
+            }
             sentFirst = true;
           }
         }
       }
       clearSelection();
     },
-    [dispatch, resumeSession, send, clearSelection, columnOverrides, sortOrders, state.diskSessions, state.liveTurnStatus, renameSession, sendKanbanOp],
+    [dispatch, resumeSession, sendPromptToSession, clearSelection, columnOverrides, sortOrders, state.diskSessions, state.liveTurnStatus, renameSession, sendKanbanOp],
   );
 
   const handleStartEditing = useCallback((sessionId: string) => {

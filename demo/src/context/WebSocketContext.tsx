@@ -709,20 +709,45 @@ function reducer(state: AppState, action: Action): AppState {
         thinkingDurationMs: 0,
         activity: "brewing",
       };
+      const targetSession = action.sessionId || state.currentSessionId;
+      const isCurrentSession = !action.sessionId || action.sessionId === state.currentSessionId;
       return {
         ...state,
-        busy: true,
-        turnStatus: ts,
-        liveTurnStatus: state.currentSessionId
-          ? { ...state.liveTurnStatus, [state.currentSessionId]: ts }
+        // Only set chat-level state for the currently-viewed session
+        ...(isCurrentSession ? { busy: true, turnStatus: ts } : {}),
+        liveTurnStatus: targetSession
+          ? { ...state.liveTurnStatus, [targetSession]: ts }
           : state.liveTurnStatus,
       };
     }
 
     case "TURN_ACTIVITY": {
-      if (!state.turnStatus || state.turnStatus.status !== "in_progress") return state;
-      const ts: TurnStatus = {
-        ...state.turnStatus,
+      const targetSession = action.sessionId || state.currentSessionId;
+      const isCurrentSession = !action.sessionId || action.sessionId === state.currentSessionId;
+      // Update liveTurnStatus for the target session
+      const existingLts = targetSession ? state.liveTurnStatus[targetSession] : null;
+      if (!existingLts || existingLts.status !== "in_progress") {
+        // For non-current sessions with no live status, still track in liveTurnStatus
+        if (targetSession && !isCurrentSession) {
+          return {
+            ...state,
+            liveTurnStatus: {
+              ...state.liveTurnStatus,
+              [targetSession]: {
+                status: "in_progress",
+                startedAt: Date.now(),
+                activity: action.activity,
+                activityDetail: action.detail,
+                ...(action.approxTokens != null && { approxTokens: action.approxTokens }),
+                ...(action.thinkingDurationMs != null && { thinkingDurationMs: action.thinkingDurationMs }),
+              },
+            },
+          };
+        }
+        if (!state.turnStatus || state.turnStatus.status !== "in_progress") return state;
+      }
+      const updatedTs: TurnStatus = {
+        ...(isCurrentSession && state.turnStatus?.status === "in_progress" ? state.turnStatus : existingLts!),
         activity: action.activity,
         activityDetail: action.detail,
         ...(action.approxTokens != null && { approxTokens: action.approxTokens }),
@@ -730,14 +755,55 @@ function reducer(state: AppState, action: Action): AppState {
       };
       return {
         ...state,
-        turnStatus: ts,
-        liveTurnStatus: state.currentSessionId
-          ? { ...state.liveTurnStatus, [state.currentSessionId]: ts }
+        ...(isCurrentSession ? { turnStatus: updatedTs } : {}),
+        liveTurnStatus: targetSession
+          ? { ...state.liveTurnStatus, [targetSession]: updatedTs }
           : state.liveTurnStatus,
       };
     }
 
     case "TURN_END": {
+      const targetSession = action.sessionId || state.currentSessionId;
+      const isCurrentSession = !action.sessionId || action.sessionId === state.currentSessionId;
+
+      // Build completed turn status for liveTurnStatus (sidebar/kanban display)
+      const isError = action.stopReason === "error";
+      const endStatus = isError ? "error" as const : "completed" as const;
+      const ltsEntry = targetSession ? state.liveTurnStatus[targetSession] : null;
+      const startedAt = (isCurrentSession ? state.turnStatus?.startedAt : null) ?? ltsEntry?.startedAt ?? Date.now();
+      const completedStatus: TurnStatus | null = action.durationMs != null
+        ? {
+            status: endStatus,
+            startedAt,
+            endedAt: Date.now(),
+            durationMs: action.durationMs,
+            outputTokens: action.outputTokens,
+            thinkingDurationMs: action.thinkingDurationMs,
+            costUsd: action.costUsd,
+            approxTokens: (isCurrentSession ? state.turnStatus?.approxTokens : null) ?? ltsEntry?.approxTokens,
+            stopReason: action.stopReason,
+          }
+        : ltsEntry?.status === "in_progress"
+          ? { ...ltsEntry, status: endStatus, endedAt: Date.now(), durationMs: Date.now() - ltsEntry.startedAt, stopReason: action.stopReason }
+          : isCurrentSession && state.turnStatus
+            ? { ...state.turnStatus, status: endStatus, endedAt: Date.now(), durationMs: Date.now() - state.turnStatus.startedAt, stopReason: action.stopReason }
+            : null;
+
+      // For non-current sessions, only update liveTurnStatus (no chat state changes)
+      if (!isCurrentSession) {
+        return {
+          ...state,
+          liveTurnStatus: targetSession && completedStatus
+            ? { ...state.liveTurnStatus, [targetSession]: completedStatus }
+            : state.liveTurnStatus,
+          // Mark background session as unread so kanban shows it in "in review"
+          unreadCompletedSessions: targetSession
+            ? { ...state.unreadCompletedSessions, [targetSession]: true as const }
+            : state.unreadCompletedSessions,
+        };
+      }
+
+      // Current session: full turn-end processing
       const updatedTasks = { ...state.tasks };
       for (const id of state.turnToolCallIds) {
         const task = updatedTasks[id];
@@ -754,25 +820,6 @@ function reducer(state: AppState, action: Action): AppState {
       if (bgRunning && !state.taskPanelOpen && !state.userClosedPanel) {
         taskPanelOpen = true;
       }
-
-      // Build completed turn status for liveTurnStatus (sidebar display)
-      const isError = action.stopReason === "error";
-      const endStatus = isError ? "error" as const : "completed" as const;
-      const completedStatus: TurnStatus | null = action.durationMs != null
-        ? {
-            status: endStatus,
-            startedAt: state.turnStatus?.startedAt ?? Date.now(),
-            endedAt: Date.now(),
-            durationMs: action.durationMs,
-            outputTokens: action.outputTokens,
-            thinkingDurationMs: action.thinkingDurationMs,
-            costUsd: action.costUsd,
-            approxTokens: state.turnStatus?.approxTokens,
-            stopReason: action.stopReason,
-          }
-        : state.turnStatus
-          ? { ...state.turnStatus, status: endStatus, endedAt: Date.now(), durationMs: Date.now() - state.turnStatus.startedAt, stopReason: action.stopReason }
-          : null;
 
       // Add a turn_completed entry to messages (the single source of truth for
       // completed bars). Remove any existing turn_completed entries from the
@@ -811,8 +858,8 @@ function reducer(state: AppState, action: Action): AppState {
         // Clear turnStatus — CompletedBar now comes from the turn_completed entry
         // in messages. TurnStatusBar only shows during in_progress.
         turnStatus: null,
-        liveTurnStatus: state.currentSessionId && completedStatus
-          ? { ...state.liveTurnStatus, [state.currentSessionId]: completedStatus }
+        liveTurnStatus: targetSession && completedStatus
+          ? { ...state.liveTurnStatus, [targetSession]: completedStatus }
           : state.liveTurnStatus,
         // Don't mark the currently-viewed session as unread — the user is already
         // watching it complete, so it should go straight to "completed" in the kanban
@@ -935,24 +982,45 @@ function reducer(state: AppState, action: Action): AppState {
           // Back to in_progress — no longer unread-completed
           delete unread[s.sessionId];
         } else if (lts[s.sessionId]?.status === "in_progress" && (s.turnStatus === "completed" || s.turnStatus === "error" || s.turnDurationMs != null)) {
-          // Transition: was in_progress, now completed/error — use server metrics when available
+          // Transition: was in_progress, now completed/error — use server metrics when available.
+          // Guard: if the server's turn data is from a PREVIOUS turn (its turnStartedAt
+          // is older than our liveTurnStatus entry), this is stale data from an earlier
+          // turn and shouldn't overwrite the current optimistic in_progress status.
           const existing = lts[s.sessionId];
-          const isError = s.turnStatus === "error" || s.turnStopReason === "error";
-          lts[s.sessionId] = {
-            status: isError ? "error" : "completed",
-            startedAt: existing.startedAt,
-            endedAt: Date.now(),
-            durationMs: s.turnDurationMs ?? (Date.now() - existing.startedAt),
-            outputTokens: s.turnOutputTokens,
-            costUsd: s.turnCostUsd,
-            thinkingDurationMs: s.turnThinkingDurationMs ?? existing.thinkingDurationMs,
-            approxTokens: existing.approxTokens,
-            stopReason: s.turnStopReason,
-          };
-          // Always mark as needing review (moves to "in review" column)
-          unread[s.sessionId] = true;
+          const serverTurnIsStale = s.turnStartedAt && existing.startedAt && s.turnStartedAt < existing.startedAt;
+          if (!serverTurnIsStale) {
+            const isError = s.turnStatus === "error" || s.turnStopReason === "error";
+            lts[s.sessionId] = {
+              status: isError ? "error" : "completed",
+              startedAt: existing.startedAt,
+              endedAt: Date.now(),
+              durationMs: s.turnDurationMs ?? (Date.now() - existing.startedAt),
+              outputTokens: s.turnOutputTokens,
+              costUsd: s.turnCostUsd,
+              thinkingDurationMs: s.turnThinkingDurationMs ?? existing.thinkingDurationMs,
+              approxTokens: existing.approxTokens,
+              stopReason: s.turnStopReason,
+            };
+            // Mark as needing review (moves to "in review" column)
+            unread[s.sessionId] = true;
+          }
         } else if (lts[s.sessionId]?.status === "completed" || lts[s.sessionId]?.status === "error") {
           // Already completed — keep stats for sidebar display. Only clean unread state.
+          // Exception: if the existing status is a stale "disconnected" error and the
+          // server provides actual completion data, replace with the real metrics.
+          if (lts[s.sessionId].stopReason === "disconnected" && (s.turnStatus === "completed" || s.turnStatus === "error" || s.turnDurationMs != null)) {
+            const isError = s.turnStatus === "error" || s.turnStopReason === "error";
+            lts[s.sessionId] = {
+              status: isError ? "error" : "completed",
+              startedAt: s.turnStartedAt ?? lts[s.sessionId].startedAt,
+              endedAt: Date.now(),
+              durationMs: s.turnDurationMs ?? lts[s.sessionId].durationMs,
+              outputTokens: s.turnOutputTokens,
+              costUsd: s.turnCostUsd,
+              thinkingDurationMs: s.turnThinkingDurationMs,
+              stopReason: s.turnStopReason,
+            };
+          }
           if (!s.turnStatus) {
             delete unread[s.sessionId];
           }
@@ -1265,6 +1333,12 @@ function reducer(state: AppState, action: Action): AppState {
       };
 
     case "KANBAN_STATE_LOADED": {
+      // Skip redundant broadcasts when we already applied this version from
+      // a KANBAN_OP_ACK (which includes the snapshot). This prevents an extra
+      // re-render that can cause card flicker after drag-and-drop.
+      if (state.kanbanStateLoaded && action.version <= state.kanbanVersion) {
+        return state;
+      }
       // On reconnect, clear stale "disconnected" liveTurnStatus for sessions
       // that the server says are still in_progress (successfully reconnected).
       // Without this, the auto-cleanup effect sees error + in_progress override
@@ -1313,6 +1387,14 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         kanbanVersion: action.version,
         kanbanPendingOps: state.kanbanPendingOps.filter((p) => p.seq > action.ackSeq),
+        // Atomically update server state with the snapshot included in the ack.
+        // This prevents a flicker frame where pending ops are drained but the
+        // server state hasn't been updated yet by the broadcast.
+        ...(action.columnOverrides != null ? {
+          kanbanColumnOverrides: action.columnOverrides,
+          kanbanSortOrders: action.sortOrders ?? state.kanbanSortOrders,
+          kanbanPendingPrompts: action.pendingPrompts ?? state.kanbanPendingPrompts,
+        } : {}),
       };
 
     case "KANBAN_UPDATE_PENDING_PROMPT": {
@@ -1353,6 +1435,8 @@ function reducer(state: AppState, action: Action): AppState {
 export interface WsActions {
   dispatch: React.Dispatch<Action>;
   send: (text: string, images?: ImageAttachment[], files?: FileAttachment[], options?: { skipRouting?: boolean }) => void;
+  sendOpusPrompt: (text: string, images?: ImageAttachment[], sessionId?: string) => void;
+  sendPromptToSession: (sessionId: string, text: string, images?: ImageAttachment[], files?: FileAttachment[]) => void;
   interrupt: () => void;
   newSession: () => void;
   createBacklogSession: (title: string) => Promise<string>;
@@ -1377,6 +1461,8 @@ interface WsContextValue {
   state: AppState;
   dispatch: React.Dispatch<Action>;
   send: (text: string, images?: ImageAttachment[], files?: FileAttachment[], options?: { skipRouting?: boolean }) => void;
+  sendOpusPrompt: (text: string, images?: ImageAttachment[], sessionId?: string) => void;
+  sendPromptToSession: (sessionId: string, text: string, images?: ImageAttachment[], files?: FileAttachment[]) => void;
   interrupt: () => void;
   newSession: () => void;
   createBacklogSession: (title: string) => Promise<string>;
@@ -1683,6 +1769,46 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     }
   }, [newSession]);
 
+  /** Send a prompt through the pre-warmed opus pool (bypasses ACP session lifecycle). */
+  const sendOpusPrompt = useCallback((text: string, images?: ImageAttachment[], sessionId?: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const queueId = `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    console.log(`[${pageMs()}] sendOpusPrompt: → opus_prompt session=${sessionId?.slice(0, 8) ?? "implicit"}`);
+    // Only dispatch SEND_MESSAGE for the current session (no explicit sessionId).
+    // Cross-session kanban prompts already set optimistic status via SET_OPTIMISTIC_TURN_STATUS,
+    // and SEND_MESSAGE would wrongly add a user turn to the current session's messages.
+    if (!sessionId) {
+      dispatch({ type: "SEND_MESSAGE", text, images, queueId });
+    }
+    wsRef.current.send(JSON.stringify({
+      type: "opus_prompt",
+      text,
+      queueId,
+      ...(sessionId ? { sessionId } : {}),
+      ...(images?.length ? { images } : {}),
+    }));
+  }, []);
+
+  /** Send a real ACP prompt to a specific session without switching the active chat view. */
+  const sendPromptToSession = useCallback(
+    (sessionId: string, text: string, images?: ImageAttachment[], files?: FileAttachment[]) => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      const queueId = `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      console.log(`[${pageMs()}] sendPromptToSession: → prompt session=${sessionId.slice(0, 8)}`);
+      wsRef.current.send(
+        JSON.stringify({
+          type: "prompt",
+          sessionId,
+          text,
+          queueId,
+          ...(images?.length ? { images } : {}),
+          ...(files?.length ? { files } : {}),
+        }),
+      );
+    },
+    [],
+  );
+
   const deselectSession = useCallback(() => {
     if (pendingNewSessionRef.current) pendingNewSessionRef.current = null;
     // Clear preflight routing state
@@ -1982,7 +2108,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         // current session. The server already filters by session, but this guards
         // against bugs like a missing sessionId on a broadcast.
         if (msg.sessionId && currentSessionRef.current && msg.sessionId !== currentSessionRef.current) {
-          const globalTypes = new Set(["sessions", "session_history", "session_switched", "session_title_update", "session_deleted", "session_subagents", "protocol", "permission_request", "permission_resolved"]);
+          const globalTypes = new Set(["sessions", "session_history", "session_switched", "session_title_update", "session_deleted", "session_subagents", "protocol", "permission_request", "permission_resolved", "turn_start", "turn_activity", "turn_end"]);
           if (!globalTypes.has(msg.type)) return;
         }
 
@@ -2088,6 +2214,8 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     () => ({
       dispatch,
       send,
+      sendOpusPrompt,
+      sendPromptToSession,
       interrupt,
       newSession,
       createBacklogSession,
@@ -2108,7 +2236,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       requestHaikuMetrics,
     }),
     // All deps are useCallback([]) or useReducer dispatch — stable references
-    [dispatch, send, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, sendKanbanOp, updatePendingPrompt, preflightRoute, requestHaikuMetrics],
+    [dispatch, send, sendOpusPrompt, sendPromptToSession, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, cancelQueued, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, sendKanbanOp, updatePendingPrompt, preflightRoute, requestHaikuMetrics],
   );
 
   // ── Hash-based URL routing ──
@@ -2309,7 +2437,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       dispatch({ type: "SYSTEM", text: msg.text });
       break;
     case "turn_start":
-      dispatch({ type: "TURN_START", startedAt: msg.startedAt ?? Date.now() });
+      dispatch({ type: "TURN_START", startedAt: msg.startedAt ?? Date.now(), sessionId: msg.sessionId });
       break;
     case "turn_content_replay":
       // Replay buffered turn content for mid-turn joins (tmux-style attach)
@@ -2318,7 +2446,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       }
       break;
     case "turn_activity":
-      dispatch({ type: "TURN_ACTIVITY", activity: msg.activity, detail: msg.detail, approxTokens: msg.approxTokens, thinkingDurationMs: msg.thinkingDurationMs });
+      dispatch({ type: "TURN_ACTIVITY", activity: msg.activity, detail: msg.detail, approxTokens: msg.approxTokens, thinkingDurationMs: msg.thinkingDurationMs, sessionId: msg.sessionId });
       break;
     case "turn_end":
       dispatch({
@@ -2328,6 +2456,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
         thinkingDurationMs: msg.thinkingDurationMs,
         costUsd: msg.costUsd,
         stopReason: msg.stopReason,
+        sessionId: msg.sessionId,
       });
       break;
     case "error":
@@ -2397,7 +2526,14 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       dispatch({ type: "KANBAN_STATE_LOADED", columnOverrides: msg.columnOverrides ?? {}, sortOrders: msg.sortOrders ?? {}, pendingPrompts: msg.pendingPrompts ?? {}, version: msg.version ?? 0 });
       break;
     case "kanban_op_ack":
-      dispatch({ type: "KANBAN_OP_ACK", ackSeq: msg.clientSeq, version: msg.version });
+      dispatch({
+        type: "KANBAN_OP_ACK",
+        ackSeq: msg.clientSeq,
+        version: msg.version,
+        columnOverrides: msg.columnOverrides,
+        sortOrders: msg.sortOrders,
+        pendingPrompts: msg.pendingPrompts,
+      });
       break;
 
     case "haiku_metrics":

@@ -362,9 +362,9 @@ export type Action =
   | { type: "PERMISSION_RESOLVED"; requestId: string; optionId: string; optionName: string }
   | { type: "SESSION_INFO"; sessionId: string; models: string[]; currentModel?: string | null; modes: { id: string }[] }
   | { type: "SYSTEM"; text: string }
-  | { type: "TURN_START"; startedAt: number }
-  | { type: "TURN_ACTIVITY"; activity: TurnActivity; detail?: string; approxTokens?: number; thinkingDurationMs?: number }
-  | { type: "TURN_END"; durationMs?: number; outputTokens?: number; thinkingDurationMs?: number; costUsd?: number; stopReason?: string }
+  | { type: "TURN_START"; startedAt: number; sessionId?: string }
+  | { type: "TURN_ACTIVITY"; activity: TurnActivity; detail?: string; approxTokens?: number; thinkingDurationMs?: number; sessionId?: string }
+  | { type: "TURN_END"; durationMs?: number; outputTokens?: number; thinkingDurationMs?: number; costUsd?: number; stopReason?: string; sessionId?: string }
   | { type: "ERROR"; text: string }
   | { type: "PROTOCOL"; dir: "send" | "recv"; ts: number; msg: unknown }
   | { type: "SET_DIR_FILTER"; filter: DirFilter }
@@ -388,7 +388,7 @@ export type Action =
   | { type: "KANBAN_STATE_LOADED"; columnOverrides: Record<string, string>; sortOrders: Partial<Record<string, string[]>>; pendingPrompts: Record<string, string>; version: number }
   | { type: "KANBAN_STATE_UPDATED"; columnOverrides: Record<string, string>; sortOrders: Partial<Record<string, string[]>>; pendingPrompts: Record<string, string>; version: number }
   | { type: "KANBAN_ENQUEUE_OPS"; seq: number; ops: KanbanOp[] }
-  | { type: "KANBAN_OP_ACK"; ackSeq: number; version: number }
+  | { type: "KANBAN_OP_ACK"; ackSeq: number; version: number; columnOverrides?: Record<string, string>; sortOrders?: Partial<Record<string, string[]>>; pendingPrompts?: Record<string, string> }
   | { type: "KANBAN_UPDATE_PENDING_PROMPT"; sessionId: string; text: string }
   | { type: "SET_OPTIMISTIC_TURN_STATUS"; sessionId: string; status: TurnStatus }
   | { type: "SET_PROJECTS"; projects: string[]; activeProject: string | null }

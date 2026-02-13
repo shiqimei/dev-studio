@@ -87,7 +87,10 @@ export async function createNewSession(
   cwdOverride?: string,
 ): Promise<{ sessionId: string }> {
   const t0 = performance.now();
-  const cwd = cwdOverride || process.env.ACP_CWD || process.cwd();
+  const cwd = cwdOverride || process.env.ACP_CWD;
+  if (!cwd) {
+    throw new Error("createNewSession: cwd is required — no project path provided and ACP_CWD not set");
+  }
   log.info({ cwd, boot: bootMs() }, "api: newSession started");
   const session = await connection.newSession({
     cwd,
@@ -118,11 +121,11 @@ export async function resumeSession(
   cwdOverride?: string,
 ): Promise<{ sessionId: string }> {
   const t0 = performance.now();
-  const cwd = cwdOverride || process.env.ACP_CWD || process.cwd();
-  log.info({ session: sessionId.slice(0, 8), cwd }, "api: resumeSession started");
+  const cwd = cwdOverride || process.env.ACP_CWD || undefined;
+  log.info({ session: sessionId.slice(0, 8), cwd: cwd ?? "(session default)" }, "api: resumeSession started");
   const response = await connection.unstable_resumeSession({
     sessionId,
-    cwd,
+    ...(cwd ? { cwd } : {}),
     mcpServers: [],
   });
   log.info({ session: sessionId.slice(0, 8), durationMs: Math.round(performance.now() - t0) }, "api: resumeSession completed");

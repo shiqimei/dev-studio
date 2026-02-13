@@ -11,7 +11,6 @@ export function startServer(port: number) {
   try {
     kanbanDb.init();
     kanbanDb.migrateProjectsFromJson();
-    kanbanDb.seedProjectsFromCwd();
   } catch (err: any) {
     log.warn({ err: err.message }, "db: early init error");
   }
@@ -198,13 +197,21 @@ export function startServer(port: number) {
           return;
         }
 
-        // If no default session exists yet, create one
+        // If no default session exists yet, try to find an existing managed session
+        // before creating a new one (avoids ghost "New session" on every server restart)
         if (!daemon.defaultSessionId) {
           try {
-            const { sessionId } = await daemon.createSession();
-            daemon.defaultSessionId = sessionId;
-            resolveFirstSession?.();
-            log.info({ client: clientId, session: sid(sessionId), durationMs: Math.round(performance.now() - t0) }, "ws: first session created");
+            const existingId = await daemon.findDefaultSession();
+            if (existingId) {
+              daemon.defaultSessionId = existingId;
+              resolveFirstSession?.();
+              log.info({ client: clientId, session: sid(existingId), durationMs: Math.round(performance.now() - t0) }, "ws: reusing existing session as default");
+            } else {
+              const { sessionId } = await daemon.createSession();
+              daemon.defaultSessionId = sessionId;
+              resolveFirstSession?.();
+              log.info({ client: clientId, session: sid(sessionId), durationMs: Math.round(performance.now() - t0) }, "ws: first session created");
+            }
           } catch (err: any) {
             log.error({ client: clientId, err: err.message }, "ws: session setup failed");
             try { ws.send(JSON.stringify({ type: "error", text: err.message })); } catch {}
@@ -361,10 +368,11 @@ export function startServer(port: number) {
 
           case "new_session": {
             const executorType = msg.executorType ?? "claude";
-            log.info({ client: cid, executorType }, "ws: → new_session");
+            const projectPath = msg.projectPath ?? undefined;
+            log.info({ client: cid, executorType, projectPath: projectPath?.split("/").pop() }, "ws: → new_session");
             try {
               const t0 = performance.now();
-              const { sessionId } = await daemon.createSession(executorType);
+              const { sessionId } = await daemon.createSession(executorType, projectPath);
               log.info({ client: cid, session: sid(sessionId), executorType, durationMs: Math.round(performance.now() - t0) }, "api: newSession completed");
               daemon.defaultSessionId = sessionId;
               clientState.currentSessionId = sessionId;
@@ -523,7 +531,7 @@ export function startServer(port: number) {
             log.info({ client: cid, query: msg.query ?? "" }, "ws: → list_files");
             try {
               const t0 = performance.now();
-              const raw = execSync("git ls-files", { encoding: "utf-8", cwd: daemon.getActiveProjectCwd(), maxBuffer: 1024 * 1024 });
+              const raw = execSync("git ls-files", { encoding: "utf-8", cwd: daemon.getActiveProjectCwd() ?? undefined, maxBuffer: 1024 * 1024 });
               const query = (msg.query ?? "").toLowerCase();
               let files = raw.split("\n").filter(Boolean);
               if (query) files = files.filter((f) => f.toLowerCase().includes(query));
@@ -585,6 +593,16 @@ export function startServer(port: number) {
               break;
             }
 
+            // Skip Haiku routing for non-Claude executors (e.g. Codex) — the user
+            // explicitly chose this executor, so always stay in the current session.
+            const routeSessionExecutor = kanbanDb.getSessionExecutorType(routeSession);
+            if (routeSessionExecutor !== "claude") {
+              log.info({ client: cid, session: sid(routeSession), executor: routeSessionExecutor, route: "non-claude-executor" }, "ws: route_message → same session (non-claude executor)");
+              ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
+              sendToCurrentSession();
+              break;
+            }
+
             try {
               const sessionTitle = daemon.getSessionTitle(routeSession);
               const lastTurnSummary = await daemon.getLastTurnSummary(routeSession);
@@ -598,7 +616,8 @@ export function startServer(port: number) {
                 log.info({ client: cid, session: sid(routeSession), route: "new" }, "ws: route_message → new session");
                 const t0 = performance.now();
                 const routeExecutorType = msg.executorType ?? "claude";
-                const { sessionId: newSessionId } = await daemon.createSession(routeExecutorType);
+                const routeProjectPath = msg.projectPath ?? undefined;
+                const { sessionId: newSessionId } = await daemon.createSession(routeExecutorType, routeProjectPath);
                 log.info({ client: cid, session: sid(newSessionId), durationMs: Math.round(performance.now() - t0) }, "api: newSession (routed) completed");
                 clientState.currentSessionId = newSessionId;
                 daemon.defaultSessionId = newSessionId;
@@ -627,6 +646,14 @@ export function startServer(port: number) {
             clientState.preflightSeq = pfSeq;
 
             if (daemon.isRouteWhitelisted(msg.text)) {
+              clientState.preflightCache = { text: msg.text, sessionId: pfSession, isSameSession: true, timestamp: Date.now() };
+              ws.send(JSON.stringify({ type: "preflight_route_result", sessionId: pfSession, isSameSession: true, text: msg.text, seq: pfSeq }));
+              break;
+            }
+
+            // Skip Haiku routing for non-Claude executors (e.g. Codex)
+            const pfExecutor = kanbanDb.getSessionExecutorType(pfSession);
+            if (pfExecutor !== "claude") {
               clientState.preflightCache = { text: msg.text, sessionId: pfSession, isSameSession: true, timestamp: Date.now() };
               ws.send(JSON.stringify({ type: "preflight_route_result", sessionId: pfSession, isSameSession: true, text: msg.text, seq: pfSeq }));
               break;
@@ -667,6 +694,14 @@ export function startServer(port: number) {
             const ops = (msg.ops ?? []) as KanbanOp[];
             const clientSeq = msg.clientSeq as number | undefined;
             log.info({ client: cid, opCount: ops.length, ops: ops.map((o: KanbanOp) => o.op) }, "ws: → kanban_op");
+            // Register referenced sessions as managed by dev studio
+            for (const op of ops) {
+              if ((op.op === "set_column" || op.op === "set_pending_prompt") && op.sessionId) {
+                kanbanDb.registerManagedSession(op.sessionId);
+              } else if (op.op === "bulk_set_columns") {
+                for (const entry of op.entries) kanbanDb.registerManagedSession(entry.sessionId);
+              }
+            }
             const version = kanbanDb.applyKanbanOps(ops);
             if (clientSeq != null) {
               // Include the full snapshot in the ack so the sender can atomically

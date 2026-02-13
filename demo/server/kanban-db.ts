@@ -75,6 +75,29 @@ function getDb(): Database {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS managed_sessions (
+      session_id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      project_path TEXT
+    )
+  `);
+
+  // Migration: add project_path column if missing (existing DBs)
+  try {
+    db.run("ALTER TABLE managed_sessions ADD COLUMN project_path TEXT");
+  } catch {
+    // Column already exists — ignore
+  }
+
+  // Seed managed_sessions from existing kanban data (backward compat on first boot)
+  db.run(`
+    INSERT OR IGNORE INTO managed_sessions (session_id)
+    SELECT session_id FROM kanban_column_overrides
+    UNION
+    SELECT session_id FROM kanban_pending_prompts
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS projects (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       path          TEXT NOT NULL UNIQUE,
@@ -203,6 +226,7 @@ export function cleanStaleSessions(validSessionIds: Set<string>): boolean {
       const c2 = d.run("DELETE FROM kanban_sort_orders").changes;
       const c3 = d.run("DELETE FROM kanban_pending_prompts").changes;
       d.run("DELETE FROM session_executor_types");
+      d.run("DELETE FROM managed_sessions");
       if (c1 + c2 + c3 > 0) {
         bumpVersion();
         return true;
@@ -231,9 +255,12 @@ export function cleanStaleSessions(validSessionIds: Set<string>): boolean {
     const c3 = d.run(
       "DELETE FROM kanban_pending_prompts WHERE session_id NOT IN (SELECT id FROM _valid_ids)",
     ).changes;
-    d.run(
-      "DELETE FROM session_executor_types WHERE session_id NOT IN (SELECT id FROM _valid_ids)",
-    );
+    // NOTE: Do NOT delete from session_executor_types or managed_sessions here.
+    // Those are authoritative registrations set during createSession / kanban_op
+    // and should only be removed by explicit deleteSession. ACP sessions/list
+    // may temporarily omit sessions (e.g. codex-acp doesn't support the method
+    // or has a listing delay), so using it as the sole validity source would
+    // incorrectly wipe managed sessions that are still valid.
 
     // Also clean up sort_orders columns that are now empty
     d.run(
@@ -415,6 +442,12 @@ export function deleteSessionExecutorType(sessionId: string): void {
   d.run("DELETE FROM session_executor_types WHERE session_id = ?", [sessionId]);
 }
 
+/** Remove a session from the managed sessions table. */
+export function deleteManagedSession(sessionId: string): void {
+  const d = getDb();
+  d.run("DELETE FROM managed_sessions WHERE session_id = ?", [sessionId]);
+}
+
 /** Get executor types for all sessions (for enriching session lists). */
 export function getAllSessionExecutorTypes(): Record<string, ExecutorType> {
   const d = getDb();
@@ -427,6 +460,40 @@ export function getAllSessionExecutorTypes(): Record<string, ExecutorType> {
     result[row.session_id] = row.executor_type as ExecutorType;
   }
   return result;
+}
+
+// ── Managed sessions ──
+
+/** Register a session as managed by dev studio. */
+export function registerManagedSession(sessionId: string, projectPath?: string | null): void {
+  const d = getDb();
+  d.run(
+    "INSERT INTO managed_sessions (session_id, project_path) VALUES (?1, ?2) ON CONFLICT(session_id) DO UPDATE SET project_path = COALESCE(?2, project_path)",
+    [sessionId, projectPath ?? null],
+  );
+}
+
+/** Get all session IDs managed by dev studio. */
+export function getManagedSessionIds(): Set<string> {
+  const d = getDb();
+  const rows = d.query("SELECT session_id FROM managed_sessions").all() as Array<{
+    session_id: string;
+  }>;
+  return new Set(rows.map((r) => r.session_id));
+}
+
+/** Get all managed sessions with their stored project paths. */
+export function getManagedSessionInfo(): Map<string, { projectPath: string | null }> {
+  const d = getDb();
+  const rows = d.query("SELECT session_id, project_path FROM managed_sessions").all() as Array<{
+    session_id: string;
+    project_path: string | null;
+  }>;
+  const map = new Map<string, { projectPath: string | null }>();
+  for (const r of rows) {
+    map.set(r.session_id, { projectPath: r.project_path });
+  }
+  return map;
 }
 
 // ── Projects ──
@@ -446,42 +513,9 @@ export interface ProjectState {
   activeProject: string | null;
 }
 
-/**
- * Ensure the cwd is always in the projects table and exactly one project is active.
- * This is the single invariant enforcer — called on every read to self-heal.
- */
-function ensureProjects(d: Database): void {
-  const cwd = process.env.ACP_CWD || process.cwd();
-
-  // 1. Always ensure cwd is present (regardless of what else is in the table)
-  const cwdRow = d.query("SELECT id FROM projects WHERE path = ?").get(cwd) as
-    | { id: number }
-    | null;
-  if (!cwdRow) {
-    const name = path.basename(cwd);
-    const maxPos = d.query("SELECT COALESCE(MAX(position), -1) as m FROM projects").get() as {
-      m: number;
-    };
-    d.run("INSERT INTO projects (path, name, is_active, position) VALUES (?, ?, 0, ?)", [
-      cwd,
-      name,
-      maxPos.m + 1,
-    ]);
-  }
-
-  // 2. Ensure exactly one project is active (prefer cwd)
-  const active = d.query("SELECT COUNT(*) as n FROM projects WHERE is_active = 1").get() as {
-    n: number;
-  };
-  if (active.n === 0) {
-    d.run("UPDATE projects SET is_active = 1 WHERE path = ?", [cwd]);
-  }
-}
-
 /** Read all projects ordered by position, returning the simplified state. */
 export function getProjects(): ProjectState {
   const d = getDb();
-  ensureProjects(d);
   const rows = d
     .query("SELECT path, is_active FROM projects ORDER BY position ASC, id ASC")
     .all() as Array<{ path: string; is_active: number }>;
@@ -511,14 +545,11 @@ export function addProject(projectPath: string): ProjectState {
   return getProjects();
 }
 
-/** Remove a project by path. Refuses to remove the last project. If it was active, activate the first remaining. */
+/** Remove a project by path. If it was active, activate the first remaining. */
 export function removeProject(projectPath: string): ProjectState {
   const d = getDb();
 
   d.transaction(() => {
-    const count = d.query("SELECT COUNT(*) as n FROM projects").get() as { n: number };
-    if (count.n <= 1) return; // Never remove the last project
-
     const row = d.query("SELECT is_active FROM projects WHERE path = ?").get(projectPath) as {
       is_active: number;
     } | null;
@@ -534,17 +565,31 @@ export function removeProject(projectPath: string): ProjectState {
     }
   })();
 
-  return getProjects();
+  // Return state directly without ensureProjects() so removing the last project
+  // results in an empty list (showing the welcome screen) instead of re-adding cwd.
+  const rows = d
+    .query("SELECT path, is_active FROM projects ORDER BY position ASC, id ASC")
+    .all() as Array<{ path: string; is_active: number }>;
+  const projects = rows.map((r) => r.path);
+  const active = rows.find((r) => r.is_active === 1);
+  return { projects, activeProject: active?.path ?? null };
 }
 
-/** Set a project as active (deactivates all others). */
+/** Set a project as active (deactivates all others). Upserts if the project doesn't exist yet. */
 export function setActiveProject(projectPath: string): ProjectState {
   const d = getDb();
+  const name = path.basename(projectPath);
   d.transaction(() => {
     d.run("UPDATE projects SET is_active = 0");
-    d.run("UPDATE projects SET is_active = 1, last_opened_at = datetime('now') WHERE path = ?", [
-      projectPath,
-    ]);
+    const maxPos = d.query("SELECT COALESCE(MAX(position), -1) as m FROM projects").get() as {
+      m: number;
+    };
+    d.run(
+      `INSERT INTO projects (path, name, is_active, position)
+       VALUES (?1, ?2, 1, ?3)
+       ON CONFLICT(path) DO UPDATE SET is_active = 1, last_opened_at = datetime('now')`,
+      [projectPath, name, maxPos.m + 1],
+    );
   })();
   return getProjects();
 }
@@ -598,19 +643,7 @@ export function migrateProjectsFromJson(): boolean {
   return true;
 }
 
-/**
- * Seed the projects table with the current working directory if empty.
- */
-export function seedProjectsFromCwd(): void {
-  const d = getDb();
-  const count = d.query("SELECT COUNT(*) as n FROM projects").get() as { n: number };
-  if (count.n > 0) return;
 
-  const cwd = process.env.ACP_CWD || process.cwd();
-  const name = path.basename(cwd);
-  d.run("INSERT INTO projects (path, name, is_active, position) VALUES (?, ?, 1, 0)", [cwd, name]);
-  log.info({ cwd }, "projects: seeded from cwd");
-}
 
 /**
  * Close the database connection (for clean shutdown).

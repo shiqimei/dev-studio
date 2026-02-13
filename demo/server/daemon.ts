@@ -13,6 +13,7 @@
 
 import { createAcpConnection, createNewSession, resumeSession } from "./session.js";
 import { createCodexConnection, isCodexAvailable } from "./codex-session.js";
+import { readCodexSessionHistory } from "../../src/disk/codex-sessions.js";
 import { createHaikuPool } from "./haiku-pool.js";
 import { createOpusPool } from "./opus-pool.js";
 import type { AcpConnection } from "./types.js";
@@ -319,11 +320,13 @@ class AgentsDaemonImpl implements AgentsDaemon {
           log.info({ count: interrupted.length, sessions: interrupted.map(sid) }, "daemon: attempting to reconnect interrupted sessions");
           const reconnected: string[] = [];
           const failed: string[] = [];
+          const storedPaths = kanbanDb.getManagedSessionInfo();
           for (const sessionId of interrupted) {
             try {
               const conn = this.getConnectionForSession(sessionId);
               if (!conn) throw new Error("No connection for executor type");
-              await resumeSession(conn.connection, sessionId);
+              const storedCwd = storedPaths.get(sessionId)?.projectPath ?? undefined;
+              await resumeSession(conn.connection, sessionId, storedCwd);
               this.liveSessionIds.add(sessionId);
               reconnected.push(sessionId);
               log.info({ session: sid(sessionId) }, "daemon: session reconnected");
@@ -363,21 +366,22 @@ class AgentsDaemonImpl implements AgentsDaemon {
 
   // ── Session lifecycle ──
 
-  /** Get the active project's cwd from the projects DB. */
-  getActiveProjectCwd(): string {
+  /** Get the active project's cwd from the projects DB (null if no project is open). */
+  getActiveProjectCwd(): string | null {
     try {
       const { activeProject } = kanbanDb.getProjects();
-      if (activeProject) return activeProject;
+      return activeProject;
     } catch {}
-    return process.env.ACP_CWD || process.cwd();
+    return null;
   }
 
-  async createSession(executorType: ExecutorType = "claude"): Promise<{ sessionId: string }> {
+  async createSession(executorType: ExecutorType = "claude", projectPath?: string): Promise<{ sessionId: string }> {
     const conn = this.getConnectionForExecutor(executorType);
     if (!conn) throw new Error(`No connection for executor type: ${executorType}`);
-    const cwd = this.getActiveProjectCwd();
+    const cwd = projectPath ?? this.getActiveProjectCwd() ?? undefined;
     const result = await createNewSession(conn.connection, this.broadcast.bind(this), cwd);
     kanbanDb.setSessionExecutorType(result.sessionId, executorType);
+    kanbanDb.registerManagedSession(result.sessionId, cwd);
     this.liveSessionIds.add(result.sessionId);
     this.autoRenameEligible.add(result.sessionId);
     return result;
@@ -386,7 +390,9 @@ class AgentsDaemonImpl implements AgentsDaemon {
   async resumeSession(sessionId: string): Promise<void> {
     const conn = this.getConnectionForSession(sessionId);
     if (!conn) throw new Error("Daemon not initialized");
-    const cwd = this.getActiveProjectCwd();
+    // Prefer the session's own stored project path over the currently active project
+    const storedCwd = kanbanDb.getManagedSessionInfo().get(sessionId)?.projectPath ?? undefined;
+    const cwd = storedCwd ?? this.getActiveProjectCwd() ?? undefined;
     await resumeSession(conn.connection, sessionId, cwd);
     this.liveSessionIds.add(sessionId);
   }
@@ -432,7 +438,9 @@ class AgentsDaemonImpl implements AgentsDaemon {
       // Lazily resume the ACP session if not already live
       if (!this.liveSessionIds.has(sessionId)) {
         const resumeT0 = performance.now();
-        const activeCwd = this.getActiveProjectCwd();
+        // Prefer the session's stored project path over the currently active project
+        const storedCwd = kanbanDb.getManagedSessionInfo().get(sessionId)?.projectPath ?? undefined;
+        const activeCwd = storedCwd ?? this.getActiveProjectCwd() ?? undefined;
         log.info({ session: sid(sessionId) }, "daemon: resumeSession started");
         try {
           await resumeSession(conn.connection, sessionId, activeCwd);
@@ -536,7 +544,8 @@ class AgentsDaemonImpl implements AgentsDaemon {
         log.warn({ session: sid(sessionId), err: err.message }, "daemon: prompt hit stale session, auto-recovering");
         try {
           const executorType = kanbanDb.getSessionExecutorType(sessionId);
-          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this), this.getActiveProjectCwd());
+          const staleCwd = kanbanDb.getManagedSessionInfo().get(sessionId)?.projectPath ?? this.getActiveProjectCwd() ?? undefined;
+          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this), staleCwd);
           kanbanDb.setSessionExecutorType(newId, executorType);
           this.liveSessionIds.add(newId);
           this.autoRenameEligible.add(newId);
@@ -936,10 +945,8 @@ class AgentsDaemonImpl implements AgentsDaemon {
   }
 
   async getLastTurnSummary(sessionId: string): Promise<string | null> {
-    const conn = this.getConnectionForSession(sessionId);
-    if (!conn) return null;
     try {
-      const result = await conn.connection.extMethod("sessions/getHistory", { sessionId });
+      const result = await this.getHistory(sessionId);
       const entries = (result.entries as any[]) ?? [];
       if (entries.length === 0) return null;
 
@@ -983,6 +990,13 @@ class AgentsDaemonImpl implements AgentsDaemon {
   // ── Queries ──
 
   async getHistory(sessionId: string): Promise<{ entries: unknown[] }> {
+    // Codex sessions: read JSONL directly from disk (codex-acp doesn't support ext_methods)
+    const executorType = kanbanDb.getSessionExecutorType(sessionId);
+    if (executorType === "codex") {
+      const entries = await readCodexSessionHistory(sessionId);
+      return { entries };
+    }
+
     const conn = this.getConnectionForSession(sessionId);
     if (!conn) throw new Error("Daemon not initialized");
     const result = await conn.connection.extMethod("sessions/getHistory", { sessionId });
@@ -1030,6 +1044,10 @@ class AgentsDaemonImpl implements AgentsDaemon {
         // Get all executor types from DB for tagging
         const executorTypes = kanbanDb.getAllSessionExecutorTypes();
 
+        // Query our stored project paths BEFORE mapSession so we can use them
+        // as the authoritative source (ACP metadata may report the agent process's cwd).
+        const managedInfo = kanbanDb.getManagedSessionInfo();
+
         const mapSession = (s: any) => ({
           sessionId: s.sessionId,
           title: s.title ?? null,
@@ -1037,7 +1055,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
           created: s._meta?.created ?? null,
           messageCount: s._meta?.messageCount ?? 0,
           gitBranch: s._meta?.gitBranch ?? null,
-          projectPath: s._meta?.projectPath ?? null,
+          projectPath: managedInfo.get(s.sessionId)?.projectPath ?? s._meta?.projectPath ?? s.cwd ?? null,
           ...(s._meta?.children ? { children: s._meta.children } : {}),
           ...(s._meta?.teamName ? { teamName: s._meta.teamName } : {}),
           executorType: executorTypes[s.sessionId] ?? "claude",
@@ -1064,16 +1082,69 @@ class AgentsDaemonImpl implements AgentsDaemon {
 
         const claudeSessions = ((claudeResult as any).sessions ?? []).map(mapSession);
         const codexSessions = ((codexResult as any).sessions ?? []).map(mapSession);
-        const sessions = [...claudeSessions, ...codexSessions];
 
-        for (const s of sessions) {
+        // Auto-persist executor type for codex sessions so getConnectionForSession
+        // and getHistory route correctly (otherwise they default to "claude").
+        for (const s of codexSessions) {
+          if (!executorTypes[s.sessionId]) {
+            kanbanDb.setSessionExecutorType(s.sessionId, "codex");
+            s.executorType = "codex";
+          }
+        }
+
+        const allSessions = [...claudeSessions, ...codexSessions];
+        const listedIds = new Set(allSessions.map((s: any) => s.sessionId));
+
+        // Include managed-but-unlisted sessions as stub entries so they always
+        // appear on the kanban board. This handles cases where ACP sessions/list
+        // doesn't return the session (e.g. codex-acp doesn't support the method,
+        // race condition during creation, or connection failure).
+        for (const [id, info] of managedInfo) {
+          if (!listedIds.has(id)) {
+            const et = executorTypes[id] ?? "claude";
+            allSessions.push({
+              sessionId: id,
+              title: this.sessionTitleCache.get(id) ?? null,
+              updatedAt: null,
+              created: null,
+              messageCount: 0,
+              gitBranch: null,
+              projectPath: info.projectPath,
+              executorType: et,
+              isLive: this.liveSessionIds.has(id),
+              ...(this.turnStates[id] ? (() => {
+                const ts = this.turnStates[id];
+                return {
+                  turnStatus: ts.status,
+                  ...(ts.status === "in_progress" ? {
+                    turnStartedAt: ts.startedAt,
+                    turnActivity: ts.activity,
+                    turnActivityDetail: ts.activityDetail,
+                  } : {
+                    ...(ts.startedAt && { turnStartedAt: ts.startedAt }),
+                    ...(ts.durationMs != null && { turnDurationMs: ts.durationMs }),
+                    ...(ts.stopReason && { turnStopReason: ts.stopReason }),
+                  }),
+                };
+              })() : {}),
+            });
+          }
+        }
+
+        // Filter to only sessions managed by dev studio (registered in SQLite)
+        const managedIds = new Set(managedInfo.keys());
+        const sessions = allSessions.filter((s: any) => managedIds.has(s.sessionId));
+
+        for (const s of allSessions) {
           if (s.title) this.sessionTitleCache.set(s.sessionId, s.title);
         }
-        log.info({ durationMs: Math.round(t1 - t0), sessions: sessions.length, claude: claudeSessions.length, codex: codexSessions.length }, "daemon: sessions/list completed");
+        log.info({ durationMs: Math.round(t1 - t0), total: allSessions.length, managed: sessions.length, claude: claudeSessions.length, codex: codexSessions.length }, "daemon: sessions/list completed");
         this.broadcast({ type: "sessions", sessions });
-        // Lazy cleanup: prune stale kanban entries
+        // Lazy cleanup: prune stale kanban entries (use all ACP sessions as valid set).
+        // Include managed session IDs so their kanban state is never wiped by cleanup.
         {
-          const validIds = new Set(sessions.map((s: any) => s.sessionId));
+          const validIds = new Set(allSessions.map((s: any) => s.sessionId));
+          for (const id of managedIds) validIds.add(id);
           if (kanbanDb.cleanStaleSessions(validIds)) {
             this.eventSink({ type: "kanban_state_changed" }, null);
           }
@@ -1102,7 +1173,8 @@ class AgentsDaemonImpl implements AgentsDaemon {
     // Lazily resume the session if needed
     if (sessionIdHint && !this.liveSessionIds.has(sessionIdHint)) {
       try {
-        await resumeSession(conn.connection, sessionIdHint);
+        const storedCwd = kanbanDb.getManagedSessionInfo().get(sessionIdHint)?.projectPath ?? undefined;
+        await resumeSession(conn.connection, sessionIdHint, storedCwd);
         this.liveSessionIds.add(sessionIdHint);
         this.broadcastSessions().catch(() => {});
       } catch (resumeErr: any) {
@@ -1155,6 +1227,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
         this.sessionMetas.delete(id);
         this.sessionTitleCache.delete(id);
         kanbanDb.deleteSessionExecutorType(id);
+        kanbanDb.deleteManagedSession(id);
       }
     }
     return { success: !!result.success, deletedIds };
@@ -1172,6 +1245,28 @@ class AgentsDaemonImpl implements AgentsDaemon {
     const conn = this.getConnectionForSession(sessionId);
     conn?.connection.extMethod("sessions/delete", { sessionId }).catch(() => {});
     kanbanDb.deleteSessionExecutorType(sessionId);
+    kanbanDb.deleteManagedSession(sessionId);
+  }
+
+  async findDefaultSession(): Promise<string | null> {
+    if (!this.connections.claude) return null;
+    try {
+      const result = await this.connections.claude.connection.extMethod("sessions/list", {});
+      const sessions = ((result as any).sessions ?? []) as any[];
+      const managedIds = kanbanDb.getManagedSessionIds();
+      // Filter to managed sessions and sort by updatedAt descending
+      const managed = sessions
+        .filter((s: any) => managedIds.has(s.sessionId))
+        .sort((a: any, b: any) => {
+          const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+          const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+          return tb - ta;
+        });
+      return managed.length > 0 ? managed[0].sessionId : null;
+    } catch (err: any) {
+      log.warn({ err: err.message }, "daemon: findDefaultSession failed");
+      return null;
+    }
   }
 
   // ── Auto-rename ──

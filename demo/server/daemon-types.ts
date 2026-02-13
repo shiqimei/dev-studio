@@ -67,9 +67,11 @@ export interface AgentsDaemon {
   readonly ready: Promise<void>;
 
   // ── Session lifecycle ──
-  /** Get the active project's cwd from the projects DB. */
-  getActiveProjectCwd(): string;
-  createSession(executorType?: ExecutorType): Promise<{ sessionId: string }>;
+  /** Get the active project's cwd from the projects DB (null if no project is open). */
+  getActiveProjectCwd(): string | null;
+  createSession(executorType?: ExecutorType, projectPath?: string): Promise<{ sessionId: string }>;
+  /** Find the most recently updated managed session (avoids creating a new one on startup). */
+  findDefaultSession(): Promise<string | null>;
   resumeSession(sessionId: string): Promise<void>;
   prompt(sessionId: string, text: string, images?: Array<{ data: string; mimeType: string }>, files?: Array<{ path: string; name: string }>): void;
   /** Stream a prompt through the pre-warmed opus pool (no ACP session needed). */

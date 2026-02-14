@@ -5,6 +5,7 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { Extension } from "@tiptap/core";
 import { Markdown } from "tiptap-markdown";
 import { BubbleToolbar } from "./BubbleToolbar";
+import { MentionNode } from "./MentionExtension";
 
 export interface RichTextEditorHandle {
   focus: () => void;
@@ -130,6 +131,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
           transformPastedText: true,
           transformCopiedText: true,
         }),
+        MentionNode,
         createKeyboardExtension(onSubmitRef, onEscapeRef),
       ],
       content: initialContent ? initialContent : "",

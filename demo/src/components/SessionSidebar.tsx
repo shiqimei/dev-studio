@@ -1,23 +1,12 @@
 import { useState, useRef, useEffect, useLayoutEffect, memo } from "react";
 import { useWs } from "../context/WebSocketContext";
 import { cleanTitle, shortPath, relativeTime } from "../utils";
-import type { DiskSession, SubagentChild, SubagentType, TurnStatus, TurnActivity } from "../types";
+import type { DiskSession, SubagentChild, SubagentType, TurnStatus, TurnActivity, ExecutorType } from "../types";
+import { EXECUTOR_ICONS } from "../executor-icons";
 
-const SPARKLE_CHARS = ["·", "✻", "✽", "✶", "✳", "✢"];
-
-/** Animated sparkle for in-progress sessions (matches TurnStatusBar active style). */
-function SidebarSparkleActive() {
-  const [idx, setIdx] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setIdx((i) => (i + 1) % SPARKLE_CHARS.length), 250);
-    return () => clearInterval(id);
-  }, []);
-  return <span className="sidebar-status-star active">{SPARKLE_CHARS[idx]}</span>;
-}
-
-/** Static star for idle sessions (matches TurnStatusBar completed style). */
-function SidebarSparkleIdle() {
-  return <span className="sidebar-status-star idle">*</span>;
+function ExecutorIcon({ executorType, className }: { executorType?: ExecutorType; className?: string }) {
+  const src = EXECUTOR_ICONS[executorType ?? "claude"];
+  return <img src={src} width={16} height={16} alt="" className={`sidebar-executor-icon ${className ?? ""}`} />;
 }
 
 const ACTIVITY_LABELS: Record<TurnActivity, string> = {
@@ -47,7 +36,7 @@ function formatTokens(n: number): string {
 }
 
 /** Compact completed label matching CompletedBar format: "* Brewed for Xs · Xk tokens" */
-function SidebarCompletedLabel({ turnInfo, isUnread }: { turnInfo: TurnStatus; isUnread?: boolean }) {
+function SidebarCompletedLabel({ turnInfo }: { turnInfo: TurnStatus }) {
   const duration = turnInfo.durationMs ?? 0;
   const tokens = turnInfo.outputTokens ?? turnInfo.approxTokens;
   const thinkingMs = turnInfo.thinkingDurationMs ?? 0;
@@ -56,7 +45,7 @@ function SidebarCompletedLabel({ turnInfo, isUnread }: { turnInfo: TurnStatus; i
   if (tokens && tokens > 0) parts.push(`${formatTokens(tokens)} tokens`);
   if (thinkingMs >= 1000) parts.push(`thought for ${formatDuration(thinkingMs)}`);
 
-  return <><span className={`sidebar-status-star ${isUnread ? "active-blue" : "idle"}`}>*</span> Brewed for {parts.join(" · ")}</>;
+  return <>Brewed for {parts.join(" · ")}</>;
 }
 
 /** Compact in-progress label for sidebar: "Reading... (5s)" */
@@ -138,8 +127,7 @@ export const SessionItem = memo(function SessionItem({
       </div>
       <div className="session-item-meta">
         <span className={`truncate flex items-center gap-1 min-w-0 ${isInProgress ? "sidebar-in-progress" : isCompleted && isUnread ? "" : ""}`}>
-          {isInProgress && <SidebarSparkleActive />}
-          {isLive && !isInProgress && !isCompleted && <SidebarSparkleIdle />}
+          {(isInProgress || isCompleted || (isLive && !isInProgress && !isCompleted)) && <ExecutorIcon executorType={session.executorType} className={isInProgress ? "active" : "idle"} />}
           {isInProgress ? (
             turnInfo ? (
               <SidebarInProgressLabel turnInfo={turnInfo} />
@@ -148,7 +136,7 @@ export const SessionItem = memo(function SessionItem({
             )
           ) : isCompleted ? (
             <span className="truncate" style={isUnread ? { color: "var(--color-blue)" } : undefined}>
-              {turnInfo ? <SidebarCompletedLabel turnInfo={turnInfo} isUnread={isUnread} /> : "* Brewed"}
+              {turnInfo ? <SidebarCompletedLabel turnInfo={turnInfo} /> : "Brewed"}
             </span>
           ) : (
             <span className="truncate">

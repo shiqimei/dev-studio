@@ -77,6 +77,7 @@ function pageMs(): string {
 
 // ── localStorage helpers for selected session persistence ──
 const SELECTED_SESSION_KEY = "acp:selectedSession";
+const ACTIVE_PROJECT_KEY = "acp:activeProject";
 
 function saveSelectedSession(sessionId: string | null) {
   if (sessionId) {
@@ -88,6 +89,18 @@ function saveSelectedSession(sessionId: string | null) {
 
 function loadSelectedSession(): string | null {
   return localStorage.getItem(SELECTED_SESSION_KEY);
+}
+
+function saveActiveProject(path: string | null) {
+  if (path) {
+    localStorage.setItem(ACTIVE_PROJECT_KEY, path);
+  } else {
+    localStorage.removeItem(ACTIVE_PROJECT_KEY);
+  }
+}
+
+function loadActiveProject(): string | null {
+  return localStorage.getItem(ACTIVE_PROJECT_KEY);
 }
 
 // ── Hash-based routing helpers ──
@@ -197,7 +210,7 @@ const initialState: AppState = {
 
   // Project tabs
   projects: [],
-  activeProject: null,
+  activeProject: loadActiveProject(),
 };
 
 // ── Reducer helpers ──
@@ -1376,8 +1389,13 @@ function reducer(state: AppState, action: Action): AppState {
     case "SET_EXECUTOR":
       return { ...state, selectedExecutor: action.executor };
 
-    case "SET_PROJECTS":
-      return { ...state, projects: action.projects, activeProject: action.activeProject };
+    case "SET_PROJECTS": {
+      // Prefer server's activeProject, but if null, keep localStorage-seeded value
+      // (from initialState) as long as it's still in the project list.
+      const effectiveActive = action.activeProject
+        ?? (state.activeProject && action.projects.includes(state.activeProject) ? state.activeProject : null);
+      return { ...state, projects: action.projects, activeProject: effectiveActive };
+    }
 
     case "SET_ACTIVE_PROJECT":
       return { ...state, activeProject: action.path };
@@ -1491,6 +1509,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     resolve: (sessionId: string) => void;
     promise: Promise<string>;
     tempId: string;
+    detached?: boolean;
   } | null>(null);
 
   /** Tracks a pending backlog session creation (no UI switch). */
@@ -1513,7 +1532,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
     console.log(`[${pageMs()}] newSession: optimistic switch to ${tempId}, sending request to server`);
     dispatch({ type: "SESSION_SWITCHED", sessionId: tempId, turnStatus: null });
-    wsRef.current.send(JSON.stringify({ type: "new_session", executorType: stateRef.current.selectedExecutor }));
+    wsRef.current.send(JSON.stringify({ type: "new_session", executorType: stateRef.current.selectedExecutor, projectPath: stateRef.current.activeProject }));
   }, []);
 
   /** Tracks a pending route_message so the client can show the user message
@@ -1724,6 +1743,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         text,
         queueId,
         executorType: stateRef.current.selectedExecutor,
+        projectPath: stateRef.current.activeProject,
         ...(images?.length ? { images } : {}),
         ...(files?.length ? { files } : {}),
       }));
@@ -1749,12 +1769,21 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         ...(files?.length ? { files } : {}),
       });
 
-      // If a new session is still being created, defer the WS send until it's ready
+      // If a new session is still being created, defer the WS send until it's ready.
+      // Use the resolved sessionId so the prompt reaches the correct session even
+      // if the user navigated away (detached) and clientState.currentSessionId changed.
       if (pendingNewSessionRef.current) {
         console.log(`[${pageMs()}] send: deferring prompt until session ready`);
-        pendingNewSessionRef.current.promise.then(() => {
-          console.log(`[${pageMs()}] send: session ready, sending deferred prompt`);
-          wsRef.current?.send(payload);
+        pendingNewSessionRef.current.promise.then((resolvedSessionId) => {
+          console.log(`[${pageMs()}] send: session ready (${resolvedSessionId.slice(0, 8)}), sending deferred prompt`);
+          wsRef.current?.send(JSON.stringify({
+            type: "prompt",
+            sessionId: resolvedSessionId,
+            text,
+            queueId,
+            ...(images?.length ? { images } : {}),
+            ...(files?.length ? { files } : {}),
+          }));
         });
       } else {
         wsRef.current.send(payload);
@@ -1803,7 +1832,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   );
 
   const deselectSession = useCallback(() => {
-    if (pendingNewSessionRef.current) pendingNewSessionRef.current = null;
+    if (pendingNewSessionRef.current) pendingNewSessionRef.current.detached = true;
     // Clear preflight routing state
     if (preflightTimerRef.current) clearTimeout(preflightTimerRef.current);
     preflightCacheRef.current = null;
@@ -1818,8 +1847,9 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
   const resumeSessionCb = useCallback((sessionId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    // Cancel pending new session if user navigates away
-    if (pendingNewSessionRef.current) pendingNewSessionRef.current = null;
+    // Mark pending new session as detached — don't cancel it, so the deferred
+    // prompt still fires once the session is created (it will run in the background).
+    if (pendingNewSessionRef.current) pendingNewSessionRef.current.detached = true;
     // Clear preflight routing state from previous session
     if (preflightTimerRef.current) clearTimeout(preflightTimerRef.current);
     preflightCacheRef.current = null;
@@ -1832,8 +1862,8 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
   const resumeSubagentCb = useCallback((parentSessionId: string, agentId: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    // Cancel pending new session if user navigates away
-    if (pendingNewSessionRef.current) pendingNewSessionRef.current = null;
+    // Mark pending new session as detached (same as resumeSessionCb)
+    if (pendingNewSessionRef.current) pendingNewSessionRef.current.detached = true;
     console.log(`[${pageMs()}] switch requesting subagent ${parentSessionId.slice(0, 8)}:${agentId}`);
     (window as any).__switchStart = performance.now();
     dispatch({ type: "SESSION_SWITCH_PENDING", sessionId: `${parentSessionId}:subagent:${agentId}` });
@@ -1862,7 +1892,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         return;
       }
       pendingBacklogRef.current = { resolve, title };
-      wsRef.current.send(JSON.stringify({ type: "new_session", executorType: stateRef.current.selectedExecutor }));
+      wsRef.current.send(JSON.stringify({ type: "new_session", executorType: stateRef.current.selectedExecutor, projectPath: stateRef.current.activeProject }));
     });
   }, []);
 
@@ -2063,7 +2093,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         }
 
         if (msg.type === "error" && pendingNewSessionRef.current) {
-          console.warn(`[${pageMs()}] newSession failed, reverting optimistic switch`);
+          if (pendingNewSessionRef.current.detached) {
+            console.warn(`[${pageMs()}] detached newSession failed (non-fatal)`);
+          } else {
+            console.warn(`[${pageMs()}] newSession failed, reverting optimistic switch`);
+          }
           pendingNewSessionRef.current = null;
           // handleMsg will dispatch ERROR which shows the error in the UI
         }
@@ -2073,6 +2107,20 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         if (msg.type === "session_switched" && pendingNewSessionRef.current) {
           const pending = pendingNewSessionRef.current;
           pendingNewSessionRef.current = null;
+
+          if (pending.detached) {
+            // User navigated away while session was being created — resolve the
+            // promise so any deferred prompts fire (with the real sessionId),
+            // but don't switch the UI to this session.
+            console.log(`[${pageMs()}] handleMsg session_switched ${msg.sessionId.slice(0, 8)} (detached — sending prompt in background)`);
+            pending.resolve(msg.sessionId);
+            // Swap the temp "pending:..." ID in diskSessions for the real one.
+            // SESSION_ID_RESOLVED only updates currentSessionId if it matches
+            // the pendingId, so it won't switch the view.
+            dispatch({ type: "SESSION_ID_RESOLVED", pendingId: pending.tempId, realId: msg.sessionId });
+            return;
+          }
+
           const now = performance.now();
           const elapsed = (window as any).__newSessionStart ? (now - (window as any).__newSessionStart).toFixed(0) : "?";
           performance.mark("new-session:switched");
@@ -2293,6 +2341,19 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [resumeSessionCb, resumeSubagentCb]);
+
+  // ── Persist active project and selected session to localStorage ──
+  useEffect(() => {
+    saveActiveProject(state.activeProject);
+  }, [state.activeProject]);
+
+  // Clear persisted session when explicitly deselected (the hash sync effect
+  // only saves when currentSessionId is truthy, so null needs its own path).
+  useEffect(() => {
+    if (state.currentSessionId === null) {
+      saveSelectedSession(null);
+    }
+  }, [state.currentSessionId]);
 
   // ── Fallback: ensure session content is loaded ──
   // If we have a current session and are connected but messages is empty,

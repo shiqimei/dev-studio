@@ -38,13 +38,6 @@ function WelcomeScreen() {
 
   return (
     <>
-      {/* Minimal title bar for Electron window drag and traffic lights */}
-      {isElectron && (
-        <div
-          className="welcome-titlebar app-region-drag"
-          style={isMac ? { paddingLeft: 78 } : undefined}
-        />
-      )}
       <div className="welcome-screen">
         <div className="welcome-content">
           <svg
@@ -161,6 +154,7 @@ function Layout() {
   if (!hasProjects) {
     return (
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        <Header />
         <SettingsModal />
         <WelcomeScreen />
       </div>

@@ -71,7 +71,9 @@ export function ChatPanel({ style }: { style?: React.CSSProperties }) {
     const total = planEntries.length;
     const completed = planEntries.filter((e: PlanEntryItem) => e.status === "completed").length;
     const inProgress = planEntries.find((e: PlanEntryItem) => e.status === "in_progress");
-    return { total, completed, inProgress };
+    // Show last completed item when all done, so the status line stays visible
+    const displayEntry = inProgress ?? planEntries.findLast((e: PlanEntryItem) => e.status === "completed");
+    return { total, completed, displayEntry };
   }, [planEntries]);
 
   // Welcome screen when no session is selected
@@ -88,7 +90,7 @@ export function ChatPanel({ style }: { style?: React.CSSProperties }) {
             strokeLinecap="round"
             strokeLinejoin="round"
             className="text-dim"
-            style={{ marginBottom: 16, opacity: 0.4 }}
+            style={{ marginTop: 16, marginBottom: 16, opacity: 0.4 }}
           >
             {/* Code editor window */}
             <rect x="20" y="14" width="100" height="72" rx="8" strokeWidth="1.5" />
@@ -171,8 +173,8 @@ export function ChatPanel({ style }: { style?: React.CSSProperties }) {
                 <div className="todo-progress-header">
                   <TodoProgressRing completed={planStats.completed} total={planStats.total} size={14} />
                   <span className="todo-progress-count">{planStats.completed}/{planStats.total}</span>
-                  {planStats.inProgress && (
-                    <span className="todo-progress-label">{planStats.inProgress.content}</span>
+                  {planStats.displayEntry && (
+                    <span className="todo-progress-label">{planStats.displayEntry.content}</span>
                   )}
                 </div>
                 <div className="todo-popover plan">

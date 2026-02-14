@@ -990,7 +990,7 @@ export function KanbanPanel() {
       created: now,
       messageCount: 0,
       gitBranch: null,
-      projectPath: null,
+      projectPath: state.activeProject ?? null,
     };
     setOptimisticBacklog((prev) => [optimistic, ...prev]);
     if (targetCol === "backlog") {

@@ -71,7 +71,10 @@
     "diff": "8.0.3",
     "minimatch": "10.1.1",
     "pino": "^10.3.0",
-    "pino-pretty": "^13.1.3"
+    "pino-pretty": "^13.1.3",
+    "agentinst": "file:../agentinst/packages/sdk-node",
+    "@agentinst/server": "file:../agentinst/packages/server",
+    "@agentinst/evaluator": "file:../agentinst/packages/evaluator"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "0.71.2",

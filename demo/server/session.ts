@@ -2,6 +2,7 @@ import { spawn, execSync } from "node:child_process";
 import path from "node:path";
 import { log, bootMs } from "./log.js";
 import { nodeToWebWritable, nodeToWebReadable, instrumentedStream } from "./acp-shared.js";
+import { createInstFilteredReadable, pushAllPendingTasks } from "./inst-interceptor.js";
 
 // Resolve system-installed claude binary at module load time
 let systemClaudePath = "";
@@ -40,11 +41,18 @@ export async function createAcpConnection(
   log.info({ pid: agentProcess.pid, durationMs: Math.round(performance.now() - spawnT0), boot: bootMs() }, "api: agent process spawned");
 
   agentProcess.on("error", (err) => log.error({ err: err.message }, "api: agent process error"));
-  agentProcess.on("exit", (code, signal) => log.info({ code, signal }, "api: agent process exited"));
+  agentProcess.on("exit", (code, signal) => {
+    log.info({ code, signal }, "api: agent process exited");
+    pushAllPendingTasks();
+  });
+
+  // Intercept agent stdout: filter :::INST: convention lines for AgentInst,
+  // pass remaining NDJSON through to the ACP protocol parser.
+  const filteredStdout = createInstFilteredReadable(agentProcess.stdout!);
 
   const rawStream = ndJsonStream(
     nodeToWebWritable(agentProcess.stdin!),
-    nodeToWebReadable(agentProcess.stdout!),
+    nodeToWebReadable(filteredStdout),
   );
 
   const stream = instrumentedStream(

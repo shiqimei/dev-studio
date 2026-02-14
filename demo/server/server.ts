@@ -1,10 +1,11 @@
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, exec } from "node:child_process";
 import { getOrCreateDaemon } from "./daemon.js";
 import type { AgentsDaemon } from "./daemon-types.js";
 import { log, bootMs } from "./log.js";
 import type { KanbanOp } from "./kanban.js";
 import * as kanbanDb from "./kanban-db.js";
+import { getInstStore } from "./inst-interceptor.js";
 
 export function startServer(port: number) {
   // ── Initialize SQLite DB synchronously before serving requests ──
@@ -159,14 +160,93 @@ export function startServer(port: number) {
       }
       if (url.pathname === "/api/pick-folder" && req.method === "POST") {
         try {
-          const result = execSync(
-            `osascript -e 'set f to POSIX path of (choose folder with prompt "Select project folder")'`,
-            { encoding: "utf-8", timeout: 60_000 },
-          ).trim().replace(/\/$/, "");
+          const result = await new Promise<string | null>((resolve) => {
+            exec(
+              `osascript -e 'set f to POSIX path of (choose folder with prompt "Select project folder")'`,
+              { encoding: "utf-8", timeout: 120_000 },
+              (err, stdout) => {
+                if (err) resolve(null);
+                else resolve(stdout.trim().replace(/\/$/, ""));
+              },
+            );
+          });
           return json({ path: result });
         } catch {
           return json({ path: null });
         }
+      }
+
+      // ── AgentInst API ──
+      if (url.pathname.startsWith("/api/inst/")) {
+        const store = getInstStore();
+        const instPath = url.pathname.slice("/api/inst".length); // e.g. "/tasks", "/tasks/:uuid/status"
+
+        if (req.method === "GET" && instPath === "/tasks") {
+          return json({ tasks: store.listTasks() });
+        }
+
+        const taskMatch = instPath.match(/^\/tasks\/([^/]+)(\/(.+))?$/);
+        if (taskMatch) {
+          const uuid = taskMatch[1];
+          const sub = taskMatch[3];
+
+          if (req.method === "DELETE" && !sub) {
+            store.deleteTask(uuid);
+            return new Response(null, { status: 204 });
+          }
+
+          const task = store.getTask(uuid);
+          if (!task) return json({ error: "Task not found" });
+
+          if (req.method === "GET" && sub === "status") {
+            const latest = task.runs[task.runs.length - 1];
+            return json({
+              task_uuid: uuid,
+              task_name: task.task_name,
+              total_runs: task.runs.length,
+              latest_run: latest ? {
+                run: latest.run,
+                status: latest.status,
+                entry_count: latest.entries.length,
+                checkpoints: latest.checkpoints.map((c: any) => ({ label: c.label, passed: c.passed })),
+                passed: latest.passed,
+              } : null,
+              run_history: task.runs.map(r => ({ run: r.run, status: r.status, passed: r.passed })),
+            });
+          }
+
+          if (req.method === "GET" && sub === "logs") {
+            const runParam = url.searchParams.get("run");
+            let targetRun: typeof task.runs[0] | undefined;
+            if (!runParam || runParam === "latest") {
+              targetRun = task.runs[task.runs.length - 1];
+            } else {
+              const runNum = parseInt(runParam, 10);
+              targetRun = task.runs.find(r => r.run === runNum);
+            }
+            if (!targetRun) return json({ error: "Run not found" });
+            return json({
+              task_uuid: uuid,
+              task_name: task.task_name,
+              run: targetRun.run,
+              total_runs: task.runs.length,
+              entries: targetRun.entries,
+            });
+          }
+        }
+
+        // POST /api/inst/ingest (for direct ingestion, e.g. from external processes)
+        if (req.method === "POST" && instPath === "/ingest") {
+          try {
+            const body = await req.json();
+            const result = store.ingest(body);
+            return json(result);
+          } catch (err: any) {
+            return new Response(JSON.stringify({ error: err.message }), { status: 400, headers: { "Content-Type": "application/json" } });
+          }
+        }
+
+        return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
       }
 
       // In production mode, serve built client assets

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useWs } from "../context/WebSocketContext";
 import { shortPath } from "../utils";
+import { InstTasksPanel } from "./InstTasksPanel";
 
 const isElectron = navigator.userAgent.includes("Electron");
 const isMac = navigator.platform.startsWith("Mac");
@@ -10,6 +11,25 @@ export function Header() {
   const toggleDebug = useCallback(() => dispatch({ type: "TOGGLE_DEBUG_COLLAPSE" }), [dispatch]);
 
   const [debugBtnVisible, setDebugBtnVisible] = useState(false);
+  const [instPanelOpen, setInstPanelOpen] = useState(false);
+  const [instFailures, setInstFailures] = useState(0);
+
+  // Poll for inst task failures to show badge on button
+  useEffect(() => {
+    const check = () => {
+      fetch("/api/inst/tasks")
+        .then((r) => r.json())
+        .then((data) => {
+          const tasks = data.tasks ?? [];
+          const fails = tasks.filter((t: any) => t.latest_passed === false).length;
+          setInstFailures(fails);
+        })
+        .catch(() => {});
+    };
+    check();
+    const id = setInterval(check, 5000);
+    return () => clearInterval(id);
+  }, []);
 
   // Cmd+Shift+P (Mac) / Ctrl+Shift+P (other) toggles Protocol button visibility
   useEffect(() => {
@@ -92,14 +112,12 @@ export function Header() {
             title={p}
           >
             <span className="project-tab-label">{shortPath(p)}</span>
-            {state.projects.length > 1 && (
-              <span
-                className="project-tab-close"
-                onClick={(e) => removeProject(p, e)}
-              >
-                &times;
-              </span>
-            )}
+            <span
+              className="project-tab-close"
+              onClick={(e) => removeProject(p, e)}
+            >
+              &times;
+            </span>
           </button>
         ))}
         <button className="project-tab-add" onClick={addProject} title="Add project folder">
@@ -110,6 +128,16 @@ export function Header() {
       <div className="flex-1" />
 
       <div className="flex-1" />
+
+      <button
+        className={`inst-toggle-btn app-region-no-drag${instFailures > 0 ? " has-failures" : ""}`}
+        onClick={() => setInstPanelOpen((v) => !v)}
+        title="AgentInst Tasks"
+      >
+        🧪 Tasks
+        {instFailures > 0 && <span className="inst-btn-fail-count">{instFailures}</span>}
+      </button>
+      <InstTasksPanel visible={instPanelOpen} onClose={() => setInstPanelOpen(false)} />
 
       {debugBtnVisible && (
         <button

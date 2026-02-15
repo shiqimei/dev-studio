@@ -1,5 +1,5 @@
 /**
- * Unified dev script for the Claude Code ACP demo.
+ * Unified dev script for the Dev Studio demo.
  *
  * Starts both the Bun backend server and the Vite dev server,
  * prefixes their output with colored labels, and handles clean shutdown.
@@ -82,7 +82,7 @@ vite.stdout?.on("data", prefix("vite", MAGENTA));
 vite.stderr?.on("data", prefix("vite", MAGENTA));
 
 // Print startup banner
-console.log(`\n${BOLD}  Claude Code ACP Demo${RESET}`);
+console.log(`\n${BOLD}  Dev Studio${RESET}`);
 console.log(`${DIM}  ────────────────────────${RESET}`);
 console.log(`  UI:      ${BOLD}http://localhost:${VITE_PORT}${RESET}`);
 console.log(`  Backend: ${DIM}http://localhost:${BACKEND_PORT}${RESET}\n`);

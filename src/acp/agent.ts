@@ -248,7 +248,7 @@ export class ClaudeAcpAgent implements Agent {
       delete this.backgroundTaskMap[`file:${taskNotif.output_file}`];
     } else {
       this.logger.log(
-        `[claude-code-acp] task_notification for unmapped task: ${taskNotif.task_id}`,
+        `[dev-studio] task_notification for unmapped task: ${taskNotif.task_id}`,
       );
     }
   }
@@ -418,7 +418,7 @@ export class ClaudeAcpAgent implements Agent {
             } as any,
           })
           .catch((err) => {
-            this.logger.error("[claude-code-acp] session_info_update failed:", err);
+            this.logger.error("[dev-studio] session_info_update failed:", err);
           });
         // Persist title to disk index
         const projectDir = getProjectDir(session.cwd);

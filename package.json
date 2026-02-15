@@ -28,7 +28,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "app": "tsc -p app/tsconfig.json && node app/rebrand.cjs && 'node_modules/electron/dist/Claude Code ACP.app/Contents/MacOS/Claude Code ACP' app/dist/main.js",
+    "app": "tsc -p app/tsconfig.json && node app/rebrand.cjs && 'node_modules/electron/dist/Dev Studio.app/Contents/MacOS/Dev Studio' app/dist/main.js",
     "demo": "bun demo/dev.ts",
     "demo:server": "bun --hot demo/server/index.ts",
     "demo:vite": "vite demo",

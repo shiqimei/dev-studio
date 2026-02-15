@@ -291,7 +291,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
       const haikuWarmup = this.haikuPool.warmup();
       const opusWarmup = this.opusPool.warmup();
 
-      // Spawn Claude Code ACP connection (required)
+      // Spawn Claude ACP connection (required)
       this.connections.claude = await createAcpConnection(this.broadcast.bind(this));
       log.info({ durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "daemon: Claude ACP connection ready");
 

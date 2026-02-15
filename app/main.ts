@@ -1,5 +1,5 @@
 /**
- * Electron main process for the Claude Code ACP demo.
+ * Electron main process for Dev Studio.
  *
  * Starts the Bun backend server and Vite dev server,
  * then opens a BrowserWindow pointing at the Vite URL.
@@ -78,7 +78,7 @@ function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
-    title: "Claude Code ACP",
+    title: "Dev Studio",
     titleBarStyle: isMac ? "hiddenInset" : "hidden",
     ...(isMac
       ? { trafficLightPosition: { x: 16, y: 12 } }
@@ -105,12 +105,12 @@ async function cleanup() {
   }
 }
 
-app.setName("Claude Code ACP");
+app.setName("Dev Studio");
 
 app.whenReady().then(async () => {
   try {
     const isMac = process.platform === "darwin";
-    const appName = "Claude Code ACP";
+    const appName = "Dev Studio";
 
     // Set dock icon at runtime (works immediately for the current process)
     if (isMac && app.dock) {

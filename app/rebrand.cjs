@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Rebrand the stock Electron.app bundle so macOS shows "Claude Code ACP"
+ * Rebrand the stock Electron.app bundle so macOS shows "Dev Studio"
  * in the dock, Activity Monitor, and everywhere else.
  *
  * Run before launching Electron: node app/rebrand.js
@@ -9,8 +9,8 @@ const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
-const APP_NAME = "Claude Code ACP";
-const BUNDLE_ID = "com.isoform.claude-code-acp";
+const APP_NAME = "Dev Studio";
+const BUNDLE_ID = "com.isoform.dev-studio";
 const ROOT = path.resolve(__dirname, "..");
 const DIST = path.join(ROOT, "node_modules/electron/dist");
 const OLD_BUNDLE = path.join(DIST, "Electron.app");

@@ -1,4 +1,4 @@
-# Claude Code ACP -- Feature Compatibility Table
+# Dev Studio — Feature Compatibility Table
 
 Tracks every Claude Code SDK feature and its ACP protocol support status.
 Target: 100% feature coverage.

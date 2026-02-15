@@ -230,7 +230,7 @@ export function toAcpNotifications(
                 });
               } else {
                 logger.error(
-                  `[claude-code-acp] Got a tool response for tool use that wasn't tracked: ${toolUseId}`,
+                  `[dev-studio] Got a tool response for tool use that wasn't tracked: ${toolUseId}`,
                 );
               }
             },
@@ -281,7 +281,7 @@ export function toAcpNotifications(
         const toolUse = toolUseCache[chunk.tool_use_id];
         if (!toolUse) {
           logger.error(
-            `[claude-code-acp] Got a tool result for tool use that wasn't tracked: ${chunk.tool_use_id}`,
+            `[dev-studio] Got a tool result for tool use that wasn't tracked: ${chunk.tool_use_id}`,
           );
           break;
         }

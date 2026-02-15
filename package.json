@@ -1,5 +1,5 @@
 {
-  "name": "@zed-industries/claude-code-acp",
+  "name": "@isoform/claude-code-acp",
   "publishConfig": {
     "access": "public"
   },
@@ -53,13 +53,13 @@
     "sdk",
     "code"
   ],
-  "homepage": "https://github.com/zed-industries/claude-code-acp#readme",
+  "homepage": "https://github.com/isoform/dev-studio#readme",
   "bugs": {
-    "url": "https://github.com/zed-industries/claude-code-acp/issues"
+    "url": "https://github.com/isoform/dev-studio/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/zed-industries/claude-code-acp.git"
+    "url": "git+https://github.com/isoform/dev-studio.git"
   },
   "author": "Zed Industries",
   "license": "Apache-2.0",

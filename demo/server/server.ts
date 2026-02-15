@@ -349,11 +349,39 @@ export function startServer(port: number) {
           }
         }
 
-        // GET /api/kanban/tasks/:sessionId/history
+        // GET /api/kanban/tasks/:sessionId/history?format=agent|raw
         if (req.method === "GET" && subPath === "/history") {
           try {
             const result = await daemon.getHistory(sessionId);
-            return json({ sessionId, entries: result.entries });
+            const format = url.searchParams.get("format") ?? "agent";
+            if (format === "raw") {
+              return json({ sessionId, entries: result.entries });
+            }
+            // Agent-friendly: extract role, text content, tool use, timestamps
+            const messages = (result.entries as any[]).map((entry: any) => {
+              const msg = entry.message;
+              const role = entry.type === "user" ? "user" : "assistant";
+              // Extract text content
+              const textParts = (msg?.content ?? []).filter((c: any) => c.type === "text").map((c: any) => c.text);
+              const text = textParts.join("\n") || null;
+              // Extract tool use
+              const toolUse = (msg?.content ?? []).filter((c: any) => c.type === "tool_use").map((c: any) => ({
+                tool: c.name, id: c.id, input: c.input,
+              }));
+              // Extract tool results
+              const toolResults = (msg?.content ?? []).filter((c: any) => c.type === "tool_result").map((c: any) => ({
+                id: c.tool_use_id,
+                output: typeof c.content === "string" ? c.content : (c.content ?? []).filter((p: any) => p.type === "text").map((p: any) => p.text).join("\n"),
+                isError: c.is_error ?? false,
+              }));
+              const out: any = { role, timestamp: entry.timestamp };
+              if (text) out.text = text;
+              if (role === "assistant" && msg?.model) out.model = msg.model;
+              if (toolUse.length > 0) out.toolUse = toolUse;
+              if (toolResults.length > 0) out.toolResults = toolResults;
+              return out;
+            });
+            return json({ sessionId, messages });
           } catch (err: any) {
             if (/No conversation found|Session not found/i.test(err?.message ?? "")) {
               return new Response(JSON.stringify({ error: "Session not found" }), { status: 404, headers: { "Content-Type": "application/json" } });

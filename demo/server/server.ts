@@ -177,6 +177,189 @@ export function startServer(port: number) {
       }
 
       // ── AgentInst API ──
+      // ── Kanban REST API (for OpenClaw / external integrations) ──
+
+      if (url.pathname === "/api/kanban" && req.method === "GET") {
+        const snap = kanbanDb.getKanbanSnapshot();
+        const managedInfo = kanbanDb.getManagedSessionInfo();
+        const executorTypes = kanbanDb.getAllSessionExecutorTypes();
+
+        // Build column-grouped response
+        const columns: Record<string, Array<{ sessionId: string; title: string | null; pendingPrompt: string | null; executor: string; projectPath: string | null; isProcessing: boolean }>> = {};
+        const defaultColumns = ["backlog", "in_progress", "in_review", "completed", "recurring"];
+        for (const col of defaultColumns) columns[col] = [];
+
+        // Get session titles from daemon cache
+        for (const [sessionId, column] of Object.entries(snap.columnOverrides)) {
+          const col = column.replace(/\s+/g, "_").toLowerCase();
+          if (!columns[col]) columns[col] = [];
+          columns[col].push({
+            sessionId,
+            title: daemon.getSessionTitle(sessionId) ?? null,
+            pendingPrompt: snap.pendingPrompts[sessionId] ?? null,
+            executor: executorTypes[sessionId] ?? "claude",
+            projectPath: managedInfo.get(sessionId)?.projectPath ?? null,
+            isProcessing: daemon.isProcessing(sessionId),
+          });
+        }
+
+        // Apply sort orders
+        for (const [col, order] of Object.entries(snap.sortOrders)) {
+          const key = col.replace(/\s+/g, "_").toLowerCase();
+          if (columns[key] && order) {
+            const orderMap = new Map(order.map((id, i) => [id, i]));
+            columns[key].sort((a, b) => (orderMap.get(a.sessionId) ?? 999) - (orderMap.get(b.sessionId) ?? 999));
+          }
+        }
+
+        return json({ columns, version: snap.version });
+      }
+
+      if (url.pathname === "/api/kanban/tasks" && req.method === "POST") {
+        try {
+          const body = await req.json() as { title?: string; column?: string; prompt?: string; executor?: string; projectPath?: string };
+          const title = body.title?.trim() || "New task";
+          const column = body.column?.replace(/_/g, " ") || "backlog";
+          const executor = (body.executor as kanbanDb.ExecutorType) || "claude";
+          const projectPath = body.projectPath ?? undefined;
+
+          const { sessionId } = await daemon.createSession(executor, projectPath);
+          await daemon.renameSession(sessionId, title);
+
+          const ops: KanbanOp[] = [{ op: "set_column", sessionId, column }];
+          if (body.prompt?.trim()) {
+            ops.push({ op: "set_pending_prompt", sessionId, text: body.prompt.trim() });
+          }
+          kanbanDb.applyKanbanOps(ops);
+          broadcastKanbanState();
+          await daemon.broadcastSessions();
+
+          return json({ sessionId, title, column });
+        } catch (err: any) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json" } });
+        }
+      }
+
+      // Task-specific routes: /api/kanban/tasks/:sessionId[/action]
+      const kanbanTaskMatch = url.pathname.match(/^\/api\/kanban\/tasks\/([^\/]+)(\/.*)?$/);
+      if (kanbanTaskMatch) {
+        const sessionId = kanbanTaskMatch[1];
+        const subPath = kanbanTaskMatch[2] || "";
+
+        // GET /api/kanban/tasks/:sessionId
+        if (req.method === "GET" && !subPath) {
+          const snap = kanbanDb.getKanbanSnapshot();
+          const executorTypes = kanbanDb.getAllSessionExecutorTypes();
+          const managedInfo = kanbanDb.getManagedSessionInfo();
+          const column = snap.columnOverrides[sessionId] ?? null;
+          if (!column) {
+            return new Response(JSON.stringify({ error: "Task not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+          }
+          return json({
+            sessionId,
+            title: daemon.getSessionTitle(sessionId) ?? null,
+            column: column.replace(/\s+/g, "_").toLowerCase(),
+            executor: executorTypes[sessionId] ?? "claude",
+            projectPath: managedInfo.get(sessionId)?.projectPath ?? null,
+            isProcessing: daemon.isProcessing(sessionId),
+            pendingPrompt: snap.pendingPrompts[sessionId] ?? null,
+          });
+        }
+
+        // PATCH /api/kanban/tasks/:sessionId
+        if (req.method === "PATCH" && !subPath) {
+          try {
+            const body = await req.json() as { column?: string; title?: string; prompt?: string };
+            const ops: KanbanOp[] = [];
+
+            if (body.column) {
+              ops.push({ op: "set_column", sessionId, column: body.column.replace(/_/g, " ") });
+            }
+            if (body.title) {
+              await daemon.renameSession(sessionId, body.title.trim());
+            }
+            if (body.prompt !== undefined) {
+              if (body.prompt) {
+                ops.push({ op: "set_pending_prompt", sessionId, text: body.prompt.trim() });
+              } else {
+                ops.push({ op: "remove_pending_prompt", sessionId });
+              }
+            }
+
+            if (ops.length > 0) {
+              const version = kanbanDb.applyKanbanOps(ops);
+              broadcastKanbanState();
+              return json({ ok: true, version });
+            }
+            return json({ ok: true });
+          } catch (err: any) {
+            return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json" } });
+          }
+        }
+
+        // DELETE /api/kanban/tasks/:sessionId
+        if (req.method === "DELETE" && !subPath) {
+          try {
+            const { success, deletedIds } = await daemon.deleteSession(sessionId);
+            if (success) {
+              for (const [, cs] of clients) {
+                if (deletedIds.includes(cs.currentSessionId!)) cs.currentSessionId = null;
+              }
+              kanbanDb.applyKanbanOps([
+                ...deletedIds.map((id): KanbanOp => ({ op: "remove_column", sessionId: id })),
+                ...deletedIds.map((id): KanbanOp => ({ op: "remove_pending_prompt", sessionId: id })),
+                { op: "bulk_remove_sort_entries", sessionIds: deletedIds },
+              ]);
+              broadcastKanbanState();
+              sendToAll(JSON.stringify({ type: "session_deleted", sessionIds: deletedIds }));
+              await daemon.broadcastSessions();
+            }
+            return json({ ok: success, deletedIds });
+          } catch (err: any) {
+            return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json" } });
+          }
+        }
+
+        // POST /api/kanban/tasks/:sessionId/prompt
+        if (req.method === "POST" && subPath === "/prompt") {
+          try {
+            const body = await req.json() as { text: string; startIfIdle?: boolean };
+            if (!body.text?.trim()) {
+              return new Response(JSON.stringify({ error: "text required" }), { status: 400, headers: { "Content-Type": "application/json" } });
+            }
+
+            // Optionally move from backlog to in_progress
+            if (body.startIfIdle) {
+              const snap = kanbanDb.getKanbanSnapshot();
+              const col = snap.columnOverrides[sessionId];
+              if (col === "backlog") {
+                kanbanDb.applyKanbanOps([{ op: "set_column", sessionId, column: "in progress" }]);
+                broadcastKanbanState();
+              }
+            }
+
+            if (daemon.isProcessing(sessionId)) {
+              daemon.interruptAndPrompt(sessionId, body.text.trim());
+            } else {
+              daemon.prompt(sessionId, body.text.trim());
+            }
+            return json({ ok: true, isProcessing: true });
+          } catch (err: any) {
+            return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json" } });
+          }
+        }
+
+        // POST /api/kanban/tasks/:sessionId/interrupt
+        if (req.method === "POST" && subPath === "/interrupt") {
+          try {
+            await daemon.interrupt(sessionId);
+            return json({ ok: true });
+          } catch (err: any) {
+            return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json" } });
+          }
+        }
+      }
+
       if (url.pathname.startsWith("/api/inst/")) {
         const store = getInstStore();
         const instPath = url.pathname.slice("/api/inst".length); // e.g. "/tasks", "/tasks/:uuid/status"

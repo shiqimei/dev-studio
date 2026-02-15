@@ -349,6 +349,19 @@ export function startServer(port: number) {
           }
         }
 
+        // GET /api/kanban/tasks/:sessionId/history
+        if (req.method === "GET" && subPath === "/history") {
+          try {
+            const result = await daemon.getHistory(sessionId);
+            return json({ sessionId, entries: result.entries });
+          } catch (err: any) {
+            if (/No conversation found|Session not found/i.test(err?.message ?? "")) {
+              return new Response(JSON.stringify({ error: "Session not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+            }
+            return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { "Content-Type": "application/json" } });
+          }
+        }
+
         // POST /api/kanban/tasks/:sessionId/interrupt
         if (req.method === "POST" && subPath === "/interrupt") {
           try {

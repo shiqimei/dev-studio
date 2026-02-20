@@ -449,6 +449,17 @@ function KanbanSessionRow({
           {badgeLabel}
         </div>
       )}
+      {session.instSummary && (
+        <div
+          className={`kanban-inst-badge${session.instSummary.failed > 0 ? " kanban-inst-badge-fail" : " kanban-inst-badge-pass"}`}
+          title={`INST: ${session.instSummary.passed}/${session.instSummary.totalRuns} passed${session.instSummary.checkpoints.total > 0 ? `, ${session.instSummary.checkpoints.passed}/${session.instSummary.checkpoints.total} checkpoints` : ""}`}
+        >
+          <span className="kanban-inst-dot" />
+          {session.instSummary.failed > 0
+            ? `${session.instSummary.failed} failed`
+            : `${session.instSummary.checkpoints.passed}/${session.instSummary.checkpoints.total}`}
+        </div>
+      )}
     </div>
   );
 }

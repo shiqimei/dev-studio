@@ -2369,6 +2369,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!state.currentSessionId || !state.connected) return;
     if (state.messages.length > 0) return;
+    // Don't fire if a session switch is already in progress (e.g. hash routing
+    // triggered resumeSessionCb). The pending switch will load the history;
+    // firing here would send a competing switch_session for the stale default
+    // session and overwrite the restored messages.
+    if (state.switchingToSessionId) return;
     if (historyRequestedFor.current.has(state.currentSessionId)) return;
 
     const sessionId = state.currentSessionId;
@@ -2378,6 +2383,12 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       // Skip if this is a freshly-created session (empty messages is expected)
       if ((window as any).__newSessionStart && performance.now() - (window as any).__newSessionStart < 5000) {
         console.log(`[${pageMs()}] fallback skipped for new session ${sessionId.slice(0, 8)} (empty is expected)`);
+        return;
+      }
+      // Skip if hash-based session restore hasn't completed yet — the hash
+      // routing effect will handle it once it fires.
+      if (!hashInitialized.current) {
+        console.log(`[${pageMs()}] fallback skipped for ${sessionId.slice(0, 8)} (hash restore pending)`);
         return;
       }
       historyRequestedFor.current.add(sessionId);
@@ -2391,7 +2402,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [state.currentSessionId, state.connected, state.messages.length]);
+  }, [state.currentSessionId, state.connected, state.messages.length, state.switchingToSessionId]);
 
   return (
     <WsActionsContext.Provider value={actions}>

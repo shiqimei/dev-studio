@@ -9,11 +9,12 @@
  */
 
 import { Readable } from "node:stream";
-import { _parseLine, _buildPayload, _tasks } from "agentinst";
-import { Store } from "@agentinst/server";
+import { _parseLine, _buildPayload, _tasks } from "./agentinst/sdk.js";
+import { Store, type InstSummary } from "./agentinst/store.js";
 import { log } from "./log.js";
 
 const INST_PREFIX = ":::INST:";
+const SESSION_ID_RE = /"sessionId"\s*:\s*"([^"]+)"/;
 
 // ── Singleton embedded store ──
 let _store: Store | null = null;
@@ -29,11 +30,16 @@ export function getInstStore(): Store {
 /**
  * Push a completed task's payload to the embedded store, then remove from SDK state.
  */
-function pushToStore(taskUuid: string): void {
+function pushToStore(taskUuid: string, sessionId?: string | null): void {
   if (!_tasks.has(taskUuid)) return;
   const store = getInstStore();
   const payload = _buildPayload(taskUuid);
   if (payload.entries.length === 0) return;
+
+  // Register session mapping before ingesting
+  if (sessionId) {
+    store.registerTaskSession(taskUuid, sessionId);
+  }
 
   // Remove from SDK state so it won't be pushed again on stream end
   _tasks.delete(taskUuid);
@@ -41,12 +47,20 @@ function pushToStore(taskUuid: string): void {
   try {
     const result = store.ingest(payload);
     log.info(
-      { task: taskUuid.slice(0, 8), run: result.run, passed: result.passed, entries: result.received },
+      { task: taskUuid.slice(0, 8), session: sessionId?.slice(0, 8), run: result.run, passed: result.passed, entries: result.received },
       "inst: run ingested",
     );
   } catch (err: any) {
     log.error({ task: taskUuid.slice(0, 8), err: err.message }, "inst: ingest failed");
   }
+}
+
+/**
+ * Get INST summary for a kanban session. Returns null if no data.
+ */
+export function getInstSummaryForSession(sessionId: string): InstSummary | null {
+  if (!_store) return null;
+  return _store.getSessionSummary(sessionId);
 }
 
 /**
@@ -66,6 +80,7 @@ export function pushAllPendingTasks(): void {
  */
 export function createInstFilteredReadable(agentStdout: Readable): Readable {
   let buffer = "";
+  let currentSessionId: string | null = null;
 
   const filtered = new Readable({
     read() {},
@@ -87,15 +102,32 @@ export function createInstFilteredReadable(agentStdout: Readable): Readable {
           log.warn({ line: line.slice(0, 80) }, "inst: unparseable INST line");
         }
 
-        // Check if this was a DONE command — push immediately
         const rest = line.slice(INST_PREFIX.length);
         const colonIdx = rest.indexOf(":");
         const command = colonIdx === -1 ? rest : rest.slice(0, colonIdx);
+
+        // Register session mapping when a new INST task is declared
+        if (command === "TASK" && currentSessionId) {
+          const taskPayload = rest.slice(colonIdx + 1);
+          const taskUuidEnd = taskPayload.indexOf(":");
+          const taskUuid = taskUuidEnd === -1 ? taskPayload : taskPayload.slice(0, taskUuidEnd);
+          if (taskUuid) {
+            getInstStore().registerTaskSession(taskUuid, currentSessionId);
+          }
+        }
+
+        // Push completed task to store immediately
         if (command === "DONE") {
-          const payload = rest.slice(colonIdx + 1); // task_uuid
-          pushToStore(payload);
+          const taskUuid = rest.slice(colonIdx + 1);
+          pushToStore(taskUuid, currentSessionId);
         }
       } else {
+        // Track session context from NDJSON messages
+        const sessionMatch = line.match(SESSION_ID_RE);
+        if (sessionMatch) {
+          currentSessionId = sessionMatch[1];
+        }
+
         // Pass through to ACP protocol parser
         filtered.push(line + "\n");
       }

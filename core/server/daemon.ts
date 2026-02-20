@@ -11,6 +11,8 @@
  * calls this.eventSink(...) which always points to the latest handler.
  */
 
+import { homedir } from "os";
+import { join } from "path";
 import { createAcpConnection, createNewSession, resumeSession } from "./session.js";
 import { createCodexConnection, isCodexAvailable } from "./codex-session.js";
 import { readCodexSessionHistory } from "../../src/disk/codex-sessions.js";
@@ -19,6 +21,7 @@ import { createOpusPool } from "./opus-pool.js";
 import type { AcpConnection } from "./types.js";
 import type { HaikuPool } from "./haiku-pool.js";
 import type { OpusPool } from "./opus-pool.js";
+import { getInstSummaryForSession } from "./inst-interceptor.js";
 import { log, bootMs } from "./log.js";
 import type { KanbanOp } from "./kanban.js";
 import { getProjectDir } from "./kanban.js";
@@ -68,6 +71,32 @@ function setActivity(ts: TurnState, activity: TurnActivity, detail?: string): bo
 function isSessionGoneError(err: any): boolean {
   const msg = err?.message ?? "";
   return /No conversation found|Session not found/i.test(msg) || err?.code === -32603;
+}
+
+/**
+ * Read a session's JSONL file directly from disk.
+ * Used as a fallback when sessions/getHistory can't find cross-project sessions
+ * (the ACP SDK only searches its own project directory).
+ *
+ * Claude Code stores sessions at: ~/.claude/projects/<hashed-cwd>/<sessionId>.jsonl
+ * where <hashed-cwd> is the absolute path with "/" replaced by "-".
+ */
+async function readSessionJsonlFromDisk(sessionId: string, projectCwd: string): Promise<unknown[]> {
+  const hashedCwd = projectCwd.replace(/\//g, "-");
+  const jsonlPath = join(homedir(), ".claude", "projects", hashedCwd, `${sessionId}.jsonl`);
+  const file = Bun.file(jsonlPath);
+  if (!(await file.exists())) return [];
+  const raw = await file.text();
+  const entries: unknown[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      entries.push(JSON.parse(line));
+    } catch {
+      // Skip malformed lines
+    }
+  }
+  return entries;
 }
 
 // ── Route whitelist ──
@@ -997,6 +1026,25 @@ class AgentsDaemonImpl implements AgentsDaemon {
       return { entries };
     }
 
+    // Read session JSONL directly from disk using the best-known project CWD.
+    // The ACP SDK's sessions/getHistory only searches its own process cwd,
+    // so it can't find cross-project sessions. Reading from disk is both
+    // faster and works for any project.
+    const storedCwd = kanbanDb.getManagedSessionInfo().get(sessionId)?.projectPath ?? undefined;
+    const activeCwd = this.getActiveProjectCwd() ?? undefined;
+    const cwdsToTry = [...new Set([storedCwd, activeCwd].filter(Boolean))] as string[];
+    for (const cwd of cwdsToTry) {
+      try {
+        const diskEntries = await readSessionJsonlFromDisk(sessionId, cwd);
+        if (diskEntries.length > 0) {
+          return { entries: diskEntries };
+        }
+      } catch (err: any) {
+        log.warn({ session: sid(sessionId), cwd, err: err.message }, "daemon: getHistory disk read failed");
+      }
+    }
+
+    // Last resort: ask the ACP SDK (works for sessions in its own project dir)
     const conn = this.getConnectionForSession(sessionId);
     if (!conn) throw new Error("Daemon not initialized");
     const result = await conn.connection.extMethod("sessions/getHistory", { sessionId });
@@ -1078,6 +1126,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
               }),
             };
           })() : {}),
+          ...((() => { const inst = getInstSummaryForSession(s.sessionId); return inst ? { instSummary: inst } : {}; })()),
         });
 
         const claudeSessions = ((claudeResult as any).sessions ?? []).map(mapSession);
@@ -1127,6 +1176,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
                   }),
                 };
               })() : {}),
+              ...((() => { const inst = getInstSummaryForSession(id); return inst ? { instSummary: inst } : {}; })()),
             });
           }
         }

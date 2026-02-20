@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 import { Readable } from "node:stream";
 import { createInstFilteredReadable, getInstStore } from "./inst-interceptor.js";
-import { _reset } from "agentinst";
+import { _reset } from "./agentinst/sdk.js";
 
 function createMockStdout(lines: string[]): Readable {
   const readable = new Readable({ read() {} });

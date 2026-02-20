@@ -196,6 +196,13 @@ export interface DiskSession {
   turnThinkingDurationMs?: number;
   /** Why the last turn ended (e.g., "end_turn", "error", "max_tokens"). */
   turnStopReason?: string;
+  /** INST (agentinst) summary for this session, if any INST data exists. */
+  instSummary?: {
+    totalRuns: number;
+    passed: number;
+    failed: number;
+    checkpoints: { total: number; passed: number };
+  } | null;
 }
 
 export interface TaskItemEntry {

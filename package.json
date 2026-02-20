@@ -1,14 +1,14 @@
 {
-  "name": "@isoform/claude-code-acp",
+  "name": "@isoform/dev-studio",
   "publishConfig": {
     "access": "public"
   },
   "version": "0.13.2",
-  "description": "An ACP-compatible coding agent powered by the Claude Code SDK (TypeScript)",
+  "description": "A full-featured coding agent app built on the Claude Agent SDK and the Agent Client Protocol",
   "main": "dist/lib.js",
   "types": "dist/lib.d.ts",
   "bin": {
-    "claude-code-acp": "./dist/index.js"
+    "dev-studio": "./dist/index.js"
   },
   "type": "module",
   "exports": {
@@ -45,13 +45,13 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [
-    "claude",
+    "dev-studio",
     "acp",
     "agent",
     "anthropic",
     "typescript",
     "sdk",
-    "code"
+    "claude"
   ],
   "homepage": "https://github.com/isoform/dev-studio#readme",
   "bugs": {

@@ -3,7 +3,10 @@
  * Rebrand the stock Electron.app bundle so macOS shows "Dev Studio"
  * in the dock, Activity Monitor, and everywhere else.
  *
- * Run before launching Electron: node app/rebrand.js
+ * Idempotent — safe to run repeatedly. Always re-applies plist patches
+ * and icon copy so the bundle stays in sync with the current APP_NAME.
+ *
+ * Run before launching Electron: node app/rebrand.cjs
  */
 const fs = require("fs");
 const path = require("path");
@@ -13,33 +16,53 @@ const APP_NAME = "Dev Studio";
 const BUNDLE_ID = "com.isoform.dev-studio";
 const ROOT = path.resolve(__dirname, "..");
 const DIST = path.join(ROOT, "node_modules/electron/dist");
-const OLD_BUNDLE = path.join(DIST, "Electron.app");
 const NEW_BUNDLE = path.join(DIST, `${APP_NAME}.app`);
 
 function plutil(key, value, plist) {
   execFileSync("plutil", ["-replace", key, "-string", value, plist]);
 }
 
-function ensureSpotlightApp(bundlePath) {
+function lsregister(appPath) {
+  try {
+    execFileSync(
+      "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+      ["-f", appPath],
+    );
+  } catch { /* ignore on non-macOS */ }
+}
+
+/**
+ * Find the .app bundle in the Electron dist directory.
+ * Handles: stock "Electron.app", current "Dev Studio.app",
+ * or any previously-rebranded name (e.g. "Claude Code ACP.app").
+ */
+function findBundle() {
+  if (fs.existsSync(NEW_BUNDLE)) return NEW_BUNDLE;
+  const stock = path.join(DIST, "Electron.app");
+  if (fs.existsSync(stock)) return stock;
+  // Scan for any .app bundle (previously rebranded with a different name)
+  if (fs.existsSync(DIST)) {
+    for (const entry of fs.readdirSync(DIST)) {
+      if (entry.endsWith(".app") && fs.statSync(path.join(DIST, entry)).isDirectory()) {
+        return path.join(DIST, entry);
+      }
+    }
+  }
+  return null;
+}
+
+function ensureSpotlightApp() {
   if (process.platform !== "darwin") return;
   const appsDir = path.join(require("os").homedir(), "Applications");
   const wrapper = path.join(appsDir, `${APP_NAME}.app`);
   fs.mkdirSync(appsDir, { recursive: true });
 
-  // Build a lightweight launcher .app bundle that runs `npm run app` in ROOT.
-  // A real .app bundle (not a symlink) is needed for Raycast/Spotlight indexing.
   const macosDir = path.join(wrapper, "Contents/MacOS");
   const resDir = path.join(wrapper, "Contents/Resources");
   const plistPath = path.join(wrapper, "Contents/Info.plist");
   const launcherPath = path.join(macosDir, "launcher");
 
-  // Check if launcher already points to the right project
-  if (fs.existsSync(launcherPath)) {
-    const existing = fs.readFileSync(launcherPath, "utf8");
-    if (existing.includes(ROOT)) return; // already up to date
-  }
-
-  // Remove old symlink or stale wrapper
+  // Always recreate the wrapper to keep icon and plist in sync
   fs.rmSync(wrapper, { recursive: true, force: true });
 
   fs.mkdirSync(macosDir, { recursive: true });
@@ -84,44 +107,44 @@ function ensureSpotlightApp(bundlePath) {
 </plist>\n`,
   );
 
-  // Register with Launch Services
-  try {
-    execFileSync(
-      "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
-      ["-f", wrapper],
-    );
-  } catch { /* ignore */ }
+  lsregister(wrapper);
 }
 
-// Already rebranded?
-if (
-  fs.existsSync(NEW_BUNDLE) &&
-  fs.existsSync(path.join(NEW_BUNDLE, `Contents/MacOS/${APP_NAME}`))
-) {
-  ensureSpotlightApp(NEW_BUNDLE);
-  process.exit(0);
-}
+// ── Find and rename bundle ──
 
-const bundle = fs.existsSync(OLD_BUNDLE) ? OLD_BUNDLE : NEW_BUNDLE;
-if (!fs.existsSync(bundle)) {
-  console.error("Electron.app not found at", DIST);
+const bundle = findBundle();
+if (!bundle) {
+  console.error("No .app bundle found in", DIST);
   process.exit(1);
 }
 
-// 1. Rename bundle directory
-if (bundle === OLD_BUNDLE && !fs.existsSync(NEW_BUNDLE)) {
-  fs.renameSync(OLD_BUNDLE, NEW_BUNDLE);
+// Rename bundle directory if needed (handles Electron.app or any old name)
+if (bundle !== NEW_BUNDLE) {
+  // Remove stale target if it somehow exists
+  if (fs.existsSync(NEW_BUNDLE)) {
+    fs.rmSync(NEW_BUNDLE, { recursive: true });
+  }
+  fs.renameSync(bundle, NEW_BUNDLE);
 }
 const b = NEW_BUNDLE;
 
-// 2. Rename main binary
-const oldBin = path.join(b, "Contents/MacOS/Electron");
-const newBin = path.join(b, `Contents/MacOS/${APP_NAME}`);
-if (fs.existsSync(oldBin) && !fs.existsSync(newBin)) {
-  fs.renameSync(oldBin, newBin);
+// ── Rename main binary ──
+
+const macosDir = path.join(b, "Contents/MacOS");
+const newBin = path.join(macosDir, APP_NAME);
+if (!fs.existsSync(newBin)) {
+  // Find the existing binary (could be "Electron" or any previous name)
+  for (const entry of fs.readdirSync(macosDir)) {
+    const full = path.join(macosDir, entry);
+    if (fs.statSync(full).isFile() && !entry.startsWith(".")) {
+      fs.renameSync(full, newBin);
+      break;
+    }
+  }
 }
 
-// 3. Patch main Info.plist
+// ── Always re-apply plist patches (idempotent) ──
+
 const plist = path.join(b, "Contents/Info.plist");
 if (fs.existsSync(plist)) {
   plutil("CFBundleName", APP_NAME, plist);
@@ -130,20 +153,35 @@ if (fs.existsSync(plist)) {
   plutil("CFBundleIdentifier", BUNDLE_ID, plist);
 }
 
-// 4. Rename helper apps and their binaries
+// ── Rename helper apps and their binaries ──
+
 const fwDir = path.join(b, "Contents/Frameworks");
 if (fs.existsSync(fwDir)) {
+  const targetPrefix = `${APP_NAME} Helper`;
   for (const entry of fs.readdirSync(fwDir)) {
-    if (!entry.startsWith("Electron Helper") || !entry.endsWith(".app")) continue;
-    const suffix = entry.slice("Electron Helper".length, -".app".length);
-    const newName = `${APP_NAME} Helper${suffix}`;
+    if (!entry.endsWith(".app")) continue;
+    // Skip already-rebranded helpers
+    if (entry.startsWith(targetPrefix)) continue;
+    // Match "Electron Helper*.app" or any previously-rebranded "*Helper*.app"
+    if (!entry.includes("Helper")) continue;
+
     const helperDir = path.join(fwDir, entry);
+    // Determine suffix (e.g. " (GPU)", " (Renderer)", " (Plugin)")
+    const helperMatch = entry.match(/Helper(.*)\.app$/);
+    const suffix = helperMatch ? helperMatch[1] : "";
+    const newName = `${APP_NAME} Helper${suffix}`;
 
     // Rename binary
-    const oldHBin = path.join(helperDir, `Contents/MacOS/Electron Helper${suffix}`);
-    const newHBin = path.join(helperDir, `Contents/MacOS/${newName}`);
-    if (fs.existsSync(oldHBin) && !fs.existsSync(newHBin)) {
-      fs.renameSync(oldHBin, newHBin);
+    const helperMacosDir = path.join(helperDir, "Contents/MacOS");
+    if (fs.existsSync(helperMacosDir)) {
+      for (const bin of fs.readdirSync(helperMacosDir)) {
+        const oldHBin = path.join(helperMacosDir, bin);
+        const newHBin = path.join(helperMacosDir, newName);
+        if (oldHBin !== newHBin && fs.statSync(oldHBin).isFile()) {
+          fs.renameSync(oldHBin, newHBin);
+          break;
+        }
+      }
     }
 
     // Patch helper plist
@@ -161,14 +199,16 @@ if (fs.existsSync(fwDir)) {
   }
 }
 
-// 5. Copy icon
+// ── Always re-copy icon ──
+
 const srcIcon = path.join(ROOT, "app/icon.icns");
 const dstIcon = path.join(b, "Contents/Resources/electron.icns");
 if (fs.existsSync(srcIcon)) {
   fs.copyFileSync(srcIcon, dstIcon);
 }
 
-// 6. Write InfoPlist.strings
+// ── Always re-write InfoPlist.strings ──
+
 const enLproj = path.join(b, "Contents/Resources/en.lproj");
 fs.mkdirSync(enLproj, { recursive: true });
 fs.writeFileSync(
@@ -176,21 +216,19 @@ fs.writeFileSync(
   `"CFBundleName" = "${APP_NAME}";\n"CFBundleDisplayName" = "${APP_NAME}";\n`,
 );
 
-// 7. Update path.txt so `npx electron` still works
+// ── Update path.txt so `npx electron` still works ──
+
 fs.writeFileSync(
   path.join(ROOT, "node_modules/electron/path.txt"),
   `${APP_NAME}.app/Contents/MacOS/${APP_NAME}`,
 );
 
-// 8. Force macOS to re-read bundle metadata
-try {
-  execFileSync(
-    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
-    ["-f", b],
-  );
-} catch { /* ignore on non-macOS */ }
+// ── Force macOS to re-read bundle metadata ──
 
-// 9. Symlink into ~/Applications so Spotlight/Raycast can find the app
-ensureSpotlightApp(b);
+lsregister(b);
+
+// ── Ensure Spotlight/Raycast launcher ──
+
+ensureSpotlightApp();
 
 console.log(`Rebranded Electron → ${APP_NAME}`);

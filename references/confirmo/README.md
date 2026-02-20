@@ -9,7 +9,7 @@ Confirmo monitors Claude Code (and Codex, Aider, OpenCode) using **two passive m
 
 ### 1. Process Detection (polling)
 
-Every 3 seconds, `AgentMonitor.checkAgents()` runs `pgrep -f` to detect running processes matching patterns like `claude-code`, `claude-code-acp`, `bin/claude`. Emits `agent-start` / `agent-stop`.
+Every 3 seconds, `AgentMonitor.checkAgents()` runs `pgrep -f` to detect running processes matching patterns like `claude-code`, `dev-studio`, `bin/claude`. Emits `agent-start` / `agent-stop`.
 
 ### 2. JSONL File Watching (core logic)
 

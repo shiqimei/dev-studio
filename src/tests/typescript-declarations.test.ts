@@ -180,7 +180,7 @@ import {
   toolUpdateFromToolResult,
   createPreToolUseHook,
   toolNames,
-} from "@isoform/claude-code-acp";
+} from "@isoform/dev-studio";
 
 // Type-only imports
 import type {
@@ -192,7 +192,7 @@ import type {
   PermissionCheckResult,
   SettingsManagerOptions,
   ClaudePlanEntry,
-} from "@isoform/claude-code-acp";
+} from "@isoform/dev-studio";
 
 // Verify exports exist and have expected types
 const _runAcp: typeof runAcp = runAcp;
@@ -222,13 +222,13 @@ import {
   ACP_TOOL_NAME_PREFIX,
   toolInfoFromToolUse,
   planEntries,
-} from "@isoform/claude-code-acp/dist/tools.js";
+} from "@isoform/dev-studio/dist/tools.js";
 
 // Deep import from dist/settings.js
 import {
   SettingsManager,
   getManagedSettingsPath,
-} from "@isoform/claude-code-acp/dist/settings.js";
+} from "@isoform/dev-studio/dist/settings.js";
 
 // Deep import from dist/utils.js
 import {
@@ -236,7 +236,7 @@ import {
   nodeToWebReadable,
   nodeToWebWritable,
   loadManagedSettings,
-} from "@isoform/claude-code-acp/dist/utils.js";
+} from "@isoform/dev-studio/dist/utils.js";
 
 // Verify types work
 const prefix: string = ACP_TOOL_NAME_PREFIX;
@@ -263,7 +263,7 @@ import {
   ClaudeCodeSettings,
   PermissionCheckResult,
   SettingsManagerOptions
-} from "@isoform/claude-code-acp";
+} from "@isoform/dev-studio";
 
 // Test constructor signature
 const options: SettingsManagerOptions = {
@@ -318,7 +318,7 @@ async function testMethods() {
       await writeTestFile(
         "test-claude-acp-agent.ts",
         `
-import { ClaudeAcpAgent } from "@isoform/claude-code-acp";
+import { ClaudeAcpAgent } from "@isoform/dev-studio";
 import type { AgentSideConnection } from "@agentclientprotocol/sdk";
 
 // ClaudeAcpAgent should be a class that can be instantiated
@@ -362,7 +362,7 @@ import type {
   ClaudePlanEntry,
   ToolUpdateMeta,
   NewSessionMeta,
-} from "@isoform/claude-code-acp";
+} from "@isoform/dev-studio";
 
 // Test ClaudeCodeSettings shape
 const settings: ClaudeCodeSettings = {
@@ -442,9 +442,9 @@ import {
   loadManagedSettings,
   applyEnvironmentSettings,
   SettingsManager,
-} from "@isoform/claude-code-acp";
+} from "@isoform/dev-studio";
 
-import type { ClaudeCodeSettings } from "@isoform/claude-code-acp";
+import type { ClaudeCodeSettings } from "@isoform/dev-studio";
 
 // runAcp should be a function with no parameters that returns void
 const runAcpType: () => void = runAcp;
@@ -489,7 +489,7 @@ const applyResult: void = applyEnvironmentSettings({ permissions: {} });
       await writeTestFile(
         "test-pushable.ts",
         `
-import { Pushable } from "@isoform/claude-code-acp";
+import { Pushable } from "@isoform/dev-studio";
 
 // Pushable should be a generic class
 const pushable = new Pushable<string>();
@@ -531,7 +531,7 @@ customPushable.push({ id: 1, name: "test" });
       await writeTestFile(
         "test-invalid-types.ts",
         `
-import { SettingsManager, ClaudeCodeSettings } from "@isoform/claude-code-acp";
+import { SettingsManager, ClaudeCodeSettings } from "@isoform/dev-studio";
 
 // This should fail - SettingsManager constructor requires string cwd
 // @ts-expect-error - Testing that wrong argument type fails

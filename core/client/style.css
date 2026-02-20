@@ -544,13 +544,11 @@ a, [data-streamdown="link"] { cursor: pointer; }
 
 .tool-call .tool-title.thought-hint {
   color: var(--color-dim);
-  font-style: italic;
   font-weight: 400;
   overflow: visible;
 }
 
 .thought-content {
-  font-style: italic;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -634,6 +632,105 @@ a, [data-streamdown="link"] { cursor: pointer; }
   text-transform: uppercase;
   font-size: 10px;
   letter-spacing: 0.05em;
+}
+
+/* ── Session metadata banner ────────────── */
+
+.session-meta-banner {
+  font-family: var(--font-mono);
+  margin-bottom: 4px;
+}
+
+.session-meta-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.session-meta-collapsed:hover {
+  background: var(--color-overlay);
+}
+
+.session-meta-icon {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.session-meta-summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.session-meta-agent {
+  color: var(--color-dim);
+  font-weight: 500;
+}
+
+.session-meta-version {
+  color: var(--color-muted);
+}
+
+.session-meta-sep {
+  color: var(--color-muted);
+  opacity: 0.5;
+}
+
+.session-meta-model {
+  color: var(--color-dim);
+}
+
+.session-meta-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--color-muted);
+  transition: transform 0.15s ease;
+  margin-left: auto;
+}
+
+.session-meta-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.session-meta-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px 6px 28px;
+  font-size: 11px;
+}
+
+.session-meta-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.session-meta-label {
+  color: var(--color-muted);
+  min-width: 52px;
+  flex-shrink: 0;
+}
+
+.session-meta-value {
+  color: var(--color-dim);
+}
+
+.session-meta-mono {
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
 }
 
 /* ── Collapsible steps (completed turns) ──── */

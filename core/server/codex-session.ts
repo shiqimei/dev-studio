@@ -113,5 +113,11 @@ export async function createCodexConnection(
   });
 
   log.info({ totalMs: Math.round(performance.now() - spawnT0), boot: bootMs() }, "codex: createCodexConnection complete");
-  return { connection, agentProcess, webClient: webClient! };
+  return {
+    connection,
+    agentProcess,
+    webClient: webClient!,
+    agentName: initResp.agentInfo.name,
+    agentVersion: initResp.agentInfo.version,
+  };
 }

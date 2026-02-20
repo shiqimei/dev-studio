@@ -6,6 +6,8 @@ export interface AcpConnection {
   connection: ClientSideConnection;
   agentProcess: ChildProcess;
   webClient: WebClient;
+  agentName?: string;
+  agentVersion?: string;
 }
 
 export type BroadcastFn = (msg: object) => void;

@@ -83,7 +83,13 @@ export async function createAcpConnection(
   });
 
   log.info({ totalMs: Math.round(performance.now() - spawnT0), boot: bootMs() }, "api: createAcpConnection complete");
-  return { connection, agentProcess, webClient: webClient! };
+  return {
+    connection,
+    agentProcess,
+    webClient: webClient!,
+    agentName: initResp.agentInfo.name,
+    agentVersion: initResp.agentInfo.version,
+  };
 }
 
 /**
@@ -93,6 +99,7 @@ export async function createNewSession(
   connection: ClientSideConnection,
   broadcast: BroadcastFn,
   cwdOverride?: string,
+  agentInfo?: { name?: string; version?: string },
 ): Promise<{ sessionId: string }> {
   const t0 = performance.now();
   const cwd = cwdOverride || process.env.ACP_CWD;
@@ -115,6 +122,8 @@ export async function createNewSession(
     models: session.models?.availableModels.map((m) => m.modelId) ?? [],
     currentModel: currentModelName || currentModelId || null,
     modes: session.modes?.availableModes.map((m) => ({ id: m.id, name: m.name })) ?? [],
+    ...(agentInfo?.name && { agentName: agentInfo.name }),
+    ...(agentInfo?.version && { agentVersion: agentInfo.version }),
   });
 
   return { sessionId: session.sessionId };

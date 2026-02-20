@@ -126,8 +126,8 @@ describe("ClaudeAcpAgent", () => {
       });
 
       expect(response.agentInfo).toBeDefined();
-      expect(response.agentInfo!.name).toBe("@isoform/claude-code-acp");
-      expect(response.agentInfo!.title).toBe("Claude Code");
+      expect(response.agentInfo!.name).toBe("@isoform/dev-studio");
+      expect(response.agentInfo!.title).toBe("Dev Studio");
       expect(response.agentInfo!.version).toBeDefined();
     });
 

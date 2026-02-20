@@ -317,6 +317,10 @@ export interface AppState {
   models: string[];
   /** Currently selected model (e.g. "claude-opus-4-6-20250219"). */
   currentModel: string | null;
+  /** Agent name from ACP initialize (e.g. "Claude Code" or "Codex"). */
+  agentName: string | null;
+  /** Agent version from ACP initialize (e.g. "1.0.34"). */
+  agentVersion: string | null;
   // Slash commands
   commands: SlashCommand[];
   /** Tracks recently deleted session IDs to prevent stale SESSIONS broadcasts from re-adding them. */
@@ -364,7 +368,7 @@ export type Action =
   | { type: "TASKS"; tasks: TaskItemEntry[] }
   | { type: "PERMISSION_REQUEST"; requestId: string; title: string; toolCallId?: string; options: PermissionOption[] }
   | { type: "PERMISSION_RESOLVED"; requestId: string; optionId: string; optionName: string }
-  | { type: "SESSION_INFO"; sessionId: string; models: string[]; currentModel?: string | null; modes: { id: string }[] }
+  | { type: "SESSION_INFO"; sessionId: string; models: string[]; currentModel?: string | null; modes: { id: string }[]; agentName?: string | null; agentVersion?: string | null }
   | { type: "SYSTEM"; text: string }
   | { type: "TURN_START"; startedAt: number; sessionId?: string }
   | { type: "TURN_ACTIVITY"; activity: TurnActivity; detail?: string; approxTokens?: number; thinkingDurationMs?: number; sessionId?: string }

@@ -188,6 +188,8 @@ const initialState: AppState = {
   // Session metadata
   models: [],
   currentModel: null,
+  agentName: null,
+  agentVersion: null,
   // Slash commands
   commands: [],
   _recentlyDeletedIds: [],
@@ -691,6 +693,8 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         models: action.models,
         currentModel: action.currentModel || action.models[0] || null,
+        agentName: action.agentName ?? state.agentName,
+        agentVersion: action.agentVersion ?? state.agentVersion,
       };
 
     case "SYSTEM": {
@@ -2478,6 +2482,8 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
         models: msg.models,
         currentModel: msg.currentModel,
         modes: msg.modes,
+        agentName: msg.agentName,
+        agentVersion: msg.agentVersion,
       });
       break;
     }

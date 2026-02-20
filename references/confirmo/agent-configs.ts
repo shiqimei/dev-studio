@@ -32,10 +32,10 @@ export const AGENT_CONFIGS: AgentConfig[] = [
   {
     name: "claude-code",
     displayName: "Claude Code",
-    // Match claude CLI binaries including conductor's claude and claude-code-acp
+    // Match claude CLI binaries including conductor's claude and dev-studio
     processPatterns: [
       "claude-code",
-      "claude-code-acp",
+      "dev-studio",
       "@anthropic-ai/claude-code",
       "bin/claude",
     ],

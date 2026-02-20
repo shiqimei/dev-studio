@@ -993,6 +993,7 @@ export function KanbanPanel() {
       projectPath: state.activeProject ?? null,
     };
     setOptimisticBacklog((prev) => [optimistic, ...prev]);
+    setSelectedCards(new Set([tempId]));
     if (targetCol === "backlog") {
       setPendingPrompts((prev) => ({ ...prev, [tempId]: text }));
       updatePendingPrompt(tempId, text);
@@ -1020,6 +1021,7 @@ export function KanbanPanel() {
       setOptimisticBacklog((prev) =>
         prev.map((s) => (s.sessionId === tempId ? { ...s, sessionId: sessionId } : s)),
       );
+      setSelectedCards((prev) => prev.has(tempId) ? new Set([sessionId]) : prev);
       if (targetCol === "backlog") {
         setPendingPrompts((prev) => {
           const next = { ...prev, [sessionId]: prev[tempId] || text };

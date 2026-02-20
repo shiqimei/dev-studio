@@ -8,6 +8,7 @@ import { SystemMessage } from "./messages/SystemMessage";
 import { Plan } from "./messages/Plan";
 import { Permission } from "./messages/Permission";
 import { TurnStatusBar, CompletedBar } from "./TurnStatusBar";
+import { SessionMetaBanner } from "./SessionMetaBanner";
 import type { ChatEntry, MessageEntry, PermissionEntry, ToolUseBlock } from "../types";
 
 // ── Turn grouping ──────────────────────────
@@ -309,6 +310,7 @@ export function MessageList() {
       className="chat-scroll-list px-5 py-4"
     >
       <div className="chat-content flex flex-col gap-1">
+      <SessionMetaBanner />
       {turnGroups.map((group, gi) => {
         const isLatestGroup = gi === turnGroups.length - 1;
         const isFirstUserGroup = group.userEntry != null && turnGroups.findIndex((g) => g.userEntry != null) === gi;

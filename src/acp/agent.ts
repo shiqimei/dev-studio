@@ -296,7 +296,7 @@ export class ClaudeAcpAgent implements Agent {
       },
       agentInfo: {
         name: packageJson.name,
-        title: "Claude Code",
+        title: "Dev Studio",
         version: packageJson.version,
       },
       authMethods: [authMethod],

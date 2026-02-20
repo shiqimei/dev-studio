@@ -1,6 +1,6 @@
 # Dev Studio
 
-[![npm](https://img.shields.io/npm/v/%40isoform%2Fclaude-code-acp)](https://www.npmjs.com/package/@isoform/claude-code-acp)
+[![npm](https://img.shields.io/npm/v/%40isoform%2Fdev-studio)](https://www.npmjs.com/package/@isoform/dev-studio)
 
 ![Banner](assets/banner.jpg)
 

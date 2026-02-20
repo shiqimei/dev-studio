@@ -245,7 +245,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
     // ── Capture per-session state ──
     if (msgSessionId) {
       if (m.type === "session_info") {
-        this.getSessionMeta(msgSessionId).sessionInfo = { type: "session_info", sessionId: msgSessionId, models: m.models, currentModel: m.currentModel, modes: m.modes } as any;
+        this.getSessionMeta(msgSessionId).sessionInfo = { type: "session_info", sessionId: msgSessionId, models: m.models, currentModel: m.currentModel, modes: m.modes, ...(m.agentName && { agentName: m.agentName }), ...(m.agentVersion && { agentVersion: m.agentVersion }) } as any;
       } else if (m.type === "system" && m.text) {
         const meta = this.getSessionMeta(msgSessionId);
         if (!meta.systemMessages.includes(m.text)) meta.systemMessages.push(m.text);
@@ -291,9 +291,9 @@ class AgentsDaemonImpl implements AgentsDaemon {
       const haikuWarmup = this.haikuPool.warmup();
       const opusWarmup = this.opusPool.warmup();
 
-      // Spawn Claude ACP connection (required)
+      // Spawn ACP connection (required)
       this.connections.claude = await createAcpConnection(this.broadcast.bind(this));
-      log.info({ durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "daemon: Claude ACP connection ready");
+      log.info({ durationMs: Math.round(performance.now() - t0), boot: bootMs() }, "daemon: ACP connection ready");
 
       // Spawn Codex ACP connection (optional — graceful fallback if unavailable)
       if (isCodexAvailable()) {
@@ -379,7 +379,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
     const conn = this.getConnectionForExecutor(executorType);
     if (!conn) throw new Error(`No connection for executor type: ${executorType}`);
     const cwd = projectPath ?? this.getActiveProjectCwd() ?? undefined;
-    const result = await createNewSession(conn.connection, this.broadcast.bind(this), cwd);
+    const result = await createNewSession(conn.connection, this.broadcast.bind(this), cwd, { name: conn.agentName, version: conn.agentVersion });
     kanbanDb.setSessionExecutorType(result.sessionId, executorType);
     kanbanDb.registerManagedSession(result.sessionId, cwd);
     this.liveSessionIds.add(result.sessionId);
@@ -451,7 +451,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
 
           log.warn({ session: sid(sessionId), err: resumeErr.message }, "daemon: session gone, auto-creating replacement");
           const executorType = kanbanDb.getSessionExecutorType(sessionId);
-          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this), activeCwd);
+          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this), activeCwd, { name: conn.agentName, version: conn.agentVersion });
           kanbanDb.setSessionExecutorType(newId, executorType);
           this.liveSessionIds.add(newId);
           this.autoRenameEligible.add(newId);
@@ -545,7 +545,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
         try {
           const executorType = kanbanDb.getSessionExecutorType(sessionId);
           const staleCwd = kanbanDb.getManagedSessionInfo().get(sessionId)?.projectPath ?? this.getActiveProjectCwd() ?? undefined;
-          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this), staleCwd);
+          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this), staleCwd, { name: conn.agentName, version: conn.agentVersion });
           kanbanDb.setSessionExecutorType(newId, executorType);
           this.liveSessionIds.add(newId);
           this.autoRenameEligible.add(newId);

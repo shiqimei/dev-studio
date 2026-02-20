@@ -29,7 +29,7 @@ export const ThoughtMessage = memo(function ThoughtMessage({ text, isLatest }: P
         onClick={() => setOpen(!open)}
       >
         <span className="tool-kind thinking">Thinking</span>
-        <span className="tool-title thought-hint" style={{ fontStyle: "italic" }}>
+        <span className="tool-title thought-hint">
           {open ? "Click to collapse" : "Click to expand"}
         </span>
         <span className="thought-token-count">{formatTokens(Math.ceil(text.length / 4))} tokens</span>

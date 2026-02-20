@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`dev-studio` (forked from `@isoform/claude-code-acp`) is a TypeScript ACP (Agent Client Protocol) adapter for Claude Code. It wraps the Claude Agent SDK, translating SDK messages into ACP notifications so that ACP-compatible clients (like Zed) can use Claude Code as an agent. Supports streaming, tool proxying via MCP, background tasks, sub-agents, and permission management.
+`dev-studio` is a TypeScript ACP (Agent Client Protocol) adapter built on the Claude Agent SDK. It wraps the SDK, translating messages into ACP notifications so that ACP-compatible clients (like Zed) can use it as a coding agent. Supports streaming, tool proxying via MCP, background tasks, sub-agents, and permission management.
 
 ## Commands
 

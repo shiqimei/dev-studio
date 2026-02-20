@@ -1,15 +1,15 @@
 /**
- * Static analysis tests that enforce the demo/ app's architectural boundaries.
+ * Static analysis tests that enforce the core/ app's architectural boundaries.
  *
- * The demo is a pure ACP client: the frontend (demo/src/) is browser-only UI,
- * and the backend (demo/server/) communicates exclusively through ACP protocol.
+ * The core app is a pure ACP client: the frontend (core/client/) is browser-only UI,
+ * and the backend (core/server/) communicates exclusively through ACP protocol.
  * Neither layer should ever import from the main ../../src/ codebase.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "fs";
 import path from "path";
 
-const DEMO_ROOT = path.resolve(__dirname, "../../demo");
+const CORE_ROOT = path.resolve(__dirname, "../../core");
 
 /** Recursively collect all .ts/.tsx files under a directory. */
 function collectFiles(dir: string, exts = [".ts", ".tsx"]): string[] {
@@ -38,25 +38,25 @@ function extractImports(source: string): string[] {
 }
 
 function rel(filePath: string) {
-  return path.relative(DEMO_ROOT, filePath);
+  return path.relative(CORE_ROOT, filePath);
 }
 
 // ────────────────────────────────────────────────────────────
 // Collect files once
 // ────────────────────────────────────────────────────────────
 
-const allDemoFiles = collectFiles(DEMO_ROOT);
-const frontendFiles = allDemoFiles.filter((f) => f.startsWith(path.join(DEMO_ROOT, "src")));
-const serverFiles = allDemoFiles.filter((f) => f.startsWith(path.join(DEMO_ROOT, "server")));
+const allCoreFiles = collectFiles(CORE_ROOT);
+const frontendFiles = allCoreFiles.filter((f) => f.startsWith(path.join(CORE_ROOT, "client")));
+const serverFiles = allCoreFiles.filter((f) => f.startsWith(path.join(CORE_ROOT, "server")));
 
 // ────────────────────────────────────────────────────────────
 // 1. No imports from ../../src/ (the main codebase)
 // ────────────────────────────────────────────────────────────
 
-describe("demo/ has no imports from main src/", () => {
-  it("no file in demo/ imports from ../../src/", () => {
+describe("core/ has no imports from main src/", () => {
+  it("no file in core/ imports from ../../src/", () => {
     const violations: string[] = [];
-    for (const file of allDemoFiles) {
+    for (const file of allCoreFiles) {
       const source = readFileSync(file, "utf-8");
       const imports = extractImports(source);
       for (const spec of imports) {
@@ -65,18 +65,18 @@ describe("demo/ has no imports from main src/", () => {
         }
       }
     }
-    expect(violations, `Found internal src/ imports in demo:\n${violations.join("\n")}`).toEqual([]);
+    expect(violations, `Found internal src/ imports in core:\n${violations.join("\n")}`).toEqual([]);
   });
 });
 
 // ────────────────────────────────────────────────────────────
-// 2. Frontend (demo/src/) is browser-pure
+// 2. Frontend (core/client/) is browser-pure
 // ────────────────────────────────────────────────────────────
 
-describe("demo/src/ is browser-pure (no Node.js built-ins)", () => {
+describe("core/client/ is browser-pure (no Node.js built-ins)", () => {
   const nodeBuiltinPattern = /^node:/;
 
-  it("no file in demo/src/ imports a node: built-in", () => {
+  it("no file in core/client/ imports a node: built-in", () => {
     const violations: string[] = [];
     for (const file of frontendFiles) {
       const source = readFileSync(file, "utf-8");
@@ -90,7 +90,7 @@ describe("demo/src/ is browser-pure (no Node.js built-ins)", () => {
     expect(violations, `Frontend files import Node.js built-ins:\n${violations.join("\n")}`).toEqual([]);
   });
 
-  it("no file in demo/src/ imports node:fs or node:child_process", () => {
+  it("no file in core/client/ imports node:fs or node:child_process", () => {
     const forbidden = ["node:fs", "node:child_process", "node:os", "fs", "child_process", "os"];
     const violations: string[] = [];
     for (const file of frontendFiles) {
@@ -110,10 +110,10 @@ describe("demo/src/ is browser-pure (no Node.js built-ins)", () => {
 // 3. No direct Claude Agent SDK usage (must go through ACP)
 // ────────────────────────────────────────────────────────────
 
-describe("demo/ uses ACP protocol, not raw Claude Agent SDK", () => {
-  it("no file in demo/ imports @anthropic-ai/claude-agent-sdk", () => {
+describe("core/ uses ACP protocol, not raw Claude Agent SDK", () => {
+  it("no file in core/ imports @anthropic-ai/claude-agent-sdk", () => {
     const violations: string[] = [];
-    for (const file of allDemoFiles) {
+    for (const file of allCoreFiles) {
       const source = readFileSync(file, "utf-8");
       const imports = extractImports(source);
       for (const spec of imports) {
@@ -122,12 +122,12 @@ describe("demo/ uses ACP protocol, not raw Claude Agent SDK", () => {
         }
       }
     }
-    expect(violations, `Demo files import raw SDK instead of ACP:\n${violations.join("\n")}`).toEqual([]);
+    expect(violations, `Core files import raw SDK instead of ACP:\n${violations.join("\n")}`).toEqual([]);
   });
 
-  it("no file in demo/ imports @anthropic-ai/sdk", () => {
+  it("no file in core/ imports @anthropic-ai/sdk", () => {
     const violations: string[] = [];
-    for (const file of allDemoFiles) {
+    for (const file of allCoreFiles) {
       const source = readFileSync(file, "utf-8");
       const imports = extractImports(source);
       for (const spec of imports) {
@@ -136,7 +136,7 @@ describe("demo/ uses ACP protocol, not raw Claude Agent SDK", () => {
         }
       }
     }
-    expect(violations, `Demo files import Anthropic SDK directly:\n${violations.join("\n")}`).toEqual([]);
+    expect(violations, `Core files import Anthropic SDK directly:\n${violations.join("\n")}`).toEqual([]);
   });
 });
 
@@ -144,10 +144,10 @@ describe("demo/ uses ACP protocol, not raw Claude Agent SDK", () => {
 // 4. Server uses ACP for disk/session operations (no node:fs)
 // ────────────────────────────────────────────────────────────
 
-describe("demo/server/ uses ACP for data access, not filesystem", () => {
+describe("core/server/ uses ACP for data access, not filesystem", () => {
   const forbiddenServerModules = ["node:fs", "node:fs/promises", "fs", "fs/promises"];
 
-  it("no file in demo/server/ imports node:fs or fs", () => {
+  it("no file in core/server/ imports node:fs or fs", () => {
     const violations: string[] = [];
     for (const file of serverFiles) {
       const source = readFileSync(file, "utf-8");
@@ -191,7 +191,7 @@ describe("demo/server/ uses ACP for data access, not filesystem", () => {
 // 5. Server only uses allowed Node.js built-ins
 // ────────────────────────────────────────────────────────────
 
-describe("demo/server/ only uses allowed Node.js built-ins", () => {
+describe("core/server/ only uses allowed Node.js built-ins", () => {
   // These are the only node: modules the server legitimately needs:
   // - node:child_process — spawning the agent process
   // - node:path — resolving file paths
@@ -222,7 +222,7 @@ describe("demo/server/ only uses allowed Node.js built-ins", () => {
 // 6. ACP SDK is used in server (positive check)
 // ────────────────────────────────────────────────────────────
 
-describe("demo/server/ uses @agentclientprotocol/sdk", () => {
+describe("core/server/ uses @agentclientprotocol/sdk", () => {
   it("at least one server file imports from @agentclientprotocol/sdk", () => {
     let found = false;
     for (const file of serverFiles) {

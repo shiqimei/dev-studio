@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useWs } from "../context/WebSocketContext";
-import { shortPath } from "../utils";
+import { shortPath, pickFolder } from "../utils";
 import { InstTasksPanel } from "./InstTasksPanel";
 
 const isElectron = navigator.userAgent.includes("Electron");
@@ -45,8 +45,7 @@ export function Header() {
 
   const addProject = useCallback(async () => {
     try {
-      const pickRes = await fetch("/api/pick-folder", { method: "POST" });
-      const { path } = await pickRes.json();
+      const path = await pickFolder();
       if (!path) return;
       const addRes = await fetch("/api/projects", {
         method: "POST",

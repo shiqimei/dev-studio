@@ -14,9 +14,9 @@
  * Target: p99 cold-start < 1000ms, p99 warm < 500ms
  *
  * Usage:
- *   npx tsx demo/test-pressure.ts                    # default (1 cold + 5 warm)
- *   npx tsx demo/test-pressure.ts --warm 10          # 10 warm tabs
- *   npx tsx demo/test-pressure.ts --headless false   # show browser
+ *   npx tsx core/tests/test-pressure.ts                    # default (1 cold + 5 warm)
+ *   npx tsx core/tests/test-pressure.ts --warm 10          # 10 warm tabs
+ *   npx tsx core/tests/test-pressure.ts --headless false   # show browser
  */
 
 import { chromium, type BrowserContext } from "playwright";
@@ -57,7 +57,7 @@ console.log(`  Warm p99:     <${WARM_P99_TARGET_MS}ms`);
 console.log(`  Timeout:      ${TIMEOUT_MS}ms\n`);
 
 // ── Server management ──
-const ROOT = path.resolve(import.meta.dirname ?? __dirname, "..");
+const ROOT = path.resolve(import.meta.dirname ?? __dirname, "../..");
 const children: ChildProcess[] = [];
 const serverLogs: string[] = [];
 
@@ -225,7 +225,7 @@ async function runTest() {
   // This measures what a real user experiences.
   console.log(`${CYAN}Phase 1: Cold start — starting server + connecting immediately${RESET}`);
   const serverSpawnT0 = Date.now();
-  const serverProcess = spawn("bun", ["demo/server/index.ts"], {
+  const serverProcess = spawn("bun", ["core/server/main.ts"], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(BACKEND_PORT) },
     stdio: ["ignore", "pipe", "pipe"],

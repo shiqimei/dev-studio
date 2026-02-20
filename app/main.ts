@@ -5,7 +5,7 @@
  * then opens a BrowserWindow pointing at the Vite URL.
  */
 
-import { app, BrowserWindow, Menu, nativeImage } from "electron";
+import { app, BrowserWindow, Menu, nativeImage, dialog, ipcMain } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createConnection } from "node:net";
@@ -41,7 +41,7 @@ async function waitForPort(port: number, timeoutMs = 10_000): Promise<void> {
 }
 
 function startBackend(): ChildProcess {
-  const child = spawn("bun", ["--hot", path.join(ROOT, "demo/server/index.ts")], {
+  const child = spawn("bun", ["--hot", path.join(ROOT, "core/server/main.ts")], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(BACKEND_PORT) },
     stdio: ["ignore", "pipe", "pipe"],
@@ -64,8 +64,8 @@ function startBackend(): ChildProcess {
 
 async function startVite(): Promise<ViteDevServer> {
   const server = await createServer({
-    configFile: path.join(ROOT, "demo/vite.config.ts"),
-    root: path.join(ROOT, "demo"),
+    configFile: path.join(ROOT, "core/vite.config.ts"),
+    root: path.join(ROOT, "core"),
     server: { port: VITE_PORT },
   });
   await server.listen();
@@ -208,6 +208,17 @@ app.whenReady().then(async () => {
     ];
 
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+
+    // IPC: native folder picker (parented to the focused window)
+    ipcMain.handle("pick-folder", async () => {
+      const win = BrowserWindow.getFocusedWindow() ?? mainWindow;
+      const result = await dialog.showOpenDialog(win!, {
+        properties: ["openDirectory"],
+        title: "Select project folder",
+      });
+      if (result.canceled || result.filePaths.length === 0) return null;
+      return result.filePaths[0];
+    });
 
     // 1. Start backend
     backend = startBackend();

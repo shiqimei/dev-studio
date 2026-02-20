@@ -7,4 +7,5 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeAllListeners("open-settings");
     };
   },
+  pickFolder: () => ipcRenderer.invoke("pick-folder"),
 });

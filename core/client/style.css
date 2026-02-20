@@ -1314,7 +1314,6 @@ a, [data-streamdown="link"] { cursor: pointer; }
 .permission-question-answer {
   font-size: 12px;
   color: var(--color-green);
-  padding-left: 22px;
 }
 
 .permission-question-options {

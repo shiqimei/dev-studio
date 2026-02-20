@@ -4,7 +4,7 @@
  * Starts both the Bun backend server and the Vite dev server,
  * prefixes their output with colored labels, and handles clean shutdown.
  *
- * Usage: bun demo/dev.ts
+ * Usage: bun core/dev.ts
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -60,7 +60,7 @@ async function waitForPort(port: number, timeoutMs = 10_000): Promise<void> {
 }
 
 // Start backend
-const backend = spawn("bun", ["--hot", path.join(ROOT, "demo/server/index.ts")], {
+const backend = spawn("bun", ["--hot", path.join(ROOT, "core/server/main.ts")], {
   cwd: ROOT,
   env: { ...process.env, PORT: String(BACKEND_PORT) },
   stdio: ["ignore", "pipe", "pipe"],
@@ -74,7 +74,7 @@ await waitForPort(BACKEND_PORT);
 
 // Start Vite
 const vite = spawn("npx", ["vite", "--port", String(VITE_PORT)], {
-  cwd: path.join(ROOT, "demo"),
+  cwd: path.join(ROOT, "core"),
   stdio: ["ignore", "pipe", "pipe"],
 });
 children.push(vite);

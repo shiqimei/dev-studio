@@ -1,16 +1,16 @@
 #!/usr/bin/env bun
 /**
- * Concurrent WebSocket connection pressure test for the demo server.
+ * Concurrent WebSocket connection pressure test for the core server.
  *
  * Tests that N simultaneous WebSocket connections all receive `session_switched`
  * within a reasonable timeout, with detailed per-client timing.
  *
  * Usage:
- *   bun demo/test-concurrent.ts              # 5 clients, all at once
- *   bun demo/test-concurrent.ts --clients 10 # 10 clients
- *   bun demo/test-concurrent.ts --stagger 50 # 50ms between each connection
- *   bun demo/test-concurrent.ts --strictmode  # simulate React StrictMode (connect, close, reconnect)
- *   bun demo/test-concurrent.ts --vite-proxy  # connect through Vite proxy (tests Chrome connection limit)
+ *   bun core/tests/test-concurrent.ts              # 5 clients, all at once
+ *   bun core/tests/test-concurrent.ts --clients 10 # 10 clients
+ *   bun core/tests/test-concurrent.ts --stagger 50 # 50ms between each connection
+ *   bun core/tests/test-concurrent.ts --strictmode  # simulate React StrictMode (connect, close, reconnect)
+ *   bun core/tests/test-concurrent.ts --vite-proxy  # connect through Vite proxy (tests Chrome connection limit)
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -52,7 +52,7 @@ if (VITE_PROXY) console.log(`  Vite port:    ${VITE_PORT}`);
 console.log(`  Timeout:      ${TIMEOUT_MS}ms\n`);
 
 // ── Start server(s) ──
-const ROOT = path.resolve(import.meta.dir, "..");
+const ROOT = path.resolve(import.meta.dir, "../..");
 const children: ChildProcess[] = [];
 
 function cleanup() {
@@ -79,7 +79,7 @@ function collectLogs(proc: ChildProcess, prefix: string) {
 }
 
 // Start backend
-const serverProcess = spawn("bun", ["demo/server/index.ts"], {
+const serverProcess = spawn("bun", ["core/server/main.ts"], {
   cwd: ROOT,
   env: { ...process.env, PORT: String(BACKEND_PORT) },
   stdio: ["ignore", "pipe", "pipe"],
@@ -91,7 +91,7 @@ collectLogs(serverProcess, "backend");
 let viteProcess: ChildProcess | null = null;
 if (VITE_PROXY) {
   viteProcess = spawn("npx", ["vite", "--port", String(VITE_PORT), "--strictPort"], {
-    cwd: path.join(ROOT, "demo"),
+    cwd: path.join(ROOT, "core"),
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
   });

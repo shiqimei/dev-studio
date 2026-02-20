@@ -109,6 +109,28 @@ export function cleanTitle(raw: string | null): string {
   return cleaned;
 }
 
+/**
+ * Pick a folder using the best available method:
+ * 1. Electron IPC dialog (native, parented to window)
+ * 2. osascript fallback (server-side, macOS only)
+ */
+export async function pickFolder(): Promise<string | null> {
+  // Electron: use IPC to dialog.showOpenDialog (properly parented)
+  const electronAPI = (window as any).electronAPI;
+  if (electronAPI?.pickFolder) {
+    return electronAPI.pickFolder();
+  }
+
+  // Fallback: server-side osascript
+  try {
+    const res = await fetch("/api/pick-folder", { method: "POST" });
+    const data = await res.json();
+    return data.path ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Shorten a project path to the last 2 segments. */
 export function shortPath(p: string | null): string | null {
   if (!p) return null;

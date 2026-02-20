@@ -6,6 +6,7 @@ import { Header } from "./components/Header";
 import { SettingsModal } from "./components/SettingsModal";
 import { ChatPanel } from "./components/ChatPanel";
 import { KanbanPanel } from "./components/KanbanPanel";
+import { pickFolder } from "./utils";
 
 const STORAGE_KEY = "chat-panel-width-pct";
 const DEFAULT_PCT = 35;
@@ -19,8 +20,7 @@ function WelcomeScreen() {
 
   const addProject = useCallback(async () => {
     try {
-      const pickRes = await fetch("/api/pick-folder", { method: "POST" });
-      const { path } = await pickRes.json();
+      const path = await pickFolder();
       if (!path) return;
       const addRes = await fetch("/api/projects", {
         method: "POST",

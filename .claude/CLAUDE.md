@@ -24,10 +24,10 @@ npx eslint src --ext .ts      # lint
 npx prettier --check .        # format check
 npm run check                 # both lint + format check
 
-# Demo (requires bun)
-bun demo/dev.ts               # starts backend (port 5689) + Vite frontend (port 5688)
-npm run demo:server           # backend only with hot reload
-npm run demo:vite             # frontend only
+# Core app (requires bun)
+bun core/dev.ts               # starts backend (port 5689) + Vite frontend (port 5688)
+npm run core:server           # backend only with hot reload
+npm run core:vite             # frontend only
 ```
 
 CI runs: format check, lint, build, test (in that order).
@@ -83,7 +83,7 @@ src/lib.ts (library)        ↓
 When implementing a new SDK feature:
 1. Add support in `src/acp/agent.ts` (and related files under `src/acp/` or `src/sdk/`)
 2. Update the corresponding row in `COMPATIBLE-TABLE.md` from `[ ]` to `[x]`
-3. Verify through the demo app (`bun demo/dev.ts`) that the feature works end-to-end
+3. Verify through the core app (`bun core/dev.ts`) that the feature works end-to-end
 
 ## Conventions
 

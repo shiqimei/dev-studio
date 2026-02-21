@@ -42,10 +42,21 @@ export interface QueuedMessage {
 // ── Recurring state ──
 
 export interface RecurringState {
-  /** The original prompt text to re-send each iteration. */
+  // ── Cron metadata (parsed by Haiku) ──
+  /** The parsed task prompt to send each iteration (extracted by Haiku). */
+  taskPrompt: string;
+  /** Timer interval in milliseconds between ticks. */
+  intervalMs: number;
+  /** Human-readable schedule description, e.g. "every 5 minutes". */
+  scheduleDescription: string;
+
+  // ── Original input ──
+  /** The original raw prompt the user typed (kept for reference). */
   originalPrompt: string;
   /** Original images attached to the first prompt (if any). */
   originalImages?: Array<{ data: string; mimeType: string }>;
+
+  // ── Runtime state ──
   /** How many iterations have completed (incremented after each turn_end). */
   iterationCount: number;
   /** Latest text output snippet (last ~300 chars of assistant text from the turn). */
@@ -56,6 +67,12 @@ export interface RecurringState {
   lastCompletedAt: number | null;
   /** Duration of the last iteration in ms. */
   lastDurationMs: number | null;
+  /** Number of consecutive errors (for auto-pause logic). */
+  consecutiveErrors: number;
+  /** Whether the recurring task is paused due to errors. */
+  isPaused: boolean;
+  /** Timestamp of the next scheduled tick (for UI display). */
+  nextTickAt: number | null;
 }
 
 // ── Event sink ──

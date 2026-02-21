@@ -462,13 +462,19 @@ function KanbanSessionRow({
             : `${session.instSummary.checkpoints.passed}/${session.instSummary.checkpoints.total}`}
         </div>
       )}
-      {recurringState && recurringState.iterationCount > 0 && (
+      {recurringState && (
         <div
-          className={`kanban-recurring-badge${recurringState.latestStatus === "error" ? " kanban-recurring-badge-error" : ""}`}
-          title={recurringState.latestLogSnippet ?? `Iteration #${recurringState.iterationCount}`}
+          className={`kanban-recurring-badge${recurringState.isPaused ? " kanban-recurring-badge-paused" : recurringState.latestStatus === "error" ? " kanban-recurring-badge-error" : ""}`}
+          title={recurringState.isPaused ? `Paused after ${recurringState.consecutiveErrors} errors` : recurringState.latestLogSnippet ?? recurringState.scheduleDescription}
+          onClick={recurringState.isPaused ? (e) => { e.stopPropagation(); resumeRecurring(session.sessionId); } : undefined}
+          style={recurringState.isPaused ? { cursor: "pointer" } : undefined}
         >
-          <span className="kanban-recurring-iter">#{recurringState.iterationCount}</span>
-          {recurringState.latestLogSnippet && (
+          <span className="kanban-recurring-schedule">{recurringState.scheduleDescription}</span>
+          {recurringState.iterationCount > 0 && (
+            <span className="kanban-recurring-iter">#{recurringState.iterationCount}</span>
+          )}
+          {recurringState.isPaused && <span className="kanban-recurring-paused">paused</span>}
+          {!recurringState.isPaused && recurringState.latestLogSnippet && (
             <span className="kanban-recurring-log">{recurringState.latestLogSnippet.slice(0, 80)}</span>
           )}
         </div>

@@ -2,9 +2,11 @@
  * Hook factories for PreToolUse and PostToolUse.
  * Extracted from tools.ts.
  *
- * Context protocol hooks (Phase 1 & 2):
+ * Context protocol hooks:
  *   - createContextExtractionHook: PostToolUse — auto-extracts learnings after tool calls
- *   - createContextInjectionHook:  PreToolUse  — auto-injects relevant context before tool calls
+ *
+ * Injection happens once at session start (system prompt append in agent.ts),
+ * NOT per-tool-call, to avoid compounding context cost.
  */
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../acp/types.js";

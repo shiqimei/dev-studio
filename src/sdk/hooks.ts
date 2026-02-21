@@ -16,6 +16,7 @@ import {
   queryRelevant,
   readMemorySync,
   formatMemoriesForPrompt,
+  type ContextEntry,
 } from "../context/store.js";
 
 /* Callbacks executed when receiving PostToolUse hooks from Claude Code.

@@ -2320,9 +2320,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       requestHaikuMetrics,
       startRecurring,
       stopRecurring,
+      resumeRecurring,
     }),
     // All deps are useCallback([]) or useReducer dispatch — stable references
-    [dispatch, send, sendOpusPrompt, sendPromptToSession, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, sendKanbanOp, updatePendingPrompt, preflightRoute, requestHaikuMetrics, startRecurring, stopRecurring],
+    [dispatch, send, sendOpusPrompt, sendPromptToSession, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, sendKanbanOp, updatePendingPrompt, preflightRoute, requestHaikuMetrics, startRecurring, stopRecurring, resumeRecurring],
   );
 
   // ── Hash-based URL routing ──

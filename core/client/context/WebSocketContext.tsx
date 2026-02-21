@@ -1973,6 +1973,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     wsRef.current.send(JSON.stringify({ type: "stop_recurring", sessionId }));
   }, []);
 
+  const resumeRecurring = useCallback((sessionId: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "resume_recurring", sessionId }));
+  }, []);
+
   const fileSearchCallbacks = useRef<Map<string, (files: string[]) => void>>(new Map());
 
   const searchFiles = useCallback((query: string, callback: (files: string[]) => void) => {

@@ -726,7 +726,7 @@ function applyOpsToSnapshot(
 
 export function KanbanPanel() {
   const state = useWsState();
-  const { dispatch, resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, sendPromptToSession, sendKanbanOp, updatePendingPrompt, deselectSession } = useWsActions();
+  const { dispatch, resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, sendPromptToSession, sendKanbanOp, updatePendingPrompt, deselectSession, startRecurring, stopRecurring } = useWsActions();
 
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
@@ -802,7 +802,9 @@ export function KanbanPanel() {
       if (optimisticIds.has(sessionId)) continue;
       const live = state.liveTurnStatus[sessionId];
       if (live?.status === "in_progress") {
-        ops.push({ op: "remove_column", sessionId });
+        if (col !== "recurring") {
+          ops.push({ op: "remove_column", sessionId });
+        }
       } else if ((live?.status === "completed" || live?.status === "error") && col === "in_progress") {
         ops.push({ op: "set_column", sessionId, column: "in_review" });
       }
@@ -1063,7 +1065,10 @@ export function KanbanPanel() {
       sendKanbanOp(ops);
 
       // If creating directly in in_progress or recurring, resume and send the prompt immediately
-      if (targetCol === "in_progress" || targetCol === "recurring") {
+      if (targetCol === "recurring") {
+        dispatch({ type: "SET_OPTIMISTIC_TURN_STATUS", sessionId, status: makeOptimisticTurnStatus() });
+        startRecurring(sessionId, text, images);
+      } else if (targetCol === "in_progress") {
         dispatch({ type: "SET_OPTIMISTIC_TURN_STATUS", sessionId, status: makeOptimisticTurnStatus() });
         sendPromptToSession(sessionId, text, images);
       }

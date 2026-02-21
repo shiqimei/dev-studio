@@ -9,7 +9,7 @@ import { createInstFilteredReadable, pushAllPendingTasks, getInstStore } from ".
 const INST_UUID = "00000000-exec-ver0-0000-000000000001";
 const INST_NAME = "executor-version-detect";
 
-function instLog(text: string): void {
+export function instLog(text: string): void {
   const store = getInstStore();
   const ts = Date.now() / 1000;
   // Ensure the task exists with a "task" entry on first log
@@ -191,7 +191,9 @@ export async function createNewSession(
   const currentModelId = (session.models as any)?.currentModelId;
   const currentModelName = session.models?.availableModels.find((m) => m.modelId === currentModelId)?.name;
 
-  broadcast({
+  instLog(`createNewSession: sessionId="${session.sessionId.slice(0, 8)}" agentInfo.executorVersion="${agentInfo?.executorVersion || "(unset)"}" agentInfo.name="${agentInfo?.name || "(unset)"}"`);
+
+  const sessionInfoMsg = {
     type: "session_info",
     sessionId: session.sessionId,
     models: session.models?.availableModels.map((m) => m.modelId) ?? [],
@@ -200,7 +202,11 @@ export async function createNewSession(
     ...(agentInfo?.name && { agentName: agentInfo.name }),
     ...(agentInfo?.version && { agentVersion: agentInfo.version }),
     ...(agentInfo?.executorVersion && { executorVersion: agentInfo.executorVersion }),
-  });
+  };
+  instLog(`createNewSession: broadcasting session_info keys=${Object.keys(sessionInfoMsg).join(",")} hasExecutorVersion=${"executorVersion" in sessionInfoMsg}`);
+  broadcast(sessionInfoMsg);
+
+  instCheck("createNewSession", { version: agentInfo?.executorVersion || "", sessionId: session.sessionId.slice(0, 8) });
 
   return { sessionId: session.sessionId };
 }

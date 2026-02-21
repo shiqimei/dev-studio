@@ -13,7 +13,7 @@
 
 import { homedir } from "os";
 import { join } from "path";
-import { createAcpConnection, createNewSession, resumeSession, detectClaudeCodeVersion } from "./session.js";
+import { createAcpConnection, createNewSession, resumeSession, detectClaudeCodeVersion, instLog } from "./session.js";
 import { createCodexConnection, isCodexAvailable } from "./codex-session.js";
 import { readCodexSessionHistory } from "../../src/disk/codex-sessions.js";
 import { createHaikuPool } from "./haiku-pool.js";

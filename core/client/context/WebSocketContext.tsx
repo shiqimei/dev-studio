@@ -1448,6 +1448,8 @@ export interface WsActions {
   updatePendingPrompt: (sessionId: string, text: string) => void;
   preflightRoute: (text: string) => void;
   requestHaikuMetrics: () => void;
+  startRecurring: (sessionId: string, text: string, images?: ImageAttachment[]) => void;
+  stopRecurring: (sessionId: string) => void;
 }
 
 interface WsContextValue {
@@ -1473,6 +1475,8 @@ interface WsContextValue {
   updatePendingPrompt: (sessionId: string, text: string) => void;
   preflightRoute: (text: string) => void;
   requestHaikuMetrics: () => void;
+  startRecurring: (sessionId: string, text: string, images?: ImageAttachment[]) => void;
+  stopRecurring: (sessionId: string) => void;
 }
 
 const WsActionsContext = createContext<WsActions | null>(null);

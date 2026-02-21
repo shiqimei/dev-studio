@@ -742,7 +742,7 @@ function applyOpsToSnapshot(
 
 export function KanbanPanel() {
   const state = useWsState();
-  const { dispatch, resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, sendPromptToSession, sendKanbanOp, updatePendingPrompt, deselectSession, startRecurring, stopRecurring } = useWsActions();
+  const { dispatch, resumeSession, resumeSubagent, requestSubagents, deleteSession, renameSession, createBacklogSession, sendPromptToSession, sendKanbanOp, updatePendingPrompt, deselectSession, startRecurring, stopRecurring, resumeRecurring } = useWsActions();
 
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());

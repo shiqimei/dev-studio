@@ -4,9 +4,11 @@
  *
  * Context protocol hooks:
  *   - createContextExtractionHook: PostToolUse — auto-extracts learnings after tool calls
+ *   - createSubagentContextHook:   SubagentStart — injects relevant memories into subagents
  *
- * Injection happens once at session start (system prompt append in agent.ts),
- * NOT per-tool-call, to avoid compounding context cost.
+ * Root agent (human-spawned) stays clean — no context injection.
+ * Subagents (agent-spawned) get seeded with relevant memories from the context store.
+ * This is the Rung 2→3 transition: agents spawning better-equipped agents.
  */
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../acp/types.js";
@@ -15,6 +17,9 @@ import {
   appendMemory,
   createEntry,
   inferTags,
+  queryRelevant,
+  readMemorySync,
+  formatMemoriesForPrompt,
 } from "../context/store.js";
 
 /* Callbacks executed when receiving PostToolUse hooks from Claude Code.

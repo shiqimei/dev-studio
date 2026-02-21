@@ -76,7 +76,7 @@ describe("SYSTEM_REMINDER", () => {
 describe("createMcpServer", () => {
   it("should return an McpServer instance", () => {
     const agent = createMockAgent();
-    const server = createMcpServer(agent, "test-session", undefined);
+    const server = createMcpServer(agent, "test-session", undefined, "/tmp/test");
 
     expect(server).toBeInstanceOf(McpServer);
   });
@@ -87,14 +87,14 @@ describe("createMcpServer", () => {
 
   it("should not register any tools when clientCapabilities is undefined", () => {
     const agent = createMockAgent();
-    const server = createMcpServer(agent, "test-session", undefined);
+    const server = createMcpServer(agent, "test-session", undefined, "/tmp/test");
 
     expect(getRegisteredToolNames(server)).toHaveLength(0);
   });
 
   it("should not register any tools when clientCapabilities is an empty object", () => {
     const agent = createMockAgent();
-    const server = createMcpServer(agent, "test-session", {} as ClientCapabilities);
+    const server = createMcpServer(agent, "test-session", {} as ClientCapabilities, "/tmp/test");
 
     expect(getRegisteredToolNames(server)).toHaveLength(0);
   });
@@ -110,7 +110,7 @@ describe("createMcpServer", () => {
 
     it("should register the Read tool", () => {
       const agent = createMockAgent();
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).toContain("Read");
@@ -118,7 +118,7 @@ describe("createMcpServer", () => {
 
     it("should not register Write or Edit tools", () => {
       const agent = createMockAgent();
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).not.toContain("Write");
@@ -127,7 +127,7 @@ describe("createMcpServer", () => {
 
     it("should not register Bash, BashOutput, or KillShell tools", () => {
       const agent = createMockAgent();
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).not.toContain("Bash");
@@ -137,7 +137,7 @@ describe("createMcpServer", () => {
 
     it("should register exactly 1 tool", () => {
       const agent = createMockAgent();
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       expect(getRegisteredToolNames(server)).toHaveLength(1);
     });
@@ -154,7 +154,7 @@ describe("createMcpServer", () => {
 
     it("should register the Write tool", () => {
       const agent = createMockAgent();
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).toContain("Write");
@@ -162,7 +162,7 @@ describe("createMcpServer", () => {
 
     it("should register the Edit tool", () => {
       const agent = createMockAgent();
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).toContain("Edit");
@@ -170,7 +170,7 @@ describe("createMcpServer", () => {
 
     it("should not register the Read tool", () => {
       const agent = createMockAgent();
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).not.toContain("Read");
@@ -178,7 +178,7 @@ describe("createMcpServer", () => {
 
     it("should register exactly 2 tools", () => {
       const agent = createMockAgent();
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       expect(getRegisteredToolNames(server)).toHaveLength(2);
     });
@@ -195,7 +195,7 @@ describe("createMcpServer", () => {
 
     it("should register Read, Write, and Edit tools", () => {
       const agent = createMockAgent();
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).toContain("Read");
@@ -205,7 +205,7 @@ describe("createMcpServer", () => {
 
     it("should register exactly 3 tools", () => {
       const agent = createMockAgent();
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       expect(getRegisteredToolNames(server)).toHaveLength(3);
     });
@@ -223,7 +223,7 @@ describe("createMcpServer", () => {
       };
       // The terminal branch reads agent.clientCapabilities, not the parameter.
       const agent = createMockAgent({ clientCapabilities: capabilities });
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).toContain("Bash");
@@ -236,7 +236,7 @@ describe("createMcpServer", () => {
         terminal: true,
       };
       const agent = createMockAgent({ clientCapabilities: capabilities });
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       expect(getRegisteredToolNames(server)).toHaveLength(3);
     });
@@ -246,7 +246,7 @@ describe("createMcpServer", () => {
       // does not have clientCapabilities.terminal set.
       const agent = createMockAgent();
       const paramCapabilities: ClientCapabilities = { terminal: true };
-      const server = createMcpServer(agent, "test-session", paramCapabilities);
+      const server = createMcpServer(agent, "test-session", paramCapabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).not.toContain("Bash");
@@ -266,7 +266,7 @@ describe("createMcpServer", () => {
         terminal: true,
       };
       const agent = createMockAgent({ clientCapabilities: capabilities });
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).toContain("Read");
@@ -290,7 +290,7 @@ describe("createMcpServer", () => {
         terminal: true,
       };
       const agent = createMockAgent({ clientCapabilities: capabilities });
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).toContain("Read");
@@ -308,7 +308,7 @@ describe("createMcpServer", () => {
         terminal: true,
       };
       const agent = createMockAgent({ clientCapabilities: capabilities });
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).toContain("Write");
@@ -331,7 +331,7 @@ describe("createMcpServer", () => {
         fs: { readTextFile: false },
       };
       const agent = createMockAgent();
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).not.toContain("Read");
@@ -342,7 +342,7 @@ describe("createMcpServer", () => {
         fs: { writeTextFile: false },
       };
       const agent = createMockAgent();
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).not.toContain("Write");
@@ -354,7 +354,7 @@ describe("createMcpServer", () => {
         terminal: false,
       };
       const agent = createMockAgent({ clientCapabilities: { terminal: false } });
-      const server = createMcpServer(agent, "test-session", capabilities);
+      const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
       const toolNames = getRegisteredToolNames(server);
       expect(toolNames).not.toContain("Bash");
@@ -369,10 +369,10 @@ describe("createMcpServer", () => {
 
   it("should accept different sessionId values without error", () => {
     const agent = createMockAgent();
-    expect(() => createMcpServer(agent, "", undefined)).not.toThrow();
-    expect(() => createMcpServer(agent, "session-abc-123", undefined)).not.toThrow();
+    expect(() => createMcpServer(agent, "", undefined, "/tmp/test")).not.toThrow();
+    expect(() => createMcpServer(agent, "session-abc-123", undefined, "/tmp/test")).not.toThrow();
     expect(() =>
-      createMcpServer(agent, "a-very-long-session-id-string-value", undefined),
+      createMcpServer(agent, "a-very-long-session-id-string-value", undefined, "/tmp/test"),
     ).not.toThrow();
   });
 });

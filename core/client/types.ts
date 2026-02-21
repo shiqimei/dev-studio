@@ -154,6 +154,11 @@ export interface RecurringStateInfo {
   latestStatus: "completed" | "error" | null;
   lastCompletedAt: number | null;
   lastDurationMs: number | null;
+  intervalMs: number;
+  scheduleDescription: string;
+  isPaused: boolean;
+  nextTickAt: number | null;
+  consecutiveErrors: number;
 }
 
 export type ExecutorType = "claude" | "codex";

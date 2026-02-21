@@ -681,6 +681,7 @@ export function startServer(port: number) {
               daemon.defaultSessionId = sessionId;
               clientState.currentSessionId = sessionId;
               ws.send(JSON.stringify({ type: "session_switched", sessionId, turnStatus: daemon.getTurnStatusSnapshot(sessionId) }));
+              daemon.sendSessionMeta(ws, sessionId);
               daemon.broadcastSessions().catch(() => {});
             } catch (err: any) {
               log.error({ client: cid, err: err.message }, "ws: new_session error");
@@ -928,6 +929,7 @@ export function startServer(port: number) {
 
                 ws.send(JSON.stringify({ type: "session_history", sessionId: newSessionId, entries: [] }));
                 ws.send(JSON.stringify({ type: "session_switched", sessionId: newSessionId, turnStatus: null }));
+                daemon.sendSessionMeta(ws, newSessionId);
                 ws.send(JSON.stringify({ type: "route_result", sessionId: newSessionId, isNew: true }));
 
                 daemon.broadcastSessions().catch(() => {});

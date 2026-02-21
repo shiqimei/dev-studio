@@ -157,6 +157,10 @@ class AgentsDaemonImpl implements AgentsDaemon {
   readonly autoRenameEligible = new Set<string>();
   private autoRenameInFlight = new Set<string>();
 
+  // ── Recurring state ──
+  private recurringStates = new Map<string, RecurringState>();
+  private recurringTextCaptures = new Map<string, string>();
+
   // ── Worker pools ──
   private haikuPool: HaikuPool;
   private opusPool: OpusPool;
@@ -242,6 +246,11 @@ class AgentsDaemonImpl implements AgentsDaemon {
       if (m.type === "text" && m.text) {
         ts.approxTokens += Math.ceil(m.text.length / 4);
         activityChanged = setActivity(ts, "responding");
+        // Capture text for recurring session log snippets
+        if (this.recurringStates.has(msgSessionId)) {
+          const existing = this.recurringTextCaptures.get(msgSessionId) ?? "";
+          this.recurringTextCaptures.set(msgSessionId, (existing + m.text).slice(-500));
+        }
       } else if (m.type === "thought" && m.text) {
         ts.approxTokens += Math.ceil(m.text.length / 4);
         const now = Date.now();
@@ -630,12 +639,14 @@ class AgentsDaemonImpl implements AgentsDaemon {
       try {
         const snap = kanbanDb.getKanbanSnapshot();
         const currentOverride = snap.columnOverrides[sessionId];
-        if (!currentOverride || currentOverride === "in_progress") {
+        if (currentOverride === "recurring") {
+          this.handleRecurringTurnEnd(sessionId);
+        } else if (!currentOverride || currentOverride === "in_progress") {
           kanbanDb.applyKanbanOps([{ op: "set_column", sessionId, column: "in_review" }]);
           this.eventSink({ type: "kanban_state_changed" }, null);
         }
       } catch (err: any) {
-        log.warn({ session: sid(sessionId), err: err.message }, "daemon: failed to set in_review override");
+        log.warn({ session: sid(sessionId), err: err.message }, "daemon: failed to handle post-turn logic");
       }
       this.drainQueue(sessionId);
     }
@@ -753,16 +764,18 @@ class AgentsDaemonImpl implements AgentsDaemon {
       this.broadcast({ type: "turn_end", stopReason: "error", sessionId });
     } finally {
       this.processingSessions.delete(sessionId);
-      // Transition kanban column to in_review
+      // Transition kanban column to in_review (or handle recurring)
       try {
         const snap = kanbanDb.getKanbanSnapshot();
         const currentOverride = snap.columnOverrides[sessionId];
-        if (!currentOverride || currentOverride === "in_progress") {
+        if (currentOverride === "recurring") {
+          this.handleRecurringTurnEnd(sessionId);
+        } else if (!currentOverride || currentOverride === "in_progress") {
           kanbanDb.applyKanbanOps([{ op: "set_column", sessionId, column: "in_review" }]);
           this.eventSink({ type: "kanban_state_changed" }, null);
         }
       } catch (err: any) {
-        log.warn({ session: sid(sessionId), err: err.message }, "daemon: failed to set in_review override");
+        log.warn({ session: sid(sessionId), err: err.message }, "daemon: failed to handle post-turn logic");
       }
       this.drainQueue(sessionId);
     }

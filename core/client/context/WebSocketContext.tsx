@@ -1450,6 +1450,7 @@ export interface WsActions {
   requestHaikuMetrics: () => void;
   startRecurring: (sessionId: string, text: string, images?: ImageAttachment[]) => void;
   stopRecurring: (sessionId: string) => void;
+  resumeRecurring: (sessionId: string) => void;
 }
 
 interface WsContextValue {

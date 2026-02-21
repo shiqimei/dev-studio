@@ -801,8 +801,57 @@ class AgentsDaemonImpl implements AgentsDaemon {
     return this.recurringStates.get(sessionId) ?? null;
   }
 
-  startRecurring(sessionId: string, prompt: string, images?: Array<{ data: string; mimeType: string }>): void {
+  /**
+   * Parse a user's natural-language recurring prompt via Haiku into a cron definition.
+   * On failure, falls back to original prompt + 10min default.
+   */
+  private async parseRecurringPrompt(userPrompt: string): Promise<{
+    taskPrompt: string;
+    intervalMinutes: number;
+    scheduleDescription: string;
+  }> {
+    const fallback = { taskPrompt: userPrompt, intervalMinutes: 10, scheduleDescription: "every 10 minutes" };
+    try {
+      const prompt =
+        `Parse this user request into a recurring task definition. Extract:\n` +
+        `1. The task to perform each iteration (without schedule info)\n` +
+        `2. The interval in minutes between runs\n` +
+        `3. A human-readable schedule description\n\n` +
+        `User request: "${userPrompt.slice(0, 500)}"\n\n` +
+        `Respond with ONLY a JSON object, no other text:\n` +
+        `{"task": "the task prompt", "interval_minutes": N, "schedule_description": "every N minutes"}`;
+
+      const raw = await this.haikuPool.query(prompt);
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        log.warn({ raw: raw.slice(0, 200) }, "recurring: Haiku response not JSON, using fallback");
+        return fallback;
+      }
+      const parsed = JSON.parse(jsonMatch[0]);
+      const task = typeof parsed.task === "string" && parsed.task.trim() ? parsed.task.trim() : userPrompt;
+      let minutes = Number(parsed.interval_minutes);
+      if (!Number.isFinite(minutes) || minutes < 1) minutes = 10;
+      if (minutes > 1440) minutes = 1440; // clamp to 24h
+      const desc = typeof parsed.schedule_description === "string" && parsed.schedule_description.trim()
+        ? parsed.schedule_description.trim()
+        : `every ${minutes} minute${minutes === 1 ? "" : "s"}`;
+
+      log.info({ task: task.slice(0, 100), minutes, desc }, "recurring: Haiku parsed prompt");
+      return { taskPrompt: task, intervalMinutes: minutes, scheduleDescription: desc };
+    } catch (err: any) {
+      log.warn({ err: err.message }, "recurring: parseRecurringPrompt failed, using fallback");
+      return fallback;
+    }
+  }
+
+  async startRecurring(sessionId: string, prompt: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
+    const { taskPrompt, intervalMinutes, scheduleDescription } = await this.parseRecurringPrompt(prompt);
+    const intervalMs = intervalMinutes * 60_000;
+
     this.recurringStates.set(sessionId, {
+      taskPrompt,
+      intervalMs,
+      scheduleDescription,
       originalPrompt: prompt,
       originalImages: images,
       iterationCount: 0,
@@ -810,19 +859,36 @@ class AgentsDaemonImpl implements AgentsDaemon {
       latestStatus: null,
       lastCompletedAt: null,
       lastDurationMs: null,
+      consecutiveErrors: 0,
+      isPaused: false,
+      nextTickAt: Date.now() + intervalMs,
     });
-    log.info({ session: sid(sessionId) }, "recurring: started");
+    log.info({ session: sid(sessionId), intervalMs, scheduleDescription, task: taskPrompt.slice(0, 100) }, "recurring: started");
     this.broadcastRecurringState(sessionId);
+
+    // Fire first iteration immediately, then start the interval timer
+    this.fireRecurringIteration(sessionId);
+    this.startRecurringTimer(sessionId);
   }
 
   stopRecurring(sessionId: string): void {
     if (this.recurringStates.delete(sessionId)) {
       this.recurringTextCaptures.delete(sessionId);
-      const timer = this.recurringTimers.get(sessionId);
-      if (timer) { clearTimeout(timer); this.recurringTimers.delete(sessionId); }
+      this.clearRecurringTimer(sessionId);
       log.info({ session: sid(sessionId) }, "recurring: stopped");
       this.broadcastRecurringState(sessionId);
     }
+  }
+
+  resumeRecurring(sessionId: string): void {
+    const rs = this.recurringStates.get(sessionId);
+    if (!rs) return;
+    rs.consecutiveErrors = 0;
+    rs.isPaused = false;
+    rs.nextTickAt = Date.now() + rs.intervalMs;
+    log.info({ session: sid(sessionId) }, "recurring: resumed");
+    this.broadcastRecurringState(sessionId);
+    this.fireRecurringIteration(sessionId);
   }
 
   sendRecurringStates(ws: WsSendable): void {
@@ -836,6 +902,11 @@ class AgentsDaemonImpl implements AgentsDaemon {
           latestStatus: rs.latestStatus,
           lastCompletedAt: rs.lastCompletedAt,
           lastDurationMs: rs.lastDurationMs,
+          intervalMs: rs.intervalMs,
+          scheduleDescription: rs.scheduleDescription,
+          isPaused: rs.isPaused,
+          nextTickAt: rs.nextTickAt,
+          consecutiveErrors: rs.consecutiveErrors,
         },
       }));
     }
@@ -852,10 +923,64 @@ class AgentsDaemonImpl implements AgentsDaemon {
         latestStatus: rs.latestStatus,
         lastCompletedAt: rs.lastCompletedAt,
         lastDurationMs: rs.lastDurationMs,
+        intervalMs: rs.intervalMs,
+        scheduleDescription: rs.scheduleDescription,
+        isPaused: rs.isPaused,
+        nextTickAt: rs.nextTickAt,
+        consecutiveErrors: rs.consecutiveErrors,
       } : null,
     }, null);
   }
 
+  private startRecurringTimer(sessionId: string): void {
+    this.clearRecurringTimer(sessionId);
+    const rs = this.recurringStates.get(sessionId);
+    if (!rs) return;
+    const timer = setInterval(() => this.onRecurringTick(sessionId), rs.intervalMs);
+    this.recurringTimers.set(sessionId, timer);
+  }
+
+  private onRecurringTick(sessionId: string): void {
+    const rs = this.recurringStates.get(sessionId);
+    if (!rs) { this.clearRecurringTimer(sessionId); return; }
+    if (rs.isPaused) return;
+    if (this.processingSessions.has(sessionId)) {
+      log.debug({ session: sid(sessionId) }, "recurring: tick skipped (session busy)");
+      rs.nextTickAt = Date.now() + rs.intervalMs;
+      return;
+    }
+    rs.nextTickAt = Date.now() + rs.intervalMs;
+    this.fireRecurringIteration(sessionId);
+  }
+
+  private fireRecurringIteration(sessionId: string): void {
+    const rs = this.recurringStates.get(sessionId);
+    if (!rs) return;
+    const queueId = this.generateQueueId();
+    this.getQueue(sessionId).push({
+      id: queueId,
+      text: rs.taskPrompt,
+      images: rs.originalImages,
+      addedAt: Date.now(),
+    });
+    if (!this.processingSessions.has(sessionId)) {
+      this.drainQueue(sessionId);
+    }
+  }
+
+  private clearRecurringTimer(sessionId: string): void {
+    const timer = this.recurringTimers.get(sessionId);
+    if (timer) {
+      clearInterval(timer);
+      this.recurringTimers.delete(sessionId);
+    }
+  }
+
+  /**
+   * Called from processPrompt/processOpusPrompt finally block.
+   * Stats-only: updates iteration count, captures log snippet, tracks errors.
+   * Does NOT re-queue — the interval timer handles scheduling.
+   */
   private handleRecurringTurnEnd(sessionId: string): void {
     const rs = this.recurringStates.get(sessionId);
     if (!rs) return;
@@ -874,38 +999,24 @@ class AgentsDaemonImpl implements AgentsDaemon {
       this.recurringTextCaptures.delete(sessionId);
     }
 
-    // Use a minimum 10s delay between iterations to prevent rapid loops.
-    // If the turn itself took longer than 10s, use that as the delay floor.
-    const MIN_RECURRING_DELAY_MS = 10_000;
-    const delay = Math.max(MIN_RECURRING_DELAY_MS, rs.lastDurationMs ?? MIN_RECURRING_DELAY_MS);
+    // Track consecutive errors for auto-pause
+    if (latestStatus === "error") {
+      rs.consecutiveErrors++;
+      if (rs.consecutiveErrors >= 3) {
+        rs.isPaused = true;
+        rs.nextTickAt = null;
+        log.warn({ session: sid(sessionId), consecutiveErrors: rs.consecutiveErrors }, "recurring: auto-paused after 3 consecutive errors");
+      }
+    } else {
+      rs.consecutiveErrors = 0;
+    }
 
     log.info(
-      { session: sid(sessionId), iteration: rs.iterationCount, status: latestStatus, nextInMs: delay },
-      "recurring: iteration completed, scheduling next",
+      { session: sid(sessionId), iteration: rs.iterationCount, status: latestStatus, isPaused: rs.isPaused },
+      "recurring: iteration completed",
     );
 
     this.broadcastRecurringState(sessionId);
-
-    // Schedule re-queue after delay instead of pushing synchronously.
-    // The finally block's drainQueue() will find an empty queue and do nothing.
-    // After the delay, we push and drain manually.
-    const timer = setTimeout(() => {
-      this.recurringTimers.delete(sessionId);
-      // Guard: only re-queue if still in recurring mode
-      if (!this.recurringStates.has(sessionId)) return;
-      const queueId = this.generateQueueId();
-      this.getQueue(sessionId).push({
-        id: queueId,
-        text: rs.originalPrompt,
-        images: rs.originalImages,
-        addedAt: Date.now(),
-      });
-      // Drain manually since we're outside the finally block now
-      if (!this.processingSessions.has(sessionId)) {
-        this.drainQueue(sessionId);
-      }
-    }, delay);
-    this.recurringTimers.set(sessionId, timer);
   }
 
   // ── Queue management ──

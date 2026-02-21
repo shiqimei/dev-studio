@@ -57,7 +57,6 @@ import {
   createPreToolUseHook,
   createContextExtractionHook,
 } from "../sdk/hooks.js";
-import { readMemory, queryRelevant, formatMemoriesForPrompt } from "../context/store.js";
 import {
   toAcpNotifications,
   streamEventToAcpNotifications,
@@ -1305,20 +1304,6 @@ export class ClaudeAcpAgent implements Agent {
       ) {
         systemPrompt.append = customPrompt.append;
       }
-    }
-
-    // Context Protocol: inject relevant memories into system prompt (cold start)
-    try {
-      const memories = await readMemory(params.cwd);
-      if (memories.length > 0) {
-        const relevant = queryRelevant(memories, [], 20);
-        if (relevant.length > 0 && typeof systemPrompt === "object" && systemPrompt.type === "preset") {
-          const memoryBlock = formatMemoriesForPrompt(relevant);
-          systemPrompt.append = (systemPrompt.append ?? "") + "\n" + memoryBlock;
-        }
-      }
-    } catch (err) {
-      this.logger.error(`[context-protocol] Failed to inject memories: ${err}`);
     }
 
     const permissionMode = "default";

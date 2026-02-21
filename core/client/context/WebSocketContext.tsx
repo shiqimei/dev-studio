@@ -29,6 +29,7 @@ import type {
   SubagentType,
   KanbanOp,
   ExecutorType,
+  RecurringStateInfo,
 } from "../types";
 import { classifyTool } from "../utils";
 import { isSystemPrompt } from "../kanban-prompts";
@@ -206,6 +207,9 @@ const initialState: AppState = {
   kanbanVersion: 0,
   kanbanPendingOps: [],
   kanbanStateLoaded: false,
+
+  // Recurring task state
+  recurringStates: {},
 
   // Executor selection
   availableExecutors: ["claude"],
@@ -1394,6 +1398,14 @@ function reducer(state: AppState, action: Action): AppState {
 
     case "SET_EXECUTOR":
       return { ...state, selectedExecutor: action.executor };
+
+    case "RECURRING_STATE": {
+      if (action.state === null) {
+        const { [action.sessionId]: _, ...rest } = state.recurringStates;
+        return { ...state, recurringStates: rest };
+      }
+      return { ...state, recurringStates: { ...state.recurringStates, [action.sessionId]: action.state } };
+    }
 
     case "SET_PROJECTS": {
       // Prefer server's activeProject, but if null, keep localStorage-seeded value
@@ -2585,6 +2597,9 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
       break;
     case "kanban_state":
       dispatch({ type: "KANBAN_STATE_LOADED", columnOverrides: msg.columnOverrides ?? {}, sortOrders: msg.sortOrders ?? {}, pendingPrompts: msg.pendingPrompts ?? {}, version: msg.version ?? 0 });
+      break;
+    case "recurring_state":
+      dispatch({ type: "RECURRING_STATE", sessionId: msg.sessionId, state: msg.state ?? null });
       break;
     case "kanban_op_ack":
       dispatch({

@@ -2,7 +2,58 @@ import { spawn, execSync } from "node:child_process";
 import path from "node:path";
 import { log, bootMs } from "./log.js";
 import { nodeToWebWritable, nodeToWebReadable, instrumentedStream } from "./acp-shared.js";
-import { createInstFilteredReadable, pushAllPendingTasks } from "./inst-interceptor.js";
+import { createInstFilteredReadable, pushAllPendingTasks, getInstStore } from "./inst-interceptor.js";
+
+// ── AgentInst instrumentation for executor version detection ──
+
+const INST_UUID = "00000000-exec-ver0-0000-000000000001";
+const INST_NAME = "executor-version-detect";
+
+function instLog(text: string): void {
+  const store = getInstStore();
+  const ts = Date.now() / 1000;
+  // Ensure the task exists with a "task" entry on first log
+  let task = store.tasks.get(INST_UUID);
+  if (!task) {
+    store.ingest({
+      entries: [{ task_uuid: INST_UUID, task_name: INST_NAME, ts, type: "task" }],
+      passed: true,
+      checkpoints: [],
+    });
+    task = store.tasks.get(INST_UUID);
+  }
+  // Append a log entry to the latest run
+  if (task && task.runs.length > 0) {
+    task.runs[task.runs.length - 1].entries.push({
+      task_uuid: INST_UUID,
+      task_name: INST_NAME,
+      ts,
+      type: "log",
+      text,
+    });
+  }
+}
+
+function instCheck(label: string, data: Record<string, unknown>): void {
+  const store = getInstStore();
+  const ts = Date.now() / 1000;
+  const task = store.tasks.get(INST_UUID);
+  if (task && task.runs.length > 0) {
+    const run = task.runs[task.runs.length - 1];
+    const passed = !!data.version;
+    run.entries.push({
+      task_uuid: INST_UUID,
+      task_name: INST_NAME,
+      ts,
+      type: "checkpoint",
+      label,
+      data,
+    });
+    run.checkpoints.push({ label, passed, assertions: [{ field: "version", op: "exists", passed, actual: data.version, msg: "executor version should be detected" }] });
+    run.passed = passed;
+    run.status = "done";
+  }
+}
 
 // Resolve system-installed claude binary at module load time
 let systemClaudePath = "";
@@ -11,13 +62,19 @@ try { systemClaudePath = execSync("which claude", { encoding: "utf-8" }).trim();
 /** Run `<claude-binary> --version` and extract the semver string. */
 export function detectClaudeCodeVersion(): string {
   const exe = process.env.CLAUDE_CODE_EXECUTABLE || systemClaudePath || "claude";
+  instLog(`detectClaudeCodeVersion: exe="${exe}" (CLAUDE_CODE_EXECUTABLE=${process.env.CLAUDE_CODE_EXECUTABLE || "(unset)"}, systemClaudePath="${systemClaudePath}")`);
   try {
     const output = execSync(`"${exe}" --version 2>&1`, { encoding: "utf-8", timeout: 5000 }).trim();
     // Output format: "2.1.50 (Claude Code)" or just "2.1.50"
     const match = output.match(/([\d]+\.[\d]+\.[\d]+)/);
-    if (match) return match[1];
+    if (match) {
+      instLog(`detectClaudeCodeVersion: output="${output}" → version="${match[1]}"`);
+      return match[1];
+    }
+    instLog(`detectClaudeCodeVersion: output="${output}" → NO MATCH`);
     log.info({ exe, output }, "api: claude --version output did not match semver pattern");
   } catch (err: any) {
+    instLog(`detectClaudeCodeVersion: FAILED exe="${exe}" err="${err.message}"`);
     log.warn({ exe, err: err.message }, "api: failed to detect Claude Code version");
   }
   return "";
@@ -98,6 +155,7 @@ export async function createAcpConnection(
   });
 
   const executorVersion = detectClaudeCodeVersion();
+  instLog(`createAcpConnection: executorVersion="${executorVersion || "(empty)"}" agentName="${initResp.agentInfo.name}" agentVersion="${initResp.agentInfo.version}"`);
   log.info({ executorVersion: executorVersion || "(not detected)", totalMs: Math.round(performance.now() - spawnT0), boot: bootMs() }, "api: createAcpConnection complete");
   return {
     connection,

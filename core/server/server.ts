@@ -544,6 +544,7 @@ export function startServer(port: number) {
         try { ws.send(JSON.stringify({ type: "executors", available: daemon.getAvailableExecutors() })); } catch {}
         daemon.broadcastSessions().catch(() => {});
         broadcastKanbanState();
+        daemon.sendRecurringStates(ws);
 
         // Fetch tasks
         daemon.getTasksList(sessionId).then((taskResult) => {

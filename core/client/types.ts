@@ -148,6 +148,14 @@ export type ChatEntry =
 
 // ── Sessions ────────────────────────────────
 
+export interface RecurringStateInfo {
+  iterationCount: number;
+  latestLogSnippet: string | null;
+  latestStatus: "completed" | "error" | null;
+  lastCompletedAt: number | null;
+  lastDurationMs: number | null;
+}
+
 export type ExecutorType = "claude" | "codex";
 
 export type SubagentType = "code" | "explore" | "bash" | "plan" | "agent";
@@ -352,6 +360,9 @@ export interface AppState {
   kanbanStateLoaded: boolean;
   kanbanPendingOps: Array<{ seq: number; ops: KanbanOp[] }>;
 
+  // Recurring task state
+  recurringStates: Record<string, RecurringStateInfo>;
+
   // Executor selection
   availableExecutors: ExecutorType[];
   selectedExecutor: ExecutorType;
@@ -408,4 +419,5 @@ export type Action =
   | { type: "SET_PROJECTS"; projects: string[]; activeProject: string | null }
   | { type: "SET_ACTIVE_PROJECT"; path: string }
   | { type: "EXECUTORS"; available: ExecutorType[] }
-  | { type: "SET_EXECUTOR"; executor: ExecutorType };
+  | { type: "SET_EXECUTOR"; executor: ExecutorType }
+  | { type: "RECURRING_STATE"; sessionId: string; state: RecurringStateInfo | null };

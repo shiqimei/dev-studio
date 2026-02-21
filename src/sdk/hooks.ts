@@ -1,10 +1,22 @@
 /**
  * Hook factories for PreToolUse and PostToolUse.
  * Extracted from tools.ts.
+ *
+ * Context protocol hooks (Phase 1 & 2):
+ *   - createContextExtractionHook: PostToolUse — auto-extracts learnings after tool calls
+ *   - createContextInjectionHook:  PreToolUse  — auto-injects relevant context before tool calls
  */
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../acp/types.js";
 import type { SettingsManager } from "../disk/settings.js";
+import {
+  appendMemory,
+  createEntry,
+  inferTags,
+  queryRelevant,
+  readMemorySync,
+  formatMemoriesForPrompt,
+} from "../context/store.js";
 
 /* Callbacks executed when receiving PostToolUse hooks from Claude Code.
  * Entries are evicted after 5 minutes to prevent unbounded growth from

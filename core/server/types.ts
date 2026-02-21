@@ -8,6 +8,7 @@ export interface AcpConnection {
   webClient: WebClient;
   agentName?: string;
   agentVersion?: string;
+  executorVersion?: string;
 }
 
 export type BroadcastFn = (msg: object) => void;

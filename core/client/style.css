@@ -4194,10 +4194,8 @@ a, [data-streamdown="link"] { cursor: pointer; }
 .kanban-drop-indicator::after { right: -3px; }
 
 .kanban-card-selected .session-row {
-  border-color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
-  box-shadow: 4px 4px 8px color-mix(in srgb, var(--color-faint) 55%, var(--color-bg));
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+  border-left: 3px solid var(--color-accent);
+  transition: border-color 0.2s ease, background 0.2s ease;
 }
 
 .kanban-column-body .kanban-card-wrap:not(.kanban-card-selected) .sidebar-executor-icon.idle {

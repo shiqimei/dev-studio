@@ -231,14 +231,14 @@ describe("createMcpServer", () => {
       expect(toolNames).toContain("KillShell");
     });
 
-    it("should register Bash + BashOutput + KillShell + 4 context tools when only terminal is set", () => {
+    it("should register Bash + BashOutput + KillShell + 5 always-on tools when only terminal is set", () => {
       const capabilities: ClientCapabilities = {
         terminal: true,
       };
       const agent = createMockAgent({ clientCapabilities: capabilities });
       const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
-      expect(getRegisteredToolNames(server)).toHaveLength(7);
+      expect(getRegisteredToolNames(server)).toHaveLength(8);
     });
 
     it("should not register terminal tools when only the parameter has terminal but agent does not", () => {
@@ -275,7 +275,7 @@ describe("createMcpServer", () => {
       expect(toolNames).toContain("Bash");
       expect(toolNames).toContain("BashOutput");
       expect(toolNames).toContain("KillShell");
-      expect(toolNames).toHaveLength(10);
+      expect(toolNames).toHaveLength(11);
     });
   });
 
@@ -299,7 +299,7 @@ describe("createMcpServer", () => {
       expect(toolNames).toContain("KillShell");
       expect(toolNames).not.toContain("Write");
       expect(toolNames).not.toContain("Edit");
-      expect(toolNames).toHaveLength(8);
+      expect(toolNames).toHaveLength(9);
     });
 
     it("should register Write + Edit + terminal tools when writeTextFile and terminal are true", () => {
@@ -317,7 +317,7 @@ describe("createMcpServer", () => {
       expect(toolNames).toContain("BashOutput");
       expect(toolNames).toContain("KillShell");
       expect(toolNames).not.toContain("Read");
-      expect(toolNames).toHaveLength(9);
+      expect(toolNames).toHaveLength(10);
     });
   });
 

@@ -438,6 +438,12 @@ function parseMocha(output: string, raw: string): TestResult {
   // Individual failures in mocha output come after the summary lines.
   // Format: "  1) Suite name\n       should do something:\n     Error: message"
   // Or:     "  1) Suite\n       should do something:\n\n      Error: expected 0 to equal -1"
+  // Mocha failure blocks appear after the "N failing" summary line.
+  // Format:
+  //   1) Array
+  //        should handle edge case:
+  //      Error: expected 0 to equal -1
+  //       at Context.<anonymous> (test/array.test.js:10:14)
   const failSection = output.indexOf("failing");
   if (failSection !== -1) {
     const afterFailing = output.slice(failSection);
@@ -449,8 +455,18 @@ function parseMocha(output: string, raw: string): TestResult {
         .split("\n")
         .map((l) => l.trim())
         .filter(Boolean);
-      const name = lines[0]?.replace(/:$/, "") ?? "unknown";
-      const msgLines = lines.slice(1).slice(0, 3).join(" ");
+      // Mocha puts suite name on first line, test name on second (ending with ":")
+      // Combine them: "Suite > test name"
+      let name: string;
+      let msgStartIdx: number;
+      if (lines.length >= 2 && lines[1].endsWith(":")) {
+        name = `${lines[0]} > ${lines[1].replace(/:$/, "")}`;
+        msgStartIdx = 2;
+      } else {
+        name = lines[0]?.replace(/:$/, "") ?? "unknown";
+        msgStartIdx = 1;
+      }
+      const msgLines = lines.slice(msgStartIdx).slice(0, 3).join(" ");
       failures.push({
         name: name.trim(),
         message: msgLines.slice(0, 300),

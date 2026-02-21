@@ -297,22 +297,54 @@ export function inferTags(toolName: string, toolInput: unknown): string[] {
 // Formatting for system prompt injection
 // ---------------------------------------------------------------------------
 
-/** Format context entries for injection into system prompt. */
+/**
+ * Max characters for memory injection into system prompt.
+ * Each entry is ~80-150 chars. 1500 chars ≈ 10-15 entries ≈ ~400 tokens.
+ * This is a hard cap — entries beyond this budget are dropped.
+ */
+const MEMORY_INJECTION_BUDGET_CHARS = 1500;
+
+/**
+ * Minimum effective confidence for system prompt injection.
+ * Observations and low-confidence entries are excluded to save context budget.
+ */
+const MEMORY_INJECTION_MIN_CONFIDENCE = 0.3;
+
+/** Kinds worth injecting into system prompt (skip transient observations). */
+const INJECTABLE_KINDS = new Set<ContextKind>(["constraint", "preference", "outcome"]);
+
+/** Format context entries for injection into system prompt, respecting a character budget. */
 export function formatMemoriesForPrompt(entries: ContextEntry[]): string {
   if (entries.length === 0) return "";
 
-  const lines = entries.map((e) => {
-    const conf = Math.round(effectiveConfidence(e) * 100);
-    return `- [${e.kind}] ${e.assertion} (confidence: ${conf}%)`;
-  });
+  // Filter to high-value, high-confidence entries
+  const eligible = entries.filter(
+    (e) => INJECTABLE_KINDS.has(e.kind) && effectiveConfidence(e) >= MEMORY_INJECTION_MIN_CONFIDENCE,
+  );
 
-  return [
+  if (eligible.length === 0) return "";
+
+  const header = [
     "",
     "<context-memory>",
     "The following are learnings from previous sessions in this project.",
     "Use them to inform your actions. Do not mention these to the user unless relevant.",
     "",
-    ...lines,
-    "</context-memory>",
   ].join("\n");
+  const footer = "\n</context-memory>";
+  const headerFooterLen = header.length + footer.length;
+
+  // Greedily add entries until budget exhausted
+  const lines: string[] = [];
+  let usedChars = headerFooterLen;
+  for (const e of eligible) {
+    const line = `- [${e.kind}] ${e.assertion}`;
+    if (usedChars + line.length + 1 > MEMORY_INJECTION_BUDGET_CHARS) break;
+    lines.push(line);
+    usedChars += line.length + 1; // +1 for newline
+  }
+
+  if (lines.length === 0) return "";
+
+  return header + lines.join("\n") + footer;
 }

@@ -899,8 +899,9 @@ a, [data-streamdown="link"] { cursor: pointer; }
 }
 
 .diff-text {
-  white-space: pre;
-  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-width: 0;
 }
 
 /* ── Code view (Read tool) ───────────────── */
@@ -974,8 +975,9 @@ a, [data-streamdown="link"] { cursor: pointer; }
 }
 
 .search-text {
-  white-space: pre;
-  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-width: 0;
 }
 
 /* ── ANSI text (Bash output) ─────────────── */

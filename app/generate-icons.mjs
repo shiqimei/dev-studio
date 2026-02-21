@@ -43,7 +43,9 @@ const CONTENT_SIZE = CANVAS * CONTENT_SCALE; // 768
 const CONTENT_OFFSET = (CANVAS - CONTENT_SIZE) / 2; // 128
 
 // Background fill for squircle edges (matches logo's outer background edge color)
-const BG_FILL = "#15120b";
+// Pre-compensated: macOS color management shifts dark colors ~+1 in R channel
+// via the display profile (sRGB → display). Source #14120b displays as #15120b.
+const BG_FILL = "#14120b";
 
 // Drop shadow: Apple spec says 28px blur radius, 12px Y, black 50%.
 // SVG feDropShadow stdDeviation ≈ blur_radius / 2.
@@ -137,22 +139,23 @@ const iconSvg = `<svg viewBox="0 0 ${CANVAS} ${CANVAS}" xmlns="http://www.w3.org
     <clipPath id="squircle-clip">
       <path d="${squircle}"/>
     </clipPath>
-    <filter id="icon-shadow" x="-20%" y="-10%" width="140%" height="130%">
+    <filter id="icon-shadow" x="-20%" y="-10%" width="140%" height="130%" color-interpolation-filters="sRGB">
       <feDropShadow dx="0" dy="${SHADOW_DY}" stdDeviation="${SHADOW_STD_DEV}" flood-color="#000" flood-opacity="${SHADOW_OPACITY}"/>
     </filter>
 
   </defs>
 
-  <!-- Icon body with Apple standard drop shadow -->
+  <!-- Shadow layer: filter applied only to the shape, not the content -->
   <g filter="url(#icon-shadow)">
-    <g clip-path="url(#squircle-clip)">
-      <!-- Background fill for squircle area -->
-      <path d="${squircle}" fill="${BG_FILL}"/>
-      <!-- Logo artwork fills full canvas; its own viewBox padding aligns with the squircle -->
-      <svg x="0" y="0" width="${CANVAS}" height="${CANVAS}" viewBox="${logoViewBox}">
-        ${innerContent}
-      </svg>
-    </g>
+    <path d="${squircle}" fill="${BG_FILL}"/>
+  </g>
+
+  <!-- Icon content: no filter wrapper, preserves exact colors -->
+  <g clip-path="url(#squircle-clip)">
+    <path d="${squircle}" fill="${BG_FILL}"/>
+    <svg x="0" y="0" width="${CANVAS}" height="${CANVAS}" viewBox="${logoViewBox}">
+      ${innerContent}
+    </svg>
   </g>
 
 
@@ -163,7 +166,25 @@ writeFileSync(ICON_SVG, iconSvg);
 console.log(`wrote ${ICON_SVG}`);
 
 // ─── Render PNG ─────────────────────────────────────────────────────────────────
-execSync(`rsvg-convert -w ${CANVAS} -h ${CANVAS} "${ICON_SVG}" -o "${ICON_PNG}"`);
+// rsvg-convert embeds sRGB chunks in PNGs. macOS color-manages these against the
+// display profile, causing ~1-bit color shifts. We strip the sRGB/gAMA/cHRM/iCCP
+// chunks so macOS treats pixel values as device-native (no color management).
+function renderPng(svgPath, pngPath, size) {
+  execSync(`rsvg-convert -w ${size} -h ${size} "${svgPath}" -o "${pngPath}"`);
+  // Strip color profile chunks to prevent macOS color management shifts
+  try {
+    execSync(`magick "${pngPath}" -strip "${pngPath}"`);
+  } catch {
+    // Fall back to convert if magick v7 not available
+    try {
+      execSync(`convert "${pngPath}" -strip "${pngPath}"`);
+    } catch {
+      // No ImageMagick available, skip stripping
+    }
+  }
+}
+
+renderPng(ICON_SVG, ICON_PNG, CANVAS);
 console.log(`wrote ${ICON_PNG}`);
 
 // ─── Render ICNS ────────────────────────────────────────────────────────────────
@@ -172,12 +193,8 @@ const iconset = join(tmp, "icon.iconset");
 execSync(`mkdir -p "${iconset}"`);
 
 for (const size of [16, 32, 64, 128, 256, 512]) {
-  execSync(
-    `rsvg-convert -w ${size} -h ${size} "${ICON_SVG}" -o "${join(iconset, `icon_${size}x${size}.png`)}"`,
-  );
-  execSync(
-    `rsvg-convert -w ${size * 2} -h ${size * 2} "${ICON_SVG}" -o "${join(iconset, `icon_${size}x${size}@2x.png`)}"`,
-  );
+  renderPng(ICON_SVG, join(iconset, `icon_${size}x${size}.png`), size);
+  renderPng(ICON_SVG, join(iconset, `icon_${size}x${size}@2x.png`), size * 2);
 }
 
 execSync(`iconutil -c icns "${iconset}" -o "${ICON_ICNS}"`);

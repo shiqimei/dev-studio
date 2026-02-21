@@ -1026,10 +1026,8 @@ export function startServer(port: number) {
             const targetSession = msg.sessionId;
             if (!targetSession) break;
             log.info({ client: cid, session: sid(targetSession), textLen: msg.text?.length ?? 0 }, "ws: → start_recurring");
-            daemon.startRecurring(targetSession, msg.text, msg.images);
-            if (!daemon.isProcessing(targetSession)) {
-              daemon.prompt(targetSession, msg.text, msg.images);
-            }
+            // startRecurring is async: parses prompt via Haiku, then fires first iteration internally
+            await daemon.startRecurring(targetSession, msg.text, msg.images);
             break;
           }
 
@@ -1039,6 +1037,14 @@ export function startServer(port: number) {
             log.info({ client: cid, session: sid(targetSession) }, "ws: → stop_recurring");
             daemon.stopRecurring(targetSession);
             daemon.clearSessionQueue(targetSession);
+            break;
+          }
+
+          case "resume_recurring": {
+            const targetSession = msg.sessionId;
+            if (!targetSession) break;
+            log.info({ client: cid, session: sid(targetSession) }, "ws: → resume_recurring");
+            daemon.resumeRecurring(targetSession);
             break;
           }
 

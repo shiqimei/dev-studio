@@ -1517,6 +1517,7 @@ export function KanbanPanel() {
             resumeSession={resumeSession}
             resumeSubagent={resumeSubagent}
             liveSessionIds={liveSessionIds}
+            recurringStates={state.recurringStates}
             {...((col.id === "backlog" || col.id === "in_progress" || col.id === "recurring") ? {
               editingNewCard: editingNewCard === col.id,
               onAddCard: () => setEditingNewCard(col.id),

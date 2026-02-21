@@ -4276,6 +4276,39 @@ a, [data-streamdown="link"] { cursor: pointer; }
   background: currentColor;
 }
 
+.kanban-recurring-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-top: 4px;
+  line-height: 16px;
+  background: color-mix(in srgb, var(--color-blue, #58a6ff) 14%, transparent);
+  color: var(--color-blue, #58a6ff);
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.kanban-recurring-badge-error {
+  background: color-mix(in srgb, var(--color-red) 14%, transparent);
+  color: var(--color-red);
+}
+
+.kanban-recurring-iter {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.kanban-recurring-log {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
 /* ── Todo progress ring ───────────────────── */
 
 .todo-ring {

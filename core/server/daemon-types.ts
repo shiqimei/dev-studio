@@ -165,10 +165,12 @@ export interface AgentsDaemon {
   // ── Recurring ──
   /** Get the recurring state for a session (null if not recurring). */
   getRecurringState(sessionId: string): RecurringState | null;
-  /** Start recurring loop for a session with the given prompt. */
-  startRecurring(sessionId: string, prompt: string, images?: Array<{ data: string; mimeType: string }>): void;
+  /** Parse prompt via Haiku into cron definition, start interval timer. */
+  startRecurring(sessionId: string, prompt: string, images?: Array<{ data: string; mimeType: string }>): Promise<void>;
   /** Stop recurring loop for a session. */
   stopRecurring(sessionId: string): void;
+  /** Resume a paused recurring task (resets errors, fires immediately). */
+  resumeRecurring(sessionId: string): void;
   /** Send all recurring states to a newly connected client. */
   sendRecurringStates(ws: WsSendable): void;
 

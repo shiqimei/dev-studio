@@ -975,6 +975,63 @@ In sessions with ${acpToolNames.killShell} always use it instead of KillShell.`,
     },
   );
 
+  // -----------------------------------------------------------------------
+  // Test Governor — test status query tool
+  // -----------------------------------------------------------------------
+
+  server.registerTool(
+    "TestStatus",
+    {
+      title: "TestStatus",
+      description:
+        "Query the most recent test results from the context store. Shows current pass/fail state and recent failures. Use this to check test health before or after making changes.",
+      inputSchema: {
+        runner: z
+          .string()
+          .optional()
+          .describe("Filter by test runner (vitest, jest, pytest, cargo, go, mocha)"),
+        limit: z.number().optional().default(10).describe("Maximum entries to return"),
+      },
+      annotations: {
+        title: "Test status",
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+        idempotentHint: true,
+      },
+    },
+    async (input) => {
+      try {
+        const memories = await readMemory(cwd);
+        const testTags = ["tests", ...(input.runner ? [input.runner] : [])];
+        const results = queryRelevant(memories, testTags, input.limit);
+        if (results.length === 0) {
+          return {
+            content: [{ type: "text", text: "No test results found in context store." }],
+          };
+        }
+        const formatted = results
+          .map(
+            (e) =>
+              `[${e.kind}] (confidence: ${e.confidence.toFixed(2)}) ${e.assertion} [tags: ${e.tags.join(", ")}]`,
+          )
+          .join("\n");
+        return {
+          content: [
+            { type: "text", text: `Test status (${results.length} entries):\n${formatted}` },
+          ],
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            { type: "text", text: "Querying test status failed: " + formatErrorMessage(error) },
+          ],
+        };
+      }
+    },
+  );
+
   return server;
 }
 

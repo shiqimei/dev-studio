@@ -11,6 +11,7 @@
  * This is the Rung 2→3 transition: agents spawning better-equipped agents.
  */
 import * as fs from "node:fs";
+import * as path from "node:path";
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../acp/types.js";
 import type { SettingsManager } from "../disk/settings.js";
@@ -234,11 +235,61 @@ export const createContextExtractionHook =
     try {
       const tags = inferTags(toolName, toolInput);
 
-      // --- Bash failures → outcome ---
+      // --- Test-specific extraction (before generic Bash handler) ---
       if (matchesToolName(toolName, "Bash")) {
         const command = (toolInput?.command as string) ?? "";
         const responseText = extractResponseText(toolResponse);
-        if (isBashFailure(toolResponse, responseText)) {
+        const runner = detectTestRunner(command);
+
+        if (runner) {
+          const testResult = parseTestOutput(runner, responseText);
+
+          if (testResult.failed > 0) {
+            // Publish individual failure entries (up to 5) for granular context
+            for (const failure of testResult.failures.slice(0, 5)) {
+              const failureTags = [
+                "tests",
+                runner,
+                ...(failure.file ? [path.basename(failure.file)] : []),
+              ];
+              const entry = createEntry({
+                assertion: `Test failed: ${failure.name}${failure.file ? ` in ${failure.file}` : ""} — ${failure.message}`,
+                kind: "outcome",
+                confidence: 0.8,
+                tags: failureTags,
+                source: { sessionId, toolName, evidence: failure.message },
+              });
+              appendMemory(cwd, entry).catch((err) =>
+                logger.error(`[context-extraction] persist failed: ${err}`),
+              );
+            }
+            // Summary entry
+            const summaryEntry = createEntry({
+              assertion: `Test run: ${testResult.passed} passed, ${testResult.failed} failed, ${testResult.skipped} skipped (${runner})`,
+              kind: "outcome",
+              confidence: 0.8,
+              tags: ["tests", runner, "test-summary"],
+              source: { sessionId, toolName, evidence: testResult.raw },
+            });
+            appendMemory(cwd, summaryEntry).catch((err) =>
+              logger.error(`[context-extraction] persist failed: ${err}`),
+            );
+          } else if (testResult.passed > 0) {
+            // All tests passed — record positive outcome
+            const entry = createEntry({
+              assertion: `All tests passing: ${testResult.passed} passed, ${testResult.skipped} skipped (${runner})`,
+              kind: "outcome",
+              confidence: 0.9,
+              tags: ["tests", runner, "test-summary"],
+              source: { sessionId, toolName },
+            });
+            appendMemory(cwd, entry).catch((err) =>
+              logger.error(`[context-extraction] persist failed: ${err}`),
+            );
+          }
+          // Skip the generic Bash failure handler for test commands — we've handled it
+        } else if (isBashFailure(toolResponse, responseText)) {
+          // --- Generic Bash failures → outcome ---
           const errorSnippet = responseText.slice(0, 200).trim();
           const entry = createEntry({
             assertion: `Command failed: \`${command.slice(0, 100)}\` — ${errorSnippet}`,

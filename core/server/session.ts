@@ -7,6 +7,16 @@ import { createInstFilteredReadable, pushAllPendingTasks } from "./inst-intercep
 // Resolve system-installed claude binary at module load time
 let systemClaudePath = "";
 try { systemClaudePath = execSync("which claude", { encoding: "utf-8" }).trim(); } catch {}
+
+// Detect executor CLI version at module load time
+let claudeCodeVersion = "";
+try {
+  const claudeExe = process.env.CLAUDE_CODE_EXECUTABLE || systemClaudePath || "claude";
+  const versionOutput = execSync(`"${claudeExe}" --version`, { encoding: "utf-8", timeout: 5000 }).trim();
+  // Output format: "2.1.50 (Claude Code)"
+  const match = versionOutput.match(/^([\d.]+)/);
+  if (match) claudeCodeVersion = match[1];
+} catch {}
 import {
   ClientSideConnection,
   ndJsonStream,
@@ -89,6 +99,7 @@ export async function createAcpConnection(
     webClient: webClient!,
     agentName: initResp.agentInfo.name,
     agentVersion: initResp.agentInfo.version,
+    executorVersion: claudeCodeVersion || undefined,
   };
 }
 
@@ -99,7 +110,7 @@ export async function createNewSession(
   connection: ClientSideConnection,
   broadcast: BroadcastFn,
   cwdOverride?: string,
-  agentInfo?: { name?: string; version?: string },
+  agentInfo?: { name?: string; version?: string; executorVersion?: string },
 ): Promise<{ sessionId: string }> {
   const t0 = performance.now();
   const cwd = cwdOverride || process.env.ACP_CWD;
@@ -124,6 +135,7 @@ export async function createNewSession(
     modes: session.modes?.availableModes.map((m) => ({ id: m.id, name: m.name })) ?? [],
     ...(agentInfo?.name && { agentName: agentInfo.name }),
     ...(agentInfo?.version && { agentVersion: agentInfo.version }),
+    ...(agentInfo?.executorVersion && { executorVersion: agentInfo.executorVersion }),
   });
 
   return { sessionId: session.sessionId };

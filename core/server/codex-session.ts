@@ -35,6 +35,16 @@ if (process.env.CODEX_ACP_EXECUTABLE) {
   }
 }
 
+// Detect Codex version at module load time
+let codexVersion = "";
+if (codexBinaryPath) {
+  try {
+    const versionOutput = execSync(`"${codexBinaryPath}" --version`, { encoding: "utf-8", timeout: 5000 }).trim();
+    const match = versionOutput.match(/[\d.]+/);
+    if (match) codexVersion = match[0];
+  } catch {}
+}
+
 /**
  * Check whether a Codex ACP binary is available on this system.
  */

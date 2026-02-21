@@ -274,7 +274,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
     // ── Capture per-session state ──
     if (msgSessionId) {
       if (m.type === "session_info") {
-        this.getSessionMeta(msgSessionId).sessionInfo = { type: "session_info", sessionId: msgSessionId, models: m.models, currentModel: m.currentModel, modes: m.modes, ...(m.agentName && { agentName: m.agentName }), ...(m.agentVersion && { agentVersion: m.agentVersion }) } as any;
+        this.getSessionMeta(msgSessionId).sessionInfo = { type: "session_info", sessionId: msgSessionId, models: m.models, currentModel: m.currentModel, modes: m.modes, ...(m.agentName && { agentName: m.agentName }), ...(m.agentVersion && { agentVersion: m.agentVersion }), ...(m.executorVersion && { executorVersion: m.executorVersion }) } as any;
       } else if (m.type === "system" && m.text) {
         const meta = this.getSessionMeta(msgSessionId);
         if (!meta.systemMessages.includes(m.text)) meta.systemMessages.push(m.text);

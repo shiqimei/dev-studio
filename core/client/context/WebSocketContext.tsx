@@ -190,6 +190,7 @@ const initialState: AppState = {
   currentModel: null,
   agentName: null,
   agentVersion: null,
+  executorVersion: null,
   // Slash commands
   commands: [],
   _recentlyDeletedIds: [],
@@ -695,6 +696,7 @@ function reducer(state: AppState, action: Action): AppState {
         currentModel: action.currentModel || action.models[0] || null,
         agentName: action.agentName ?? state.agentName,
         agentVersion: action.agentVersion ?? state.agentVersion,
+        executorVersion: action.executorVersion ?? state.executorVersion,
       };
 
     case "SYSTEM": {

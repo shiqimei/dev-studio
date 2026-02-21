@@ -4194,7 +4194,6 @@ a, [data-streamdown="link"] { cursor: pointer; }
 .kanban-drop-indicator::after { right: -3px; }
 
 .kanban-card-selected .session-row {
-  border-left: 3px solid var(--color-accent);
   transition: border-color 0.2s ease, background 0.2s ease;
 }
 

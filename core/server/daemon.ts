@@ -321,7 +321,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
   async init(): Promise<void> {
     if (this.connections.claude) {
       // Backfill executorVersion for connections created before version detection was added (HMR)
-      instLog(`daemon.init: existing connection found, executorVersion="${this.connections.claude.executorVersion || "(unset)}"`);
+      instLog(`daemon.init: existing connection found, executorVersion="${this.connections.claude.executorVersion || "(unset)"}"`);
       if (!this.connections.claude.executorVersion) {
         const v = detectClaudeCodeVersion();
         instLog(`daemon.init: backfill detectClaudeCodeVersion → "${v || "(empty)"}"`);

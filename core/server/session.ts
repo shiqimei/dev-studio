@@ -97,14 +97,15 @@ export async function createAcpConnection(
     text: `Connected to ${initResp.agentInfo.name} v${initResp.agentInfo.version}`,
   });
 
-  log.info({ totalMs: Math.round(performance.now() - spawnT0), boot: bootMs() }, "api: createAcpConnection complete");
+  const executorVersion = detectClaudeCodeVersion();
+  log.info({ executorVersion: executorVersion || "(not detected)", totalMs: Math.round(performance.now() - spawnT0), boot: bootMs() }, "api: createAcpConnection complete");
   return {
     connection,
     agentProcess,
     webClient: webClient!,
     agentName: initResp.agentInfo.name,
     agentVersion: initResp.agentInfo.version,
-    executorVersion: claudeCodeVersion || undefined,
+    executorVersion: executorVersion || undefined,
   };
 }
 

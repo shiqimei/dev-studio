@@ -39,6 +39,25 @@ export interface QueuedMessage {
   addedAt: number;
 }
 
+// ── Recurring state ──
+
+export interface RecurringState {
+  /** The original prompt text to re-send each iteration. */
+  originalPrompt: string;
+  /** Original images attached to the first prompt (if any). */
+  originalImages?: Array<{ data: string; mimeType: string }>;
+  /** How many iterations have completed (incremented after each turn_end). */
+  iterationCount: number;
+  /** Latest text output snippet (last ~300 chars of assistant text from the turn). */
+  latestLogSnippet: string | null;
+  /** Latest turn status: "completed" | "error". */
+  latestStatus: "completed" | "error" | null;
+  /** Timestamp of the last completed iteration. */
+  lastCompletedAt: number | null;
+  /** Duration of the last iteration in ms. */
+  lastDurationMs: number | null;
+}
+
 // ── Event sink ──
 
 /** Minimal interface for sending data to a WebSocket client. */
@@ -125,6 +144,16 @@ export interface AgentsDaemon {
 
   // ── Executor management ──
   getAvailableExecutors(): ExecutorType[];
+
+  // ── Recurring ──
+  /** Get the recurring state for a session (null if not recurring). */
+  getRecurringState(sessionId: string): RecurringState | null;
+  /** Start recurring loop for a session with the given prompt. */
+  startRecurring(sessionId: string, prompt: string, images?: Array<{ data: string; mimeType: string }>): void;
+  /** Stop recurring loop for a session. */
+  stopRecurring(sessionId: string): void;
+  /** Send all recurring states to a newly connected client. */
+  sendRecurringStates(ws: WsSendable): void;
 
   // ── Permission forwarding ──
   resolvePermission(requestId: string, optionId: string, optionName: string): void;

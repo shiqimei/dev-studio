@@ -30,6 +30,7 @@ import type { ExecutorType } from "./kanban-db.js";
 import type {
   AgentsDaemon,
   EventSink,
+  RecurringState,
   TurnState,
   TurnActivity,
   SessionMeta,

@@ -160,7 +160,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
   // ── Recurring state ──
   private recurringStates = new Map<string, RecurringState>();
   private recurringTextCaptures = new Map<string, string>();
-  private recurringTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private recurringTimers = new Map<string, ReturnType<typeof setInterval>>();
 
   // ── Worker pools ──
   private haikuPool: HaikuPool;

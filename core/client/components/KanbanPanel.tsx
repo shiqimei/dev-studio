@@ -1527,6 +1527,7 @@ export function KanbanPanel() {
             subagentsLoading={subagentsLoading}
             resumeSession={resumeSession}
             resumeSubagent={resumeSubagent}
+            resumeRecurring={resumeRecurring}
             liveSessionIds={liveSessionIds}
             recurringStates={state.recurringStates}
             {...((col.id === "backlog" || col.id === "in_progress" || col.id === "recurring") ? {

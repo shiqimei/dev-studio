@@ -1021,6 +1021,26 @@ export function startServer(port: number) {
             break;
           }
 
+          case "start_recurring": {
+            const targetSession = msg.sessionId;
+            if (!targetSession) break;
+            log.info({ client: cid, session: sid(targetSession), textLen: msg.text?.length ?? 0 }, "ws: → start_recurring");
+            daemon.startRecurring(targetSession, msg.text, msg.images);
+            if (!daemon.isProcessing(targetSession)) {
+              daemon.prompt(targetSession, msg.text, msg.images);
+            }
+            break;
+          }
+
+          case "stop_recurring": {
+            const targetSession = msg.sessionId;
+            if (!targetSession) break;
+            log.info({ client: cid, session: sid(targetSession) }, "ws: → stop_recurring");
+            daemon.stopRecurring(targetSession);
+            daemon.clearSessionQueue(targetSession);
+            break;
+          }
+
           case "save_kanban_state": {
             log.info({ client: cid }, "ws: → save_kanban_state (legacy)");
             kanbanDb.setKanbanState({

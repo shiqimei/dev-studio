@@ -10,6 +10,7 @@
  * Subagents (agent-spawned) get seeded with relevant memories from the context store.
  * This is the Rung 2→3 transition: agents spawning better-equipped agents.
  */
+import * as fs from "node:fs";
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../acp/types.js";
 import type { SettingsManager } from "../disk/settings.js";
@@ -271,6 +272,111 @@ export const createContextExtractionHook =
     } catch (err) {
       // Never let extraction errors block tool execution
       logger.error(`[context-extraction] Error: ${err}`);
+    }
+
+    return { continue: true };
+  };
+
+/**
+ * SubagentStop hook: extracts learnings from a completed subagent's transcript
+ * and publishes them to the context store. This is the Rung 4 foundation —
+ * knowledge flows back from subagents to the shared substrate.
+ *
+ * Reads the agent's transcript JSONL, scans for extractable patterns
+ * (Bash failures, key outcomes, file modifications), and persists them.
+ */
+export const createSubagentExtractionHook =
+  (cwd: string, logger: Logger = console): HookCallback =>
+  async (input: any, _toolUseID: string | undefined) => {
+    if (input.hook_event_name !== "SubagentStop") {
+      return { continue: true };
+    }
+
+    const agentId = input.agent_id as string;
+    const transcriptPath = input.agent_transcript_path as string;
+
+    if (!transcriptPath) {
+      return { continue: true };
+    }
+
+    try {
+      let raw: string;
+      try {
+        raw = fs.readFileSync(transcriptPath, "utf8");
+      } catch {
+        // Transcript may not exist (e.g. agent was cancelled before writing)
+        return { continue: true };
+      }
+
+      const lines = raw.split("\n").filter((l) => l.trim());
+      let extractedCount = 0;
+
+      for (const line of lines) {
+        let entry: any;
+        try {
+          entry = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        // Look for tool_result entries with Bash failures
+        if (entry.type === "user" && Array.isArray(entry.message?.content)) {
+          for (const block of entry.message.content) {
+            if (block.type === "tool_result" && block.is_error) {
+              const errorText =
+                typeof block.content === "string"
+                  ? block.content
+                  : Array.isArray(block.content)
+                    ? block.content
+                        .filter((c: any) => c.type === "text")
+                        .map((c: any) => c.text)
+                        .join("\n")
+                    : "";
+              if (errorText && errorText.length > 10) {
+                const contextEntry = createEntry({
+                  assertion: `Subagent error: ${errorText.slice(0, 200).trim()}`,
+                  kind: "outcome",
+                  confidence: 0.5,
+                  tags: ["subagent"],
+                  source: { sessionId: "subagent", agentId, evidence: errorText.slice(0, 500) },
+                });
+                appendMemory(cwd, contextEntry).catch((err) =>
+                  logger.error(`[subagent-extraction] persist failed: ${err}`),
+                );
+                extractedCount++;
+              }
+            }
+          }
+        }
+
+        // Look for assistant result messages with key outcomes
+        if (
+          entry.type === "result" &&
+          entry.subtype === "success" &&
+          typeof entry.result === "string" &&
+          entry.result.length > 20
+        ) {
+          const contextEntry = createEntry({
+            assertion: `Subagent outcome: ${entry.result.slice(0, 300).trim()}`,
+            kind: "outcome",
+            confidence: 0.6,
+            tags: ["subagent"],
+            source: { sessionId: "subagent", agentId },
+          });
+          appendMemory(cwd, contextEntry).catch((err) =>
+            logger.error(`[subagent-extraction] persist failed: ${err}`),
+          );
+          extractedCount++;
+        }
+      }
+
+      if (extractedCount > 0) {
+        logger.log(
+          `[subagent-extraction] Extracted ${extractedCount} entries from subagent ${agentId?.slice(0, 8)}`,
+        );
+      }
+    } catch (err) {
+      logger.error(`[subagent-extraction] SubagentStop error: ${err}`);
     }
 
     return { continue: true };

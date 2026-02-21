@@ -57,6 +57,7 @@ import {
   createPreToolUseHook,
   createContextExtractionHook,
   createSubagentContextHook,
+  createSubagentExtractionHook,
 } from "../sdk/hooks.js";
 import {
   toAcpNotifications,

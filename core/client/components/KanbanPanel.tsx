@@ -185,6 +185,7 @@ function KanbanSessionRow({
   subagentsLoading,
   resumeSession,
   resumeSubagent,
+  resumeRecurring,
   recurringState,
 }: {
   session: DiskSession;
@@ -215,6 +216,7 @@ function KanbanSessionRow({
   subagentsLoading: Set<string>;
   resumeSession: (sessionId: string) => void;
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
+  resumeRecurring: (sessionId: string) => void;
   recurringState?: RecurringStateInfo | null;
 }) {
   const hasChildren = (session.children?.length ?? 0) > 0;

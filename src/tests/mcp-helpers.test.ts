@@ -299,7 +299,7 @@ describe("createMcpServer", () => {
       expect(toolNames).toContain("KillShell");
       expect(toolNames).not.toContain("Write");
       expect(toolNames).not.toContain("Edit");
-      expect(toolNames).toHaveLength(4);
+      expect(toolNames).toHaveLength(8);
     });
 
     it("should register Write + Edit + terminal tools when writeTextFile and terminal are true", () => {
@@ -317,7 +317,7 @@ describe("createMcpServer", () => {
       expect(toolNames).toContain("BashOutput");
       expect(toolNames).toContain("KillShell");
       expect(toolNames).not.toContain("Read");
-      expect(toolNames).toHaveLength(5);
+      expect(toolNames).toHaveLength(9);
     });
   });
 

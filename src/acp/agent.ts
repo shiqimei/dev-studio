@@ -1308,6 +1308,20 @@ export class ClaudeAcpAgent implements Agent {
       }
     }
 
+    // Context Protocol: inject relevant memories into system prompt (cold start)
+    try {
+      const memories = await readMemory(params.cwd);
+      if (memories.length > 0) {
+        const relevant = queryRelevant(memories, [], 20);
+        if (relevant.length > 0 && typeof systemPrompt === "object" && systemPrompt.type === "preset") {
+          const memoryBlock = formatMemoriesForPrompt(relevant);
+          systemPrompt.append = (systemPrompt.append ?? "") + "\n" + memoryBlock;
+        }
+      }
+    } catch (err) {
+      this.logger.error(`[context-protocol] Failed to inject memories: ${err}`);
+    }
+
     const permissionMode = "default";
 
     // Extract options from _meta if provided
@@ -1363,11 +1377,17 @@ export class ClaudeAcpAgent implements Agent {
           {
             hooks: [createPreToolUseHook(settingsManager, this.logger)],
           },
+          {
+            hooks: [createContextInjectionHook(params.cwd, this.logger)],
+          },
         ],
         PostToolUse: [
           ...(userProvidedOptions?.hooks?.PostToolUse || []),
           {
             hooks: [createPostToolUseHook(this.logger)],
+          },
+          {
+            hooks: [createContextExtractionHook(params.cwd, this.logger)],
           },
         ],
       },

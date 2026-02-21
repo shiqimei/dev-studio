@@ -56,7 +56,6 @@ import {
   createPostToolUseHook,
   createPreToolUseHook,
   createContextExtractionHook,
-  createContextInjectionHook,
 } from "../sdk/hooks.js";
 import { readMemory, queryRelevant, formatMemoriesForPrompt } from "../context/store.js";
 import {
@@ -1376,9 +1375,6 @@ export class ClaudeAcpAgent implements Agent {
           ...(userProvidedOptions?.hooks?.PreToolUse || []),
           {
             hooks: [createPreToolUseHook(settingsManager, this.logger)],
-          },
-          {
-            hooks: [createContextInjectionHook(params.cwd, this.logger)],
           },
         ],
         PostToolUse: [

@@ -13,10 +13,6 @@ import {
   appendMemory,
   createEntry,
   inferTags,
-  queryRelevant,
-  readMemorySync,
-  formatMemoriesForPrompt,
-  type ContextEntry,
 } from "../context/store.js";
 
 /* Callbacks executed when receiving PostToolUse hooks from Claude Code.
@@ -273,54 +269,4 @@ export const createContextExtractionHook =
     return { continue: true };
   };
 
-/**
- * PreToolUse hook: automatically injects relevant context before tool execution
- * (injection loop — Phase 2). Only injects for action-taking tools.
- */
-export const createContextInjectionHook =
-  (cwd: string, logger: Logger = console): HookCallback =>
-  async (input: any, _toolUseID: string | undefined) => {
-    if (input.hook_event_name !== "PreToolUse") {
-      return { continue: true };
-    }
 
-    const toolName = input.tool_name as string;
-    const toolInput = input.tool_input;
-
-    // Only inject for action-taking tools, not information-gathering
-    if (
-      !matchesToolName(toolName, "Bash") &&
-      !matchesToolName(toolName, "Edit") &&
-      !matchesToolName(toolName, "Write")
-    ) {
-      return { continue: true };
-    }
-
-    try {
-      const tags = inferTags(toolName, toolInput);
-      const memories = readMemorySync(cwd);
-
-      if (memories.length === 0) {
-        return { continue: true };
-      }
-
-      const relevant = queryRelevant(memories, tags, 5);
-
-      if (relevant.length === 0) {
-        return { continue: true };
-      }
-
-      const contextBlock = formatMemoriesForPrompt(relevant);
-
-      return {
-        continue: true,
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse" as const,
-          additionalContext: contextBlock,
-        },
-      };
-    } catch (err) {
-      logger.error(`[context-injection] Error: ${err}`);
-      return { continue: true };
-    }
-  };

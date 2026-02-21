@@ -160,6 +160,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
   // ── Recurring state ──
   private recurringStates = new Map<string, RecurringState>();
   private recurringTextCaptures = new Map<string, string>();
+  private recurringTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   // ── Worker pools ──
   private haikuPool: HaikuPool;
@@ -817,6 +818,8 @@ class AgentsDaemonImpl implements AgentsDaemon {
   stopRecurring(sessionId: string): void {
     if (this.recurringStates.delete(sessionId)) {
       this.recurringTextCaptures.delete(sessionId);
+      const timer = this.recurringTimers.get(sessionId);
+      if (timer) { clearTimeout(timer); this.recurringTimers.delete(sessionId); }
       log.info({ session: sid(sessionId) }, "recurring: stopped");
       this.broadcastRecurringState(sessionId);
     }

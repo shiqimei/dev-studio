@@ -9,7 +9,7 @@ let systemClaudePath = "";
 try { systemClaudePath = execSync("which claude", { encoding: "utf-8" }).trim(); } catch {}
 
 /** Run `<claude-binary> --version` and extract the semver string. */
-function detectClaudeCodeVersion(): string {
+export function detectClaudeCodeVersion(): string {
   const exe = process.env.CLAUDE_CODE_EXECUTABLE || systemClaudePath || "claude";
   try {
     const output = execSync(`"${exe}" --version 2>&1`, { encoding: "utf-8", timeout: 5000 }).trim();

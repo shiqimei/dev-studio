@@ -13,7 +13,7 @@
 
 import { homedir } from "os";
 import { join } from "path";
-import { createAcpConnection, createNewSession, resumeSession } from "./session.js";
+import { createAcpConnection, createNewSession, resumeSession, detectClaudeCodeVersion } from "./session.js";
 import { createCodexConnection, isCodexAvailable } from "./codex-session.js";
 import { readCodexSessionHistory } from "../../src/disk/codex-sessions.js";
 import { createHaikuPool } from "./haiku-pool.js";
@@ -319,7 +319,17 @@ class AgentsDaemonImpl implements AgentsDaemon {
   // ── Lifecycle ──
 
   async init(): Promise<void> {
-    if (this.connections.claude) return;
+    if (this.connections.claude) {
+      // Backfill executorVersion for connections created before version detection was added (HMR)
+      if (!this.connections.claude.executorVersion) {
+        const v = detectClaudeCodeVersion();
+        if (v) {
+          this.connections.claude.executorVersion = v;
+          log.info({ executorVersion: v }, "daemon: backfilled executorVersion on existing connection");
+        }
+      }
+      return;
+    }
     if (this.initPromise) return this.initPromise;
 
     const t0 = performance.now();

@@ -321,8 +321,10 @@ class AgentsDaemonImpl implements AgentsDaemon {
   async init(): Promise<void> {
     if (this.connections.claude) {
       // Backfill executorVersion for connections created before version detection was added (HMR)
+      instLog(`daemon.init: existing connection found, executorVersion="${this.connections.claude.executorVersion || "(unset)}"`);
       if (!this.connections.claude.executorVersion) {
         const v = detectClaudeCodeVersion();
+        instLog(`daemon.init: backfill detectClaudeCodeVersion → "${v || "(empty)"}"`);
         if (v) {
           this.connections.claude.executorVersion = v;
           log.info({ executorVersion: v }, "daemon: backfilled executorVersion on existing connection");
@@ -427,6 +429,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
   async createSession(executorType: ExecutorType = "claude", projectPath?: string): Promise<{ sessionId: string }> {
     const conn = this.getConnectionForExecutor(executorType);
     if (!conn) throw new Error(`No connection for executor type: ${executorType}`);
+    instLog(`daemon.createSession: executorType="${executorType}" conn.executorVersion="${conn.executorVersion || "(unset)"}" conn.agentName="${conn.agentName || "(unset)}"`);
     const cwd = projectPath ?? this.getActiveProjectCwd() ?? undefined;
     const result = await createNewSession(conn.connection, this.broadcast.bind(this), cwd, { name: conn.agentName, version: conn.agentVersion, executorVersion: conn.executorVersion });
     kanbanDb.setSessionExecutorType(result.sessionId, executorType);
@@ -990,8 +993,15 @@ class AgentsDaemonImpl implements AgentsDaemon {
 
   sendSessionMeta(ws: WsSendable, sessionId: string): void {
     const meta = this.sessionMetas.get(sessionId);
-    if (!meta) return;
-    if (meta.sessionInfo) ws.send(JSON.stringify(meta.sessionInfo));
+    if (!meta) {
+      instLog(`daemon.sendSessionMeta: NO meta for session="${sessionId.slice(0, 8)}"`);
+      return;
+    }
+    if (meta.sessionInfo) {
+      const si = meta.sessionInfo as any;
+      instLog(`daemon.sendSessionMeta: session="${sessionId.slice(0, 8)}" executorVersion="${si.executorVersion || "(absent)}" keys=${Object.keys(si).join(",")}`);
+      ws.send(JSON.stringify(meta.sessionInfo));
+    }
     for (const text of meta.systemMessages) {
       ws.send(JSON.stringify({ type: "system", sessionId, text }));
     }

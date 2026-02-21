@@ -1961,6 +1961,16 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     wsRef.current.send(JSON.stringify({ type: "request_haiku_metrics" }));
   }, []);
 
+  const startRecurring = useCallback((sessionId: string, text: string, images?: ImageAttachment[]) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "start_recurring", sessionId, text, images }));
+  }, []);
+
+  const stopRecurring = useCallback((sessionId: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "stop_recurring", sessionId }));
+  }, []);
+
   const fileSearchCallbacks = useRef<Map<string, (files: string[]) => void>>(new Map());
 
   const searchFiles = useCallback((query: string, callback: (files: string[]) => void) => {
@@ -2291,9 +2301,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       updatePendingPrompt,
       preflightRoute,
       requestHaikuMetrics,
+      startRecurring,
+      stopRecurring,
     }),
     // All deps are useCallback([]) or useReducer dispatch — stable references
-    [dispatch, send, sendOpusPrompt, sendPromptToSession, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, sendKanbanOp, updatePendingPrompt, preflightRoute, requestHaikuMetrics],
+    [dispatch, send, sendOpusPrompt, sendPromptToSession, interrupt, newSession, createBacklogSession, resumeSessionCb, resumeSubagentCb, deleteSessionCb, renameSessionCb, searchFiles, requestCommands, requestSubagents, respondToPermission, saveKanbanState, sendKanbanOp, updatePendingPrompt, preflightRoute, requestHaikuMetrics, startRecurring, stopRecurring],
   );
 
   // ── Hash-based URL routing ──

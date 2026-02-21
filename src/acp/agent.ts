@@ -56,6 +56,7 @@ import {
   createPostToolUseHook,
   createPreToolUseHook,
   createContextExtractionHook,
+  createSubagentContextHook,
 } from "../sdk/hooks.js";
 import {
   toAcpNotifications,
@@ -1369,6 +1370,12 @@ export class ClaudeAcpAgent implements Agent {
           },
           {
             hooks: [createContextExtractionHook(params.cwd, this.logger)],
+          },
+        ],
+        SubagentStart: [
+          ...(userProvidedOptions?.hooks?.SubagentStart || []),
+          {
+            hooks: [createSubagentContextHook(params.cwd, this.logger)],
           },
         ],
       },

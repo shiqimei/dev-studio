@@ -276,4 +276,54 @@ export const createContextExtractionHook =
     return { continue: true };
   };
 
+/**
+ * SubagentStart hook: injects relevant memories from the context store into
+ * subagents before they begin execution. This is where context injection lives —
+ * root agents stay clean, subagents inherit accumulated project knowledge.
+ *
+ * Fires once per subagent spawn (not per tool call), so context cost is bounded.
+ */
+export const createSubagentContextHook =
+  (cwd: string, logger: Logger = console): HookCallback =>
+  async (input: any, _toolUseID: string | undefined) => {
+    if (input.hook_event_name !== "SubagentStart") {
+      return { continue: true };
+    }
 
+    try {
+      const memories = readMemorySync(cwd);
+
+      if (memories.length === 0) {
+        return { continue: true };
+      }
+
+      // Score by recency + confidence + kind priority (no tag filtering —
+      // we don't have the task prompt in SubagentStartHookInput)
+      const relevant = queryRelevant(memories, [], 15);
+
+      if (relevant.length === 0) {
+        return { continue: true };
+      }
+
+      const contextBlock = formatMemoriesForPrompt(relevant);
+
+      if (!contextBlock) {
+        return { continue: true };
+      }
+
+      logger.log(
+        `[context-injection] Injecting ${relevant.length} memories into subagent ${input.agent_id?.slice(0, 8)}`,
+      );
+
+      return {
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: "SubagentStart" as const,
+          additionalContext: contextBlock,
+        },
+      };
+    } catch (err) {
+      logger.error(`[context-injection] SubagentStart error: ${err}`);
+      return { continue: true };
+    }
+  };

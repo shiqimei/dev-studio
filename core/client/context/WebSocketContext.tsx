@@ -2076,6 +2076,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
       ws.onopen = () => {
         clearTimeout(connectTimeout);
+        clearTimeout(disconnectGraceTimer); // Cancel pending disconnect — reconnected in time
         retryCount = 0;
         console.log(`[${pageMs()}] ws OPEN (handshake=${(performance.now() - connectT0).toFixed(0)}ms)`);
         if (!disposed) dispatch({ type: "WS_CONNECTED" });
@@ -2084,7 +2085,12 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         clearTimeout(connectTimeout);
         console.log(`[${pageMs()}] ws CLOSED code=${ev.code} disposed=${disposed}`);
         if (!disposed) {
-          dispatch({ type: "WS_DISCONNECTED" });
+          // Grace period: delay marking sessions as disconnected to avoid
+          // visual jitter from brief connection drops that recover quickly.
+          clearTimeout(disconnectGraceTimer);
+          disconnectGraceTimer = setTimeout(() => {
+            dispatch({ type: "WS_DISCONNECTED" });
+          }, 3000);
           retryCount++;
           scheduleReconnect();
         }

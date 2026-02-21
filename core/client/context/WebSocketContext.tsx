@@ -2497,6 +2497,7 @@ function handleMsg(msg: any, dispatch: React.Dispatch<Action>) {
         modes: msg.modes,
         agentName: msg.agentName,
         agentVersion: msg.agentVersion,
+        executorVersion: msg.executorVersion,
       });
       break;
     }

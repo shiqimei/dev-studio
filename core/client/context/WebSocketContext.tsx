@@ -1478,6 +1478,7 @@ interface WsContextValue {
   requestHaikuMetrics: () => void;
   startRecurring: (sessionId: string, text: string, images?: ImageAttachment[]) => void;
   stopRecurring: (sessionId: string) => void;
+  resumeRecurring: (sessionId: string) => void;
 }
 
 const WsActionsContext = createContext<WsActions | null>(null);

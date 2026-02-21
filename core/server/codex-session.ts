@@ -129,5 +129,6 @@ export async function createCodexConnection(
     webClient: webClient!,
     agentName: initResp.agentInfo.name,
     agentVersion: initResp.agentInfo.version,
+    executorVersion: codexVersion || undefined,
   };
 }

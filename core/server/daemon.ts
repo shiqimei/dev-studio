@@ -408,7 +408,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
     const conn = this.getConnectionForExecutor(executorType);
     if (!conn) throw new Error(`No connection for executor type: ${executorType}`);
     const cwd = projectPath ?? this.getActiveProjectCwd() ?? undefined;
-    const result = await createNewSession(conn.connection, this.broadcast.bind(this), cwd, { name: conn.agentName, version: conn.agentVersion });
+    const result = await createNewSession(conn.connection, this.broadcast.bind(this), cwd, { name: conn.agentName, version: conn.agentVersion, executorVersion: conn.executorVersion });
     kanbanDb.setSessionExecutorType(result.sessionId, executorType);
     kanbanDb.registerManagedSession(result.sessionId, cwd);
     this.liveSessionIds.add(result.sessionId);
@@ -480,7 +480,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
 
           log.warn({ session: sid(sessionId), err: resumeErr.message }, "daemon: session gone, auto-creating replacement");
           const executorType = kanbanDb.getSessionExecutorType(sessionId);
-          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this), activeCwd, { name: conn.agentName, version: conn.agentVersion });
+          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this), activeCwd, { name: conn.agentName, version: conn.agentVersion, executorVersion: conn.executorVersion });
           kanbanDb.setSessionExecutorType(newId, executorType);
           this.liveSessionIds.add(newId);
           this.autoRenameEligible.add(newId);
@@ -574,7 +574,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
         try {
           const executorType = kanbanDb.getSessionExecutorType(sessionId);
           const staleCwd = kanbanDb.getManagedSessionInfo().get(sessionId)?.projectPath ?? this.getActiveProjectCwd() ?? undefined;
-          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this), staleCwd, { name: conn.agentName, version: conn.agentVersion });
+          const { sessionId: newId } = await createNewSession(conn.connection, this.broadcast.bind(this), staleCwd, { name: conn.agentName, version: conn.agentVersion, executorVersion: conn.executorVersion });
           kanbanDb.setSessionExecutorType(newId, executorType);
           this.liveSessionIds.add(newId);
           this.autoRenameEligible.add(newId);

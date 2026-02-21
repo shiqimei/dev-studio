@@ -1381,6 +1381,12 @@ export class ClaudeAcpAgent implements Agent {
             hooks: [createSubagentContextHook(params.cwd, this.logger)],
           },
         ],
+        SubagentStop: [
+          ...(userProvidedOptions?.hooks?.SubagentStop || []),
+          {
+            hooks: [createSubagentExtractionHook(params.cwd, this.logger)],
+          },
+        ],
       },
       ...creationOpts,
     };

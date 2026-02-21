@@ -504,6 +504,7 @@ function KanbanColumnView({
   resumeSession,
   resumeSubagent,
   liveSessionIds,
+  recurringStates,
   editingNewCard,
   onAddCard,
   onSaveNewCard,
@@ -533,6 +534,7 @@ function KanbanColumnView({
   resumeSession: (sessionId: string) => void;
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
   liveSessionIds: Set<string>;
+  recurringStates: Record<string, RecurringStateInfo>;
   editingNewCard?: boolean;
   onAddCard?: () => void;
   onSaveNewCard?: (text: string, images?: ImageAttachment[]) => void;
@@ -683,6 +685,7 @@ function KanbanColumnView({
                 subagentsLoading={subagentsLoading}
                 resumeSession={resumeSession}
                 resumeSubagent={resumeSubagent}
+                recurringState={recurringStates[session.sessionId]}
               />
               </Fragment>
             );

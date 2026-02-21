@@ -1983,6 +1983,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     let disposed = false;
     let reconnectTimer: ReturnType<typeof setTimeout>;
     let connectTimeout: ReturnType<typeof setTimeout>;
+    let disconnectGraceTimer: ReturnType<typeof setTimeout>;
     let retryCount = 0;
 
     /**

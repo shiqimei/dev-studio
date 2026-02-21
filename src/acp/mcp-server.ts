@@ -772,6 +772,209 @@ In sessions with ${acpToolNames.killShell} always use it instead of KillShell.`,
     );
   }
 
+  // -----------------------------------------------------------------------
+  // Context Protocol tools (Rung 3) — explicit API for deliberate operations
+  // -----------------------------------------------------------------------
+
+  server.registerTool(
+    "ContextPublish",
+    {
+      title: "ContextPublish",
+      description:
+        "Publish a structured assertion (learning, preference, observation, or constraint) to the project's persistent context store. Entries are automatically injected into future subagent sessions.",
+      inputSchema: {
+        assertion: z.string().describe("The learning or observation to record"),
+        kind: z
+          .enum(["preference", "observation", "outcome", "constraint"])
+          .describe("Type of assertion"),
+        confidence: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .default(0.7)
+          .describe("Confidence level (0.0–1.0)"),
+        tags: z
+          .array(z.string())
+          .optional()
+          .default([])
+          .describe("Tags for relevance matching"),
+      },
+      annotations: {
+        title: "Publish context",
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: false,
+        idempotentHint: false,
+      },
+    },
+    async (input) => {
+      try {
+        const entry = createEntry({
+          assertion: input.assertion,
+          kind: input.kind as ContextKind,
+          confidence: input.confidence,
+          tags: input.tags,
+          source: { sessionId },
+        });
+        await appendMemory(cwd, entry);
+        return {
+          content: [
+            { type: "text", text: `Published context entry ${entry.id}: "${entry.assertion}"` },
+          ],
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            { type: "text", text: "Publishing context failed: " + formatErrorMessage(error) },
+          ],
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "ContextQuery",
+    {
+      title: "ContextQuery",
+      description:
+        "Query the project's context store for relevant learnings, preferences, and constraints. Returns entries ranked by relevance to the given tags.",
+      inputSchema: {
+        tags: z
+          .array(z.string())
+          .optional()
+          .default([])
+          .describe("Tags to filter/rank by"),
+        limit: z.number().optional().default(10).describe("Maximum entries to return"),
+      },
+      annotations: {
+        title: "Query context",
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+        idempotentHint: true,
+      },
+    },
+    async (input) => {
+      try {
+        const memories = await readMemory(cwd);
+        const results = queryRelevant(memories, input.tags, input.limit);
+        if (results.length === 0) {
+          return { content: [{ type: "text", text: "No relevant context entries found." }] };
+        }
+        const formatted = results
+          .map(
+            (e) =>
+              `[${e.kind}] (confidence: ${e.confidence.toFixed(2)}) ${e.assertion} [tags: ${e.tags.join(", ")}] [id: ${e.id}]`,
+          )
+          .join("\n");
+        return {
+          content: [{ type: "text", text: `Found ${results.length} entries:\n${formatted}` }],
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            { type: "text", text: "Querying context failed: " + formatErrorMessage(error) },
+          ],
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "ContextInvalidate",
+    {
+      title: "ContextInvalidate",
+      description:
+        "Mark a context entry as superseded. Use when a previous learning is no longer accurate.",
+      inputSchema: {
+        entryId: z.string().describe("ID of the entry to invalidate"),
+        supersededBy: z
+          .string()
+          .optional()
+          .describe("ID of the replacement entry, if any"),
+      },
+      annotations: {
+        title: "Invalidate context",
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: false,
+        idempotentHint: true,
+      },
+    },
+    async (input) => {
+      try {
+        const found = await invalidate(cwd, input.entryId, input.supersededBy);
+        if (found) {
+          return {
+            content: [
+              { type: "text", text: `Entry ${input.entryId} marked as superseded.` },
+            ],
+          };
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Entry ${input.entryId} not found or already superseded.`,
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: "Invalidating context failed: " + formatErrorMessage(error),
+            },
+          ],
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "SkillCreate",
+    {
+      title: "SkillCreate",
+      description:
+        "Create a new agent-authored skill in the dev-studio skills directory. Skills are reusable capabilities that persist across sessions and are discoverable by future agents.",
+      inputSchema: {
+        name: z
+          .string()
+          .describe("Skill name (lowercase alphanumeric with hyphens/underscores, 1–63 chars)"),
+        content: z.string().describe("Skill content in markdown format"),
+      },
+      annotations: {
+        title: "Create skill",
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: false,
+        idempotentHint: false,
+      },
+    },
+    async (input) => {
+      try {
+        const skillPath = await createDevStudioSkill(input.name, input.content);
+        return {
+          content: [
+            { type: "text", text: `Skill "${input.name}" created at ${skillPath}` },
+          ],
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            { type: "text", text: "Creating skill failed: " + formatErrorMessage(error) },
+          ],
+        };
+      }
+    },
+  );
+
   return server;
 }
 

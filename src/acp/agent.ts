@@ -80,7 +80,7 @@ import { readStatsCache } from "../disk/stats.js";
 import { readSessionTasks } from "../disk/tasks.js";
 import { listCommandNames } from "../disk/commands.js";
 import { listPluginNames } from "../disk/plugins.js";
-import { listSkillNames } from "../disk/skills.js";
+import { listSkillNames, listDevStudioSkillNames } from "../disk/skills.js";
 import {
   readSessionsIndex,
   renameSessionOnDisk,
@@ -1285,7 +1285,7 @@ export class ClaudeAcpAgent implements Agent {
 
     // Only add the acp MCP server if built-in tools are not disabled
     if (!params._meta?.disableBuiltInTools) {
-      const server = createMcpServer(this, sessionId, this.clientCapabilities);
+      const server = createMcpServer(this, sessionId, this.clientCapabilities, params.cwd);
       mcpServers["acp"] = {
         type: "sdk",
         name: "acp",

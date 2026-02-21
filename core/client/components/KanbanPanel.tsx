@@ -462,6 +462,17 @@ function KanbanSessionRow({
             : `${session.instSummary.checkpoints.passed}/${session.instSummary.checkpoints.total}`}
         </div>
       )}
+      {recurringState && recurringState.iterationCount > 0 && (
+        <div
+          className={`kanban-recurring-badge${recurringState.latestStatus === "error" ? " kanban-recurring-badge-error" : ""}`}
+          title={recurringState.latestLogSnippet ?? `Iteration #${recurringState.iterationCount}`}
+        >
+          <span className="kanban-recurring-iter">#{recurringState.iterationCount}</span>
+          {recurringState.latestLogSnippet && (
+            <span className="kanban-recurring-log">{recurringState.latestLogSnippet.slice(0, 80)}</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

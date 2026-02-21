@@ -2231,6 +2231,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
         clearTimeout(reconnectTimer);
+        clearTimeout(disconnectGraceTimer);
         retryCount = 0; // Reset backoff — network just recovered
         connect();
       }
@@ -2252,6 +2253,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
         console.log(`[${pageMs()}] visibility: tab visible, ws not connected, reconnecting`);
         clearTimeout(reconnectTimer);
+        clearTimeout(disconnectGraceTimer);
         retryCount = 0; // Fresh start after tab switch
         connect();
       }
@@ -2268,6 +2270,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       disposed = true;
       clearTimeout(reconnectTimer);
       clearTimeout(connectTimeout);
+      clearTimeout(disconnectGraceTimer);
       if (preflightTimerRef.current) clearTimeout(preflightTimerRef.current);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);

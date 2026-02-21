@@ -150,3 +150,177 @@ export const createPreToolUseHook =
         return { continue: true };
     }
   };
+
+// ---------------------------------------------------------------------------
+// Context Protocol Hooks (extraction + injection loops)
+// ---------------------------------------------------------------------------
+
+/** Check if a tool name matches (with or without MCP prefix). */
+function matchesToolName(toolName: string, baseName: string): boolean {
+  return toolName === baseName || toolName === `mcp__acp__${baseName}`;
+}
+
+/** Extract text content from a tool response (handles string, MCP CallToolResult, etc.) */
+function extractResponseText(toolResponse: unknown): string {
+  if (typeof toolResponse === "string") return toolResponse;
+  if (toolResponse && typeof toolResponse === "object") {
+    const res = toolResponse as Record<string, unknown>;
+    // MCP CallToolResult format: { content: [{ type: "text", text: "..." }] }
+    if (Array.isArray(res.content)) {
+      return (res.content as any[])
+        .filter((c) => c.type === "text")
+        .map((c) => c.text as string)
+        .join("\n");
+    }
+    if (typeof res.text === "string") return res.text;
+    if (typeof res.output === "string") return res.output;
+  }
+  return "";
+}
+
+/** Detect if a Bash tool response indicates failure. */
+function isBashFailure(toolResponse: unknown, responseText: string): boolean {
+  if (toolResponse && typeof toolResponse === "object") {
+    if ((toolResponse as Record<string, unknown>).isError === true) return true;
+  }
+  if (/exit code [1-9]/i.test(responseText) || /exited with code [1-9]/i.test(responseText)) {
+    return true;
+  }
+  return false;
+}
+
+/** Files whose modifications are worth recording as context observations. */
+const NOTABLE_FILES = new Set([
+  "package.json",
+  "package-lock.json",
+  "tsconfig.json",
+  "Dockerfile",
+  "docker-compose.yml",
+  "docker-compose.yaml",
+  ".env",
+  ".env.local",
+  ".env.production",
+  "Makefile",
+  "CLAUDE.md",
+]);
+
+function isNotableFile(filePath: string): boolean {
+  const lastSlash = filePath.lastIndexOf("/");
+  const basename = lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath;
+  return NOTABLE_FILES.has(basename) || /\.(ya?ml|toml|ini|cfg)$/.test(basename);
+}
+
+/**
+ * PostToolUse hook: automatically extracts learnings from tool results
+ * and persists them to the context store (extraction loop).
+ */
+export const createContextExtractionHook =
+  (cwd: string, logger: Logger = console): HookCallback =>
+  async (input: any, _toolUseID: string | undefined): Promise<{ continue: boolean }> => {
+    if (input.hook_event_name !== "PostToolUse") {
+      return { continue: true };
+    }
+
+    const toolName = input.tool_name as string;
+    const toolInput = input.tool_input as Record<string, unknown> | undefined;
+    const toolResponse = input.tool_response;
+    const sessionId = input.session_id as string;
+
+    try {
+      const tags = inferTags(toolName, toolInput);
+
+      // --- Bash failures → outcome ---
+      if (matchesToolName(toolName, "Bash")) {
+        const command = (toolInput?.command as string) ?? "";
+        const responseText = extractResponseText(toolResponse);
+        if (isBashFailure(toolResponse, responseText)) {
+          const errorSnippet = responseText.slice(0, 200).trim();
+          const entry = createEntry({
+            assertion: `Command failed: \`${command.slice(0, 100)}\` — ${errorSnippet}`,
+            kind: "outcome",
+            confidence: 0.6,
+            tags,
+            source: { sessionId, toolName, evidence: responseText.slice(0, 500) },
+          });
+          appendMemory(cwd, entry).catch((err) =>
+            logger.error(`[context-extraction] persist failed: ${err}`),
+          );
+        }
+      }
+
+      // --- Notable file modifications → observation ---
+      if (matchesToolName(toolName, "Edit") || matchesToolName(toolName, "Write")) {
+        const filePath =
+          (toolInput?.file_path as string) ?? (toolInput?.path as string) ?? "";
+        if (filePath && isNotableFile(filePath)) {
+          const entry = createEntry({
+            assertion: `Modified config file: ${filePath}`,
+            kind: "observation",
+            confidence: 0.5,
+            tags,
+            source: { sessionId, toolName },
+          });
+          appendMemory(cwd, entry).catch((err) =>
+            logger.error(`[context-extraction] persist failed: ${err}`),
+          );
+        }
+      }
+    } catch (err) {
+      // Never let extraction errors block tool execution
+      logger.error(`[context-extraction] Error: ${err}`);
+    }
+
+    return { continue: true };
+  };
+
+/**
+ * PreToolUse hook: automatically injects relevant context before tool execution
+ * (injection loop — Phase 2). Only injects for action-taking tools.
+ */
+export const createContextInjectionHook =
+  (cwd: string, logger: Logger = console): HookCallback =>
+  async (input: any, _toolUseID: string | undefined) => {
+    if (input.hook_event_name !== "PreToolUse") {
+      return { continue: true };
+    }
+
+    const toolName = input.tool_name as string;
+    const toolInput = input.tool_input;
+
+    // Only inject for action-taking tools, not information-gathering
+    if (
+      !matchesToolName(toolName, "Bash") &&
+      !matchesToolName(toolName, "Edit") &&
+      !matchesToolName(toolName, "Write")
+    ) {
+      return { continue: true };
+    }
+
+    try {
+      const tags = inferTags(toolName, toolInput);
+      const memories = readMemorySync(cwd);
+
+      if (memories.length === 0) {
+        return { continue: true };
+      }
+
+      const relevant = queryRelevant(memories, tags, 5);
+
+      if (relevant.length === 0) {
+        return { continue: true };
+      }
+
+      const contextBlock = formatMemoriesForPrompt(relevant);
+
+      return {
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse" as const,
+          additionalContext: contextBlock,
+        },
+      };
+    } catch (err) {
+      logger.error(`[context-injection] Error: ${err}`);
+      return { continue: true };
+    }
+  };

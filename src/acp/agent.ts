@@ -52,7 +52,13 @@ import { nodeToWebReadable, nodeToWebWritable, Pushable, unreachable } from "../
 import { createMcpServer } from "./mcp-server.js";
 import { acpToolNames, EDIT_TOOL_NAMES } from "./types.js";
 import { toolInfoFromToolUse } from "./tool-conversion.js";
-import { createPostToolUseHook, createPreToolUseHook } from "../sdk/hooks.js";
+import {
+  createPostToolUseHook,
+  createPreToolUseHook,
+  createContextExtractionHook,
+  createContextInjectionHook,
+} from "../sdk/hooks.js";
+import { readMemory, queryRelevant, formatMemoriesForPrompt } from "../context/store.js";
 import {
   toAcpNotifications,
   streamEventToAcpNotifications,

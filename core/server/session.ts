@@ -8,15 +8,20 @@ import { createInstFilteredReadable, pushAllPendingTasks } from "./inst-intercep
 let systemClaudePath = "";
 try { systemClaudePath = execSync("which claude", { encoding: "utf-8" }).trim(); } catch {}
 
-// Detect executor CLI version at module load time
-let claudeCodeVersion = "";
-try {
-  const claudeExe = process.env.CLAUDE_CODE_EXECUTABLE || systemClaudePath || "claude";
-  const versionOutput = execSync(`"${claudeExe}" --version`, { encoding: "utf-8", timeout: 5000 }).trim();
-  // Output format: "2.1.50 (Claude Code)"
-  const match = versionOutput.match(/^([\d.]+)/);
-  if (match) claudeCodeVersion = match[1];
-} catch {}
+/** Run `<claude-binary> --version` and extract the semver string. */
+function detectClaudeCodeVersion(): string {
+  const exe = process.env.CLAUDE_CODE_EXECUTABLE || systemClaudePath || "claude";
+  try {
+    const output = execSync(`"${exe}" --version 2>&1`, { encoding: "utf-8", timeout: 5000 }).trim();
+    // Output format: "2.1.50 (Claude Code)" or just "2.1.50"
+    const match = output.match(/([\d]+\.[\d]+\.[\d]+)/);
+    if (match) return match[1];
+    log.info({ exe, output }, "api: claude --version output did not match semver pattern");
+  } catch (err: any) {
+    log.warn({ exe, err: err.message }, "api: failed to detect Claude Code version");
+  }
+  return "";
+}
 import {
   ClientSideConnection,
   ndJsonStream,

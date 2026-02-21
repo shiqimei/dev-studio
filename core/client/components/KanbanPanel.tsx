@@ -1033,6 +1033,8 @@ export function KanbanPanel() {
         prev.map((s) => (s.sessionId === tempId ? { ...s, sessionId: sessionId } : s)),
       );
       setSelectedCards((prev) => prev.has(tempId) ? new Set([sessionId]) : prev);
+      lastClickedCardRef.current = { sessionId, columnId: targetCol };
+      resumeSession(sessionId);
       if (targetCol === "backlog") {
         setPendingPrompts((prev) => {
           const next = { ...prev, [sessionId]: prev[tempId] || text };

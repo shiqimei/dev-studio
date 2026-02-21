@@ -4297,6 +4297,22 @@ a, [data-streamdown="link"] { cursor: pointer; }
   color: var(--color-red);
 }
 
+.kanban-recurring-badge-paused {
+  background: color-mix(in srgb, var(--color-yellow, #d29922) 14%, transparent);
+  color: var(--color-yellow, #d29922);
+}
+
+.kanban-recurring-schedule {
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+.kanban-recurring-paused {
+  flex-shrink: 0;
+  font-weight: 600;
+  font-style: italic;
+}
+
 .kanban-recurring-iter {
   flex-shrink: 0;
   font-weight: 600;

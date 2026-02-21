@@ -118,6 +118,39 @@ export function getSkillsDir(): string {
   return _skillsDir;
 }
 
+// ---------------------------------------------------------------------------
+// Dev Studio data directory (~/.devstudio, overridable via DEVSTUDIO env var)
+// ---------------------------------------------------------------------------
+
+/** Root dev-studio data directory — separate from Claude's ~/.claude. */
+export const DEVSTUDIO_DATA_DIR = process.env.DEVSTUDIO ?? path.join(os.homedir(), ".devstudio");
+
+const _devStudioProjectDirCache = new Map<string, string>();
+const _devStudioSkillsDir = path.join(DEVSTUDIO_DATA_DIR, "skills");
+
+/** Returns the dev-studio project directory for a given cwd. */
+export function getDevStudioProjectDir(cwd?: string): string {
+  const resolvedCwd = cwd ?? process.env.ACP_CWD ?? process.cwd();
+  let cached = _devStudioProjectDirCache.get(resolvedCwd);
+  if (cached === undefined) {
+    cached = path.join(DEVSTUDIO_DATA_DIR, "projects", resolvedCwd.replace(/\//g, "-"));
+    _devStudioProjectDirCache.set(resolvedCwd, cached);
+  }
+  return cached;
+}
+
+/** Returns the path to the memory JSONL file for a given project. */
+export function getMemoryPath(cwd?: string): string {
+  return path.join(getDevStudioProjectDir(cwd), "memory.jsonl");
+}
+
+/** Returns the path to ~/.devstudio/skills/. */
+export function getDevStudioSkillsDir(): string {
+  return _devStudioSkillsDir;
+}
+
+// ---------------------------------------------------------------------------
+
 /** Returns the path to a session's subagents directory. */
 export function getSubagentsDir(projectDir: string, sessionId: string): string {
   return path.join(projectDir, sessionId, "subagents");

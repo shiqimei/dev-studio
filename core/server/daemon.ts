@@ -874,21 +874,38 @@ class AgentsDaemonImpl implements AgentsDaemon {
       this.recurringTextCaptures.delete(sessionId);
     }
 
+    // Use a minimum 10s delay between iterations to prevent rapid loops.
+    // If the turn itself took longer than 10s, use that as the delay floor.
+    const MIN_RECURRING_DELAY_MS = 10_000;
+    const delay = Math.max(MIN_RECURRING_DELAY_MS, rs.lastDurationMs ?? MIN_RECURRING_DELAY_MS);
+
     log.info(
-      { session: sid(sessionId), iteration: rs.iterationCount, status: latestStatus },
-      "recurring: iteration completed, re-queuing",
+      { session: sid(sessionId), iteration: rs.iterationCount, status: latestStatus, nextInMs: delay },
+      "recurring: iteration completed, scheduling next",
     );
 
     this.broadcastRecurringState(sessionId);
 
-    // Re-queue the original prompt — drainQueue() runs right after in the finally block
-    const queueId = this.generateQueueId();
-    this.getQueue(sessionId).push({
-      id: queueId,
-      text: rs.originalPrompt,
-      images: rs.originalImages,
-      addedAt: Date.now(),
-    });
+    // Schedule re-queue after delay instead of pushing synchronously.
+    // The finally block's drainQueue() will find an empty queue and do nothing.
+    // After the delay, we push and drain manually.
+    const timer = setTimeout(() => {
+      this.recurringTimers.delete(sessionId);
+      // Guard: only re-queue if still in recurring mode
+      if (!this.recurringStates.has(sessionId)) return;
+      const queueId = this.generateQueueId();
+      this.getQueue(sessionId).push({
+        id: queueId,
+        text: rs.originalPrompt,
+        images: rs.originalImages,
+        addedAt: Date.now(),
+      });
+      // Drain manually since we're outside the finally block now
+      if (!this.processingSessions.has(sessionId)) {
+        this.drainQueue(sessionId);
+      }
+    }, delay);
+    this.recurringTimers.set(sessionId, timer);
   }
 
   // ── Queue management ──

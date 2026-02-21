@@ -13,7 +13,7 @@ import {
   findTeammateParent,
 } from "./SessionSidebar";
 import { KanbanSearchModal } from "./KanbanSearchModal";
-import type { DiskSession, TurnStatus, SubagentChild, ImageAttachment, KanbanOp } from "../types";
+import type { DiskSession, TurnStatus, SubagentChild, ImageAttachment, KanbanOp, RecurringStateInfo } from "../types";
 
 /** Build a preliminary "brewing" TurnStatus for optimistic rendering. */
 function makeOptimisticTurnStatus(): TurnStatus {
@@ -185,6 +185,7 @@ function KanbanSessionRow({
   subagentsLoading,
   resumeSession,
   resumeSubagent,
+  recurringState,
 }: {
   session: DiskSession;
   columnId: KanbanColumnId;
@@ -214,6 +215,7 @@ function KanbanSessionRow({
   subagentsLoading: Set<string>;
   resumeSession: (sessionId: string) => void;
   resumeSubagent: (parentSessionId: string, agentId: string) => void;
+  recurringState?: RecurringStateInfo | null;
 }) {
   const hasChildren = (session.children?.length ?? 0) > 0;
   const isExpanded = expandedSessions.has(session.sessionId);
@@ -1083,7 +1085,7 @@ export function KanbanPanel() {
         setPendingImages((prev) => { const next = { ...prev }; delete next[tempId]; return next; });
       }
     }
-  }, [dispatch, createBacklogSession, resumeSession, sendPromptToSession, updatePendingPrompt, sendKanbanOp]);
+  }, [dispatch, createBacklogSession, resumeSession, sendPromptToSession, startRecurring, updatePendingPrompt, sendKanbanOp]);
 
   // Ref to track pendingPrompts in the move callback without stale closure
   const pendingPromptsRef = useRef(pendingPrompts);
@@ -1095,6 +1097,28 @@ export function KanbanPanel() {
     (dragSessionId: string, sourceCol: KanbanColumnId, targetIndex: number, targetCol: KanbanColumnId) => {
       // Mark as manual move so FLIP animation is skipped for this card
       manualMoveIdsRef.current.add(dragSessionId);
+
+      // ── Start recurring when moving any card into recurring ──
+      if (targetCol === "recurring" && sourceCol !== "recurring") {
+        const pendingPrompt = pendingPromptsRef.current[dragSessionId];
+        const promptImages = pendingImagesRef.current[dragSessionId];
+        const session = columnDataRef.current[sourceCol].find((s) => s.sessionId === dragSessionId);
+        if (sourceCol === "backlog" && pendingPrompt) {
+          setPendingPrompts((prev) => { const next = { ...prev }; delete next[dragSessionId]; return next; });
+          updatePendingPrompt(dragSessionId, "");
+          setPendingImages((prev) => { if (!prev[dragSessionId]) return prev; const next = { ...prev }; delete next[dragSessionId]; return next; });
+        }
+        const effectivePrompt = pendingPrompt || session?.title || "";
+        if (effectivePrompt) {
+          dispatch({ type: "SET_OPTIMISTIC_TURN_STATUS", sessionId: dragSessionId, status: makeOptimisticTurnStatus() });
+          startRecurring(dragSessionId, effectivePrompt, pendingPrompt ? promptImages : undefined);
+        }
+      }
+
+      // ── Stop recurring when moving out of recurring ──
+      if (sourceCol === "recurring" && targetCol !== "recurring") {
+        stopRecurring(dragSessionId);
+      }
 
       // ── Start task when moving any card into in_progress ──
       if (targetCol === "in_progress" && sourceCol !== "in_progress") {
@@ -1174,7 +1198,7 @@ export function KanbanPanel() {
       }
       sendKanbanOp(ops);
     },
-    [dispatch, resumeSession, sendPromptToSession, renameSession, sendKanbanOp],
+    [dispatch, resumeSession, sendPromptToSession, renameSession, sendKanbanOp, startRecurring, stopRecurring, updatePendingPrompt],
   );
 
   const handleCardClick = useCallback(

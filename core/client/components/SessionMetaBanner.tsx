@@ -34,6 +34,8 @@ export const SessionMetaBanner = memo(function SessionMetaBanner() {
 
   const iconSrc = EXECUTOR_ICONS[executorType];
   const displayModel = model ? formatModelName(model) : null;
+  const executorLabel = executorType === "codex" ? "Codex" : "Claude Code";
+  const executorDisplay = executorVersion ? `${executorLabel} ${executorVersion}` : executorLabel;
 
   return (
     <div className="session-meta-banner">
@@ -43,8 +45,7 @@ export const SessionMetaBanner = memo(function SessionMetaBanner() {
       >
         <img src={iconSrc} width={14} height={14} alt="" className="session-meta-icon" />
         <span className="session-meta-summary">
-          {agentName && <span className="session-meta-agent">{agentName}</span>}
-          {(executorVersion || agentVersion) && <span className="session-meta-version">v{executorVersion || agentVersion}</span>}
+          <span className="session-meta-agent">{executorDisplay}</span>
           {displayModel && (
             <>
               <span className="session-meta-sep">/</span>
@@ -60,30 +61,16 @@ export const SessionMetaBanner = memo(function SessionMetaBanner() {
       </div>
       {expanded && (
         <div className="session-meta-details">
-          {agentName && (
-            <div className="session-meta-row">
-              <span className="session-meta-label">Agent</span>
-              <span className="session-meta-value">
-                {agentName}
-                {agentVersion && ` v${agentVersion}`}
-              </span>
-            </div>
-          )}
           {model && (
             <div className="session-meta-row">
               <span className="session-meta-label">Model</span>
-              <span className="session-meta-value">{model}</span>
+              <span className="session-meta-value">{displayModel}</span>
             </div>
           )}
-          {executorType && (
-            <div className="session-meta-row">
-              <span className="session-meta-label">Executor</span>
-              <span className="session-meta-value">
-                {executorType === "codex" ? "Codex" : "Claude Code"}
-                {executorVersion && ` v${executorVersion}`}
-              </span>
-            </div>
-          )}
+          <div className="session-meta-row">
+            <span className="session-meta-label">Executor</span>
+            <span className="session-meta-value">{executorDisplay}</span>
+          </div>
           {state.currentSessionId && (
             <div className="session-meta-row">
               <span className="session-meta-label">Session</span>

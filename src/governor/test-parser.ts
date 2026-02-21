@@ -349,17 +349,29 @@ function parseGo(output: string, raw: string): TestResult {
   let failed = 0;
 
   // Individual failures: "--- FAIL: TestName (0.00s)"
-  const failRegex = /---\s+FAIL:\s+(\S+)\s+\(([\d.]+)s\)\s*\n?([\s\S]*?)(?=---\s+(?:FAIL|PASS)|ok\s|FAIL\s|\n\n|$)/g;
+  // The error lines appear BEFORE the --- FAIL line, so we need to capture them
+  // by looking for "=== RUN   TestName" ... error lines ... "--- FAIL: TestName"
+  const failNames: string[] = [];
+  const failRegex = /---\s+FAIL:\s+(\S+)\s+\(([\d.]+)s\)/g;
   let match;
   while ((match = failRegex.exec(output)) !== null) {
-    const msg = match[3]
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .slice(0, 3)
-      .join(" ");
+    failNames.push(match[1].trim());
+  }
+
+  // For each failed test, look backwards from "--- FAIL:" to find error lines
+  for (const testName of failNames) {
+    const runPattern = new RegExp(`=== RUN\\s+${testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\n([\\s\\S]*?)---\\s+FAIL:\\s+${testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+    const blockMatch = output.match(runPattern);
+    const msg = blockMatch
+      ? blockMatch[1]
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .slice(0, 3)
+          .join(" ")
+      : "";
     failures.push({
-      name: match[1].trim(),
+      name: testName,
       message: msg.slice(0, 300),
     });
   }
@@ -423,20 +435,27 @@ function parseMocha(output: string, raw: string): TestResult {
     else if (sMatch) duration = parseFloat(sMatch[1]) * 1000;
   }
 
-  // Individual failures: "  1) test name:\n     Error: message"
-  const failBlockRegex = /\d+\)\s+(.+?):\s*\n\s+([\s\S]*?)(?=\n\s*\d+\)|\n\n|$)/g;
-  let match;
-  while ((match = failBlockRegex.exec(output)) !== null) {
-    const msg = match[2]
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .slice(0, 3)
-      .join(" ");
-    failures.push({
-      name: match[1].trim(),
-      message: msg.slice(0, 300),
-    });
+  // Individual failures in mocha output come after the summary lines.
+  // Format: "  1) Suite name\n       should do something:\n     Error: message"
+  // Or:     "  1) Suite\n       should do something:\n\n      Error: expected 0 to equal -1"
+  const failSection = output.indexOf("failing");
+  if (failSection !== -1) {
+    const afterFailing = output.slice(failSection);
+    const failBlockRegex = /\d+\)\s+([\s\S]*?)(?=\n\s*\d+\)|\n\n\n|$)/g;
+    let match;
+    while ((match = failBlockRegex.exec(afterFailing)) !== null) {
+      const block = match[1];
+      const lines = block
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const name = lines[0]?.replace(/:$/, "") ?? "unknown";
+      const msgLines = lines.slice(1).slice(0, 3).join(" ");
+      failures.push({
+        name: name.trim(),
+        message: msgLines.slice(0, 300),
+      });
+    }
   }
 
   return {

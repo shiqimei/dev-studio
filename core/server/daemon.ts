@@ -781,6 +781,100 @@ class AgentsDaemonImpl implements AgentsDaemon {
     }
   }
 
+  // ── Recurring ──
+
+  getRecurringState(sessionId: string): RecurringState | null {
+    return this.recurringStates.get(sessionId) ?? null;
+  }
+
+  startRecurring(sessionId: string, prompt: string, images?: Array<{ data: string; mimeType: string }>): void {
+    this.recurringStates.set(sessionId, {
+      originalPrompt: prompt,
+      originalImages: images,
+      iterationCount: 0,
+      latestLogSnippet: null,
+      latestStatus: null,
+      lastCompletedAt: null,
+      lastDurationMs: null,
+    });
+    log.info({ session: sid(sessionId) }, "recurring: started");
+    this.broadcastRecurringState(sessionId);
+  }
+
+  stopRecurring(sessionId: string): void {
+    if (this.recurringStates.delete(sessionId)) {
+      this.recurringTextCaptures.delete(sessionId);
+      log.info({ session: sid(sessionId) }, "recurring: stopped");
+      this.broadcastRecurringState(sessionId);
+    }
+  }
+
+  sendRecurringStates(ws: WsSendable): void {
+    for (const [sessionId, rs] of this.recurringStates) {
+      ws.send(JSON.stringify({
+        type: "recurring_state",
+        sessionId,
+        state: {
+          iterationCount: rs.iterationCount,
+          latestLogSnippet: rs.latestLogSnippet,
+          latestStatus: rs.latestStatus,
+          lastCompletedAt: rs.lastCompletedAt,
+          lastDurationMs: rs.lastDurationMs,
+        },
+      }));
+    }
+  }
+
+  private broadcastRecurringState(sessionId: string): void {
+    const rs = this.recurringStates.get(sessionId);
+    this.eventSink({
+      type: "recurring_state",
+      sessionId,
+      state: rs ? {
+        iterationCount: rs.iterationCount,
+        latestLogSnippet: rs.latestLogSnippet,
+        latestStatus: rs.latestStatus,
+        lastCompletedAt: rs.lastCompletedAt,
+        lastDurationMs: rs.lastDurationMs,
+      } : null,
+    }, null);
+  }
+
+  private handleRecurringTurnEnd(sessionId: string): void {
+    const rs = this.recurringStates.get(sessionId);
+    if (!rs) return;
+
+    const turnState = this.turnStates[sessionId];
+    const latestStatus = turnState?.status === "error" ? "error" as const : "completed" as const;
+
+    rs.iterationCount++;
+    rs.latestStatus = latestStatus;
+    rs.lastCompletedAt = Date.now();
+    rs.lastDurationMs = turnState?.durationMs ?? null;
+
+    // Capture latest log snippet from text accumulated during the turn
+    if (this.recurringTextCaptures.has(sessionId)) {
+      rs.latestLogSnippet = this.recurringTextCaptures.get(sessionId)!.slice(-300);
+      this.recurringTextCaptures.delete(sessionId);
+    }
+
+    log.info(
+      { session: sid(sessionId), iteration: rs.iterationCount, status: latestStatus },
+      "recurring: iteration completed, re-queuing",
+    );
+
+    this.broadcastRecurringState(sessionId);
+
+    // Re-queue the original prompt — drainQueue() runs right after in the finally block
+    const queueId = this.generateQueueId();
+    this.getQueue(sessionId).push({
+      id: queueId,
+      text: rs.originalPrompt,
+      images: rs.originalImages,
+      addedAt: Date.now(),
+    });
+  }
+
   // ── Queue management ──
 
   private getQueue(sessionId: string | null): QueuedMessage[] {

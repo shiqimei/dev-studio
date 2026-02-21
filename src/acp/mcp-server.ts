@@ -7,7 +7,16 @@ import {
   TaskOutputInput,
 } from "@anthropic-ai/claude-agent-sdk/sdk-tools.js";
 import { z } from "zod";
-import { CLAUDE_CONFIG_DIR } from "../disk/paths.js";
+import { CLAUDE_CONFIG_DIR, DEVSTUDIO_DATA_DIR } from "../disk/paths.js";
+import {
+  readMemory,
+  appendMemory,
+  createEntry,
+  queryRelevant,
+  invalidate,
+  type ContextKind,
+} from "../context/store.js";
+import { createDevStudioSkill } from "../disk/skills.js";
 import type { ClaudeAcpAgent } from "./agent.js";
 import {
   ClientCapabilities,
@@ -56,6 +65,7 @@ export function createMcpServer(
   agent: ClaudeAcpAgent,
   sessionId: string,
   clientCapabilities: ClientCapabilities | undefined,
+  cwd: string,
 ): McpServer {
   /**
    * This checks if a given path is related to internal agent persistence and if the agent should be allowed to read/write from here.
@@ -64,9 +74,10 @@ export function createMcpServer(
    */
   function internalPath(file_path: string) {
     return (
-      file_path.startsWith(CLAUDE_CONFIG_DIR) &&
-      !file_path.startsWith(path.join(CLAUDE_CONFIG_DIR, "settings.json")) &&
-      !file_path.startsWith(path.join(CLAUDE_CONFIG_DIR, "session-env"))
+      (file_path.startsWith(CLAUDE_CONFIG_DIR) &&
+        !file_path.startsWith(path.join(CLAUDE_CONFIG_DIR, "settings.json")) &&
+        !file_path.startsWith(path.join(CLAUDE_CONFIG_DIR, "session-env"))) ||
+      file_path.startsWith(DEVSTUDIO_DATA_DIR)
     );
   }
 

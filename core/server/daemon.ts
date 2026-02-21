@@ -429,7 +429,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
   async createSession(executorType: ExecutorType = "claude", projectPath?: string): Promise<{ sessionId: string }> {
     const conn = this.getConnectionForExecutor(executorType);
     if (!conn) throw new Error(`No connection for executor type: ${executorType}`);
-    instLog(`daemon.createSession: executorType="${executorType}" conn.executorVersion="${conn.executorVersion || "(unset)"}" conn.agentName="${conn.agentName || "(unset)}"`);
+    instLog(`daemon.createSession: executorType="${executorType}" conn.executorVersion="${conn.executorVersion || "(unset)"}" conn.agentName="${conn.agentName || "(unset)"}`);
     const cwd = projectPath ?? this.getActiveProjectCwd() ?? undefined;
     const result = await createNewSession(conn.connection, this.broadcast.bind(this), cwd, { name: conn.agentName, version: conn.agentVersion, executorVersion: conn.executorVersion });
     kanbanDb.setSessionExecutorType(result.sessionId, executorType);
@@ -999,7 +999,7 @@ class AgentsDaemonImpl implements AgentsDaemon {
     }
     if (meta.sessionInfo) {
       const si = meta.sessionInfo as any;
-      instLog(`daemon.sendSessionMeta: session="${sessionId.slice(0, 8)}" executorVersion="${si.executorVersion || "(absent)}" keys=${Object.keys(si).join(",")}`);
+      instLog(`daemon.sendSessionMeta: session="${sessionId.slice(0, 8)}" executorVersion="${si.executorVersion || "(absent)"} keys=${Object.keys(si).join(",")}`);
       ws.send(JSON.stringify(meta.sessionInfo));
     }
     for (const text of meta.systemMessages) {

@@ -261,8 +261,17 @@ export function inferTags(toolName: string, toolInput: unknown): string[] {
       tags.push("typescript", "config");
     } else if (basename.endsWith(".test.ts") || basename.endsWith(".spec.ts")) {
       tags.push("tests");
+      // Link test file to its source module (e.g., hooks.test.ts → source:hooks)
+      const sourceModule = basename.replace(/\.(test|spec)\.[^.]+$/, "");
+      if (sourceModule) tags.push(`source:${sourceModule}`);
     } else if (basename.endsWith(".md")) {
       tags.push("documentation");
+    }
+
+    // Link source files to their test counterparts (e.g., hooks.ts → source:hooks)
+    if (!basename.includes(".test.") && !basename.includes(".spec.")) {
+      const nameWithoutExt = basename.replace(/\.[^.]+$/, "");
+      if (nameWithoutExt) tags.push(`source:${nameWithoutExt}`);
     }
 
     // Directory-based tags

@@ -22,6 +22,7 @@ import {
   readMemorySync,
   formatMemoriesForPrompt,
 } from "../context/store.js";
+import { detectTestRunner, parseTestOutput } from "../governor/test-parser.js";
 
 /* Callbacks executed when receiving PostToolUse hooks from Claude Code.
  * Entries are evicted after 5 minutes to prevent unbounded growth from

@@ -89,14 +89,14 @@ describe("createMcpServer", () => {
     const agent = createMockAgent();
     const server = createMcpServer(agent, "test-session", undefined, "/tmp/test");
 
-    expect(getRegisteredToolNames(server)).toHaveLength(4);
+    expect(getRegisteredToolNames(server)).toHaveLength(5);
   });
 
   it("should only register context tools when clientCapabilities is an empty object", () => {
     const agent = createMockAgent();
     const server = createMcpServer(agent, "test-session", {} as ClientCapabilities, "/tmp/test");
 
-    expect(getRegisteredToolNames(server)).toHaveLength(4);
+    expect(getRegisteredToolNames(server)).toHaveLength(5);
   });
 
   // -----------------------------------------------------------------------
@@ -135,11 +135,11 @@ describe("createMcpServer", () => {
       expect(toolNames).not.toContain("KillShell");
     });
 
-    it("should register Read + 4 context tools", () => {
+    it("should register Read + 5 always-on tools", () => {
       const agent = createMockAgent();
       const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
-      expect(getRegisteredToolNames(server)).toHaveLength(5);
+      expect(getRegisteredToolNames(server)).toHaveLength(6);
     });
   });
 
@@ -176,11 +176,11 @@ describe("createMcpServer", () => {
       expect(toolNames).not.toContain("Read");
     });
 
-    it("should register Write + Edit + 4 context tools", () => {
+    it("should register Write + Edit + 5 always-on tools", () => {
       const agent = createMockAgent();
       const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
-      expect(getRegisteredToolNames(server)).toHaveLength(6);
+      expect(getRegisteredToolNames(server)).toHaveLength(7);
     });
   });
 
@@ -203,11 +203,11 @@ describe("createMcpServer", () => {
       expect(toolNames).toContain("Edit");
     });
 
-    it("should register Read + Write + Edit + 4 context tools", () => {
+    it("should register Read + Write + Edit + 5 always-on tools", () => {
       const agent = createMockAgent();
       const server = createMcpServer(agent, "test-session", capabilities, "/tmp/test");
 
-      expect(getRegisteredToolNames(server)).toHaveLength(7);
+      expect(getRegisteredToolNames(server)).toHaveLength(8);
     });
   });
 

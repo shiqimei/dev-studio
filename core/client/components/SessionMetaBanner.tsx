@@ -27,6 +27,7 @@ export const SessionMetaBanner = memo(function SessionMetaBanner() {
   const model = state.currentModel;
   const agentName = state.agentName;
   const agentVersion = state.agentVersion;
+  const executorVersion = state.executorVersion;
 
   // Don't render if we have no metadata yet
   if (!model && !agentName) return null;
@@ -43,7 +44,7 @@ export const SessionMetaBanner = memo(function SessionMetaBanner() {
         <img src={iconSrc} width={14} height={14} alt="" className="session-meta-icon" />
         <span className="session-meta-summary">
           {agentName && <span className="session-meta-agent">{agentName}</span>}
-          {agentVersion && <span className="session-meta-version">v{agentVersion}</span>}
+          {(executorVersion || agentVersion) && <span className="session-meta-version">v{executorVersion || agentVersion}</span>}
           {displayModel && (
             <>
               <span className="session-meta-sep">/</span>
@@ -77,7 +78,10 @@ export const SessionMetaBanner = memo(function SessionMetaBanner() {
           {executorType && (
             <div className="session-meta-row">
               <span className="session-meta-label">Executor</span>
-              <span className="session-meta-value">{executorType === "codex" ? "Codex" : "Claude Code"}</span>
+              <span className="session-meta-value">
+                {executorType === "codex" ? "Codex" : "Claude Code"}
+                {executorVersion && ` v${executorVersion}`}
+              </span>
             </div>
           )}
           {state.currentSessionId && (

@@ -461,11 +461,12 @@ export class ClaudeAcpAgent implements Agent {
           switch (message.subtype) {
             case "init": {
               // Read all disk metadata in parallel
-              const [stats, commands, plugins, skills] = await Promise.all([
+              const [stats, commands, plugins, skills, devStudioSkills] = await Promise.all([
                 readStatsCache(),
                 listCommandNames(),
                 listPluginNames(),
                 listSkillNames(),
+                listDevStudioSkillNames(),
               ]);
               cachedStats = stats;
               enqueue(
@@ -483,6 +484,7 @@ export class ClaudeAcpAgent implements Agent {
                     diskCommands: commands.length > 0 ? commands : undefined,
                     diskPlugins: plugins.length > 0 ? plugins : undefined,
                     diskSkills: skills.length > 0 ? skills : undefined,
+                    devStudioSkills: devStudioSkills.length > 0 ? devStudioSkills : undefined,
                   },
                 ),
               );

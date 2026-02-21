@@ -29,6 +29,8 @@ export interface SystemInitMeta {
   diskPlugins?: string[];
   /** Skills from disk */
   diskSkills?: string[];
+  /** Agent-authored skills from ~/.devstudio/skills/ */
+  devStudioSkills?: string[];
 }
 
 export interface HookStartedMeta {
@@ -98,6 +100,7 @@ export function systemInitNotification(
     diskCommands?: string[];
     diskPlugins?: string[];
     diskSkills?: string[];
+    devStudioSkills?: string[];
   },
 ): SessionNotification {
   const meta: SystemInitMeta = {
@@ -121,6 +124,7 @@ export function systemInitNotification(
     if (diskData.diskCommands) meta.diskCommands = diskData.diskCommands;
     if (diskData.diskPlugins) meta.diskPlugins = diskData.diskPlugins;
     if (diskData.diskSkills) meta.diskSkills = diskData.diskSkills;
+    if (diskData.devStudioSkills) meta.devStudioSkills = diskData.devStudioSkills;
   }
 
   const parts: string[] = [];

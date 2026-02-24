@@ -1100,7 +1100,7 @@ export function KanbanPanel() {
       }
       sendKanbanOp(ops);
 
-      console.log(`[newCard] resumeSession + kanbanOps dispatched +${(performance.now() - t0).toFixed(0)}ms`);
+      console.log(`[newCard] kanbanOps dispatched (resumeSession=${targetCol === "backlog"}) +${(performance.now() - t0).toFixed(0)}ms`);
 
       // If creating directly in in_progress or recurring, resume and send the prompt immediately
       if (targetCol === "recurring") {

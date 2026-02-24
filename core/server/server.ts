@@ -160,15 +160,17 @@ export function startServer(port: number) {
       }
       if (url.pathname === "/api/pick-folder" && req.method === "POST") {
         try {
+          const cmd =
+            process.platform === "darwin"
+              ? `osascript -l JavaScript -e 'ObjC.import("Cocoa"); var p = $.NSOpenPanel.openPanel; p.canChooseFiles = false; p.canChooseDirectories = true; p.canCreateDirectories = true; p.prompt = "Select"; p.message = "Select project folder"; p.runModal == $.NSModalResponseOK ? ObjC.unwrap(p.URLs.objectAtIndex(0).path) : ""'`
+              : process.platform === "win32"
+                ? `powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = 'Select project folder'; $d.ShowNewFolderButton = $true; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath } else { '' }"`
+                : `zenity --file-selection --directory --title="Select project folder" 2>/dev/null || kdialog --getexistingdirectory ~ --title "Select project folder" 2>/dev/null`;
           const result = await new Promise<string | null>((resolve) => {
-            exec(
-              `osascript -l JavaScript -e 'ObjC.import("Cocoa"); const p = $.NSOpenPanel.openPanel; p.canChooseFiles = false; p.canChooseDirectories = true; p.canCreateDirectories = true; p.prompt = "Select"; p.message = "Select project folder"; p.runModal == $.NSModalResponseOK ? ObjC.unwrap(p.URLs.objectAtIndex(0).path) : ""'`,
-              { encoding: "utf-8", timeout: 120_000 },
-              (err, stdout) => {
-                if (err) resolve(null);
-                else resolve(stdout.trim().replace(/\/$/, ""));
-              },
-            );
+            exec(cmd, { encoding: "utf-8", timeout: 120_000 }, (err, stdout) => {
+              if (err) resolve(null);
+              else resolve(stdout.trim().replace(/\/$/, "") || null);
+            });
           });
           return json({ path: result });
         } catch {

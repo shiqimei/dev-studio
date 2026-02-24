@@ -1915,7 +1915,15 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         reject(new Error("WebSocket not connected"));
         return;
       }
-      pendingBacklogRef.current = { resolve, title };
+      const sendT0 = performance.now();
+      pendingBacklogRef.current = {
+        resolve: (sessionId: string) => {
+          console.log(`[newCard] WS round-trip new_session → session_switched: ${(performance.now() - sendT0).toFixed(0)}ms`);
+          resolve(sessionId);
+        },
+        title,
+      };
+      console.log(`[newCard] WS sending new_session executor=${stateRef.current.selectedExecutor}`);
       wsRef.current.send(JSON.stringify({ type: "new_session", executorType: stateRef.current.selectedExecutor, projectPath: stateRef.current.activeProject }));
     });
   }, []);

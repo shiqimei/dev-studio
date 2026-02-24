@@ -1018,6 +1018,8 @@ export function KanbanPanel() {
   }, [state.diskSessions, optimisticBacklog]);
 
   const handleSaveNewCard = useCallback(async (text: string, images?: ImageAttachment[], targetCol: KanbanColumnId = "backlog") => {
+    const t0 = performance.now();
+    console.log(`[newCard] handleSaveNewCard start → targetCol=${targetCol}`);
     setEditingNewCard(null);
 
     // Optimistic: show the card immediately in the target column
@@ -1053,8 +1055,11 @@ export function KanbanPanel() {
       { op: "set_sort_order", column: targetCol, order: tempOrder },
     ]);
 
+    console.log(`[newCard] optimistic state dispatched +${(performance.now() - t0).toFixed(0)}ms`);
+
     try {
       const sessionId = await createBacklogSession(text);
+      console.log(`[newCard] createBacklogSession resolved → ${sessionId.slice(0, 8)} +${(performance.now() - t0).toFixed(0)}ms`);
       // Swap temp ID → real ID on the optimistic entry (keep it visible until
       // the SESSIONS broadcast arrives with the real session — the cleanup
       // useEffect above will retire it at that point, preventing flicker).
@@ -1091,13 +1096,17 @@ export function KanbanPanel() {
       }
       sendKanbanOp(ops);
 
+      console.log(`[newCard] resumeSession + kanbanOps dispatched +${(performance.now() - t0).toFixed(0)}ms`);
+
       // If creating directly in in_progress or recurring, resume and send the prompt immediately
       if (targetCol === "recurring") {
         dispatch({ type: "SET_OPTIMISTIC_TURN_STATUS", sessionId, status: makeOptimisticTurnStatus() });
         startRecurring(sessionId, text, images);
+        console.log(`[newCard] startRecurring fired +${(performance.now() - t0).toFixed(0)}ms`);
       } else if (targetCol === "in_progress") {
         dispatch({ type: "SET_OPTIMISTIC_TURN_STATUS", sessionId, status: makeOptimisticTurnStatus() });
         sendPromptToSession(sessionId, text, images);
+        console.log(`[newCard] sendPromptToSession fired +${(performance.now() - t0).toFixed(0)}ms`);
       }
     } catch (err) {
       console.error("Failed to create session:", err);

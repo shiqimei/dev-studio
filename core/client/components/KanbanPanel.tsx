@@ -1068,7 +1068,13 @@ export function KanbanPanel() {
       );
       setSelectedCards((prev) => prev.has(tempId) ? new Set([sessionId]) : prev);
       lastClickedCardRef.current = { sessionId, columnId: targetCol };
-      resumeSession(sessionId);
+      // Only navigate to the session for backlog cards. For in_progress/recurring,
+      // the session runs in the background — calling resumeSession would trigger a
+      // switch_session round-trip that can fail for brand-new sessions (no JSONL yet)
+      // and auto-create a phantom replacement session in backlog.
+      if (targetCol === "backlog") {
+        resumeSession(sessionId);
+      }
       if (targetCol === "backlog") {
         setPendingPrompts((prev) => {
           const next = { ...prev, [sessionId]: prev[tempId] || text };

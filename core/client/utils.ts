@@ -112,7 +112,7 @@ export function cleanTitle(raw: string | null): string {
 /**
  * Pick a folder using the best available method:
  * 1. Electron IPC dialog (native, parented to window)
- * 2. osascript fallback (server-side, macOS only)
+ * 2. Server-side native dialog fallback (cross-platform)
  */
 export async function pickFolder(): Promise<string | null> {
   // Electron: use IPC to dialog.showOpenDialog (properly parented)

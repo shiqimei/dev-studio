@@ -11,55 +11,6 @@ export function Header() {
 
   const [debugBtnVisible, setDebugBtnVisible] = useState(false);
 
-  // Cmd+Shift+P (Mac) / Ctrl+Shift+P (other) toggles Protocol button visibility
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key.toLowerCase() === "p" && e.shiftKey && (e.metaKey || e.ctrlKey) && !e.altKey) {
-        e.preventDefault();
-        setDebugBtnVisible((v) => !v);
-      }
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, []);
-
-  // Ctrl+J / Ctrl+K to switch project tabs (next / previous)
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-      if (e.key !== "j" && e.key !== "k") return;
-      const { projects, activeProject } = state;
-      if (projects.length < 2) return;
-      e.preventDefault();
-      const idx = activeProject ? projects.indexOf(activeProject) : 0;
-      const next =
-        e.key === "j"
-          ? (idx + 1) % projects.length
-          : (idx - 1 + projects.length) % projects.length;
-      switchProject(projects[next]);
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [state.projects, state.activeProject, switchProject]);
-
-  const addProject = useCallback(async () => {
-    try {
-      const path = await pickFolder();
-      if (!path) return;
-      const addRes = await fetch("/api/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path }),
-      });
-      const data = await addRes.json();
-      dispatch({
-        type: "SET_PROJECTS",
-        projects: data.projects,
-        activeProject: data.activeProject,
-      });
-    } catch {}
-  }, [dispatch]);
-
   const switchProject = useCallback(
     (path: string) => {
       dispatch({ type: "SET_ACTIVE_PROJECT", path });

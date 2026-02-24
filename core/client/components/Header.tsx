@@ -23,6 +23,25 @@ export function Header() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  // Ctrl+J / Ctrl+K to switch project tabs (next / previous)
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      if (e.key !== "j" && e.key !== "k") return;
+      const { projects, activeProject } = state;
+      if (projects.length < 2) return;
+      e.preventDefault();
+      const idx = activeProject ? projects.indexOf(activeProject) : 0;
+      const next =
+        e.key === "j"
+          ? (idx + 1) % projects.length
+          : (idx - 1 + projects.length) % projects.length;
+      switchProject(projects[next]);
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [state.projects, state.activeProject, switchProject]);
+
   const addProject = useCallback(async () => {
     try {
       const path = await pickFolder();

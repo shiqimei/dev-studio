@@ -134,10 +134,7 @@ export interface AgentsDaemon {
   sendQueueState(ws: WsSendable, sessionId: string): void;
   augmentHistoryWithTurnStats(sessionId: string, entries: unknown[]): unknown[];
 
-  // ── Routing ──
-  routeWithHaiku(text: string, sessionTitle: string | null, lastTurnSummary: string | null): Promise<boolean>;
-  isRouteWhitelisted(text: string): boolean;
-  getLastTurnSummary(sessionId: string): Promise<string | null>;
+  // ── Session title ──
   getSessionTitle(sessionId: string): string | null;
 
   // ── Queue management ──

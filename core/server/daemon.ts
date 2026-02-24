@@ -100,15 +100,6 @@ async function readSessionJsonlFromDisk(sessionId: string, projectCwd: string): 
   return entries;
 }
 
-// ── Route whitelist ──
-
-const ROUTE_WHITELIST_PATTERNS: RegExp[] = [
-  /^\/\S/,
-  /^(yes|yeah|yep|yup|no|nope|nah|ok|okay|sure|go ahead|do it|looks good|lgtm|approved|sounds good|perfect|great|correct|right|exactly|agreed)\b/i,
-  /^(continue|proceed|go on|try again|retry|undo|revert|cancel|stop|wait|hold on|never ?mind)\b/i,
-  /^(thanks|thank you|thx|ty)\b/i,
-];
-
 // ── Server event map (for protocol debug panel) ──
 
 const SERVER_EVENT_MAP: Record<string, string> = {
@@ -1223,57 +1214,6 @@ class AgentsDaemonImpl implements AgentsDaemon {
     }
 
     return result;
-  }
-
-  // ── Routing ──
-
-  async routeWithHaiku(text: string, sessionTitle: string | null, lastTurnSummary: string | null): Promise<boolean> {
-    return this.haikuPool.route(text, sessionTitle, lastTurnSummary);
-  }
-
-  isRouteWhitelisted(text: string): boolean {
-    const trimmed = text.trim();
-    if (!trimmed) return true;
-    return ROUTE_WHITELIST_PATTERNS.some((pat) => pat.test(trimmed));
-  }
-
-  async getLastTurnSummary(sessionId: string): Promise<string | null> {
-    try {
-      const result = await this.getHistory(sessionId);
-      const entries = (result.entries as any[]) ?? [];
-      if (entries.length === 0) return null;
-
-      let lastUserText: string | null = null;
-      let lastAssistantText: string | null = null;
-
-      for (let i = entries.length - 1; i >= 0; i--) {
-        const e = entries[i];
-        if (!lastAssistantText && e.type === "assistant") {
-          const content = e.message?.content as any[] | undefined;
-          if (content) {
-            const texts = content.filter((b: any) => b.type === "text" && b.text).map((b: any) => b.text as string);
-            if (texts.length > 0) lastAssistantText = texts.join(" ").slice(0, 300);
-          }
-        }
-        if (!lastUserText && e.type === "user" && !e.isMeta) {
-          const content = e.message?.content as any[] | undefined;
-          if (content) {
-            const texts = content.filter((b: any) => b.type === "text" && b.text).map((b: any) => b.text as string);
-            if (texts.length > 0) lastUserText = texts.join(" ").slice(0, 300);
-          }
-        }
-        if (lastUserText && lastAssistantText) break;
-      }
-
-      if (!lastUserText && !lastAssistantText) return null;
-      const parts: string[] = [];
-      if (lastUserText) parts.push(`Last user message: "${lastUserText}"`);
-      if (lastAssistantText) parts.push(`Last assistant response: "${lastAssistantText}"`);
-      return parts.join("\n");
-    } catch (err: any) {
-      log.warn({ err: err.message, sessionId: sessionId.slice(0, 8) }, "route: getLastTurnSummary failed");
-      return null;
-    }
   }
 
   getSessionTitle(sessionId: string): string | null {

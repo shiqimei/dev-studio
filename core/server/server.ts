@@ -22,19 +22,10 @@ export function startServer(port: number) {
   // ── Client tracking (ephemeral, rebuilt on each HMR reload) ──
   let nextClientId = 1;
 
-  interface PreflightRouteCache {
-    text: string;
-    sessionId: string;
-    isSameSession: boolean;
-    timestamp: number;
-  }
-
   interface ClientState {
     id: number;
     currentSessionId: string | null;
     connectedAt: number;
-    preflightCache?: PreflightRouteCache;
-    preflightSeq?: number;
   }
   const clients = new Map<{ send: (data: string) => void }, ClientState>();
 
@@ -870,126 +861,37 @@ export function startServer(port: number) {
             const routeSession = clientState.currentSessionId;
             log.info({ client: cid, session: sid(routeSession), textLen: msg.text?.length ?? 0 }, "ws: → route_message");
 
-            // Broadcast user message helper
-            const broadcastUserMsg = () => {
-              const userMsgJson = JSON.stringify({
-                type: "user_message",
-                sessionId: routeSession,
-                text: msg.text,
-                images: msg.images,
-                files: msg.files,
-                queueId: msg.queueId,
-              });
-              for (const [otherWs, otherState] of clients) {
-                if (otherWs !== ws && otherState.currentSessionId === routeSession) {
-                  try { otherWs.send(userMsgJson); } catch {}
-                }
+            // Broadcast user message to other clients viewing the same session
+            const userMsgJson = JSON.stringify({
+              type: "user_message",
+              sessionId: routeSession,
+              text: msg.text,
+              images: msg.images,
+              files: msg.files,
+              queueId: msg.queueId,
+            });
+            for (const [otherWs, otherState] of clients) {
+              if (otherWs !== ws && otherState.currentSessionId === routeSession) {
+                try { otherWs.send(userMsgJson); } catch {}
               }
-            };
-
-            // Send to current session (interrupt if busy)
-            const sendToCurrentSession = () => {
-              broadcastUserMsg();
-              if (daemon.isProcessing(routeSession)) {
-                daemon.interruptAndPrompt(routeSession, msg.text, msg.images, msg.files);
-              } else {
-                daemon.prompt(routeSession, msg.text, msg.images, msg.files);
-              }
-            };
-
-            // Whitelist check
-            if (daemon.isRouteWhitelisted(msg.text)) {
-              log.info({ client: cid, session: sid(routeSession), route: "whitelisted" }, "ws: route_message → same session (whitelisted)");
-              ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
-              sendToCurrentSession();
-              break;
             }
 
-            // Skip Haiku routing for non-Claude executors (e.g. Codex) — the user
-            // explicitly chose this executor, so always stay in the current session.
-            const routeSessionExecutor = kanbanDb.getSessionExecutorType(routeSession);
-            if (routeSessionExecutor !== "claude") {
-              log.info({ client: cid, session: sid(routeSession), executor: routeSessionExecutor, route: "non-claude-executor" }, "ws: route_message → same session (non-claude executor)");
-              ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
-              sendToCurrentSession();
-              break;
-            }
-
-            try {
-              const sessionTitle = daemon.getSessionTitle(routeSession);
-              const lastTurnSummary = await daemon.getLastTurnSummary(routeSession);
-              const shouldContinue = await daemon.routeWithHaiku(msg.text, sessionTitle, lastTurnSummary);
-
-              if (shouldContinue) {
-                log.info({ client: cid, session: sid(routeSession), route: "same" }, "ws: route_message → same session");
-                ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
-                sendToCurrentSession();
-              } else {
-                log.info({ client: cid, session: sid(routeSession), route: "new" }, "ws: route_message → new session");
-                const t0 = performance.now();
-                const routeExecutorType = msg.executorType ?? "claude";
-                const routeProjectPath = msg.projectPath ?? undefined;
-                const { sessionId: newSessionId } = await daemon.createSession(routeExecutorType, routeProjectPath);
-                log.info({ client: cid, session: sid(newSessionId), durationMs: Math.round(performance.now() - t0) }, "api: newSession (routed) completed");
-                clientState.currentSessionId = newSessionId;
-                daemon.defaultSessionId = newSessionId;
-
-                ws.send(JSON.stringify({ type: "session_history", sessionId: newSessionId, entries: [] }));
-                ws.send(JSON.stringify({ type: "session_switched", sessionId: newSessionId, turnStatus: null }));
-                daemon.sendSessionMeta(ws, newSessionId);
-                ws.send(JSON.stringify({ type: "route_result", sessionId: newSessionId, isNew: true }));
-
-                daemon.broadcastSessions().catch(() => {});
-                daemon.prompt(newSessionId, msg.text, msg.images, msg.files);
-              }
-            } catch (err: any) {
-              log.error({ client: cid, err: err.message }, "ws: route_message error");
-              ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
+            // Always route to the current session
+            ws.send(JSON.stringify({ type: "route_result", sessionId: routeSession, isNew: false }));
+            if (daemon.isProcessing(routeSession)) {
+              daemon.interruptAndPrompt(routeSession, msg.text, msg.images, msg.files);
+            } else {
               daemon.prompt(routeSession, msg.text, msg.images, msg.files);
             }
             break;
           }
 
           case "preflight_route": {
+            // Always report same session (no haiku routing)
             if (!clientState.currentSessionId) break;
             const pfSession = clientState.currentSessionId;
             const pfSeq = msg.seq ?? 0;
-
-            if (clientState.preflightSeq != null && pfSeq < clientState.preflightSeq) break;
-            clientState.preflightSeq = pfSeq;
-
-            if (daemon.isRouteWhitelisted(msg.text)) {
-              clientState.preflightCache = { text: msg.text, sessionId: pfSession, isSameSession: true, timestamp: Date.now() };
-              ws.send(JSON.stringify({ type: "preflight_route_result", sessionId: pfSession, isSameSession: true, text: msg.text, seq: pfSeq }));
-              break;
-            }
-
-            // Skip Haiku routing for non-Claude executors (e.g. Codex)
-            const pfExecutor = kanbanDb.getSessionExecutorType(pfSession);
-            if (pfExecutor !== "claude") {
-              clientState.preflightCache = { text: msg.text, sessionId: pfSession, isSameSession: true, timestamp: Date.now() };
-              ws.send(JSON.stringify({ type: "preflight_route_result", sessionId: pfSession, isSameSession: true, text: msg.text, seq: pfSeq }));
-              break;
-            }
-
-            log.info({ client: cid, session: sid(pfSession), textLen: msg.text?.length ?? 0, seq: pfSeq }, "ws: → preflight_route");
-
-            try {
-              const sessionTitle = daemon.getSessionTitle(pfSession);
-              const lastTurnSummary = await daemon.getLastTurnSummary(pfSession);
-
-              if (clientState.preflightSeq !== pfSeq) break;
-
-              const shouldContinue = await daemon.routeWithHaiku(msg.text, sessionTitle, lastTurnSummary);
-
-              if (clientState.preflightSeq !== pfSeq) break;
-
-              clientState.preflightCache = { text: msg.text, sessionId: pfSession, isSameSession: shouldContinue, timestamp: Date.now() };
-              log.info({ client: cid, session: sid(pfSession), route: shouldContinue ? "same" : "new", seq: pfSeq }, "ws: ← preflight_route_result");
-              ws.send(JSON.stringify({ type: "preflight_route_result", sessionId: pfSession, isSameSession: shouldContinue, text: msg.text, seq: pfSeq }));
-            } catch (err: any) {
-              log.warn({ client: cid, err: err.message, seq: pfSeq }, "preflight: error (non-fatal)");
-            }
+            ws.send(JSON.stringify({ type: "preflight_route_result", sessionId: pfSession, isSameSession: true, text: msg.text, seq: pfSeq }));
             break;
           }
 

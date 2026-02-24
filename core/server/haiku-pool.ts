@@ -32,8 +32,6 @@ export interface HaikuPool {
   warmup(): Promise<void>;
   /** Send a prompt and get a response using a pre-warmed worker. */
   query(prompt: string): Promise<string>;
-  /** Route a message: returns true if it belongs to the current session. */
-  route(messageText: string, sessionTitle: string | null, lastTurnSummary: string | null): Promise<boolean>;
   /** Generate a concise session title from user message and assistant response. */
   generateTitle(cwd: string, userMessage: string, assistantText: string): Promise<string | null>;
   /** Get collected metrics for all Haiku calls. */
@@ -47,56 +45,6 @@ export interface HaikuPool {
 export function createHaikuPool(): HaikuPool {
   const pool: WorkerPool = createWorkerPool(HAIKU_CONFIG);
   const { warmup, query: queryPool, recordMetric, getMetrics, shutdown } = pool;
-
-  // ── Route ──
-
-  function buildRoutePrompt(messageText: string, sessionTitle: string, lastTurnSummary: string | null): string {
-    const contextBlock = lastTurnSummary ? `\n${lastTurnSummary}\n` : "";
-    return (
-      `You are routing a message. Determine if it should continue in the current session or start a new one.\n\n` +
-      `Session title: "${sessionTitle}"${contextBlock}\nNew message: "${messageText.slice(0, 500)}"\n\n` +
-      `Reply with ONLY "same" if the message relates to the current session topic, or "new" if it's a different topic that should start a fresh session.`
-    );
-  }
-
-  async function route(
-    messageText: string,
-    sessionTitle: string | null,
-    lastTurnSummary: string | null,
-  ): Promise<boolean> {
-    if (!sessionTitle) return true; // untitled → stay in current session
-
-    try {
-      const t0 = performance.now();
-      const prompt = buildRoutePrompt(messageText, sessionTitle, lastTurnSummary);
-      const answer = await queryPool(prompt);
-      const durationMs = Math.round(performance.now() - t0);
-      const isSame = !answer.toLowerCase().startsWith("new");
-      log.info({ durationMs, answer, isSame }, "route: Haiku decision (pooled)");
-      recordMetric({
-        timestamp: Date.now(),
-        operation: "route",
-        durationMs,
-        inputLength: prompt.length,
-        outputLength: answer.length,
-        output: answer.slice(0, 200),
-        success: true,
-      });
-      return isSame;
-    } catch (err: any) {
-      log.warn({ err: err.message }, "route: Haiku pooled query failed, defaulting to same session");
-      recordMetric({
-        timestamp: Date.now(),
-        operation: "route",
-        durationMs: 0,
-        inputLength: messageText.length,
-        outputLength: 0,
-        output: err.message?.slice(0, 200) ?? "error",
-        success: false,
-      });
-      return true;
-    }
-  }
 
   // ── Title generation ──
 
@@ -164,5 +112,5 @@ export function createHaikuPool(): HaikuPool {
     }
   }
 
-  return { warmup, query: queryPool, route, generateTitle, getMetrics, shutdown };
+  return { warmup, query: queryPool, generateTitle, getMetrics, shutdown };
 }

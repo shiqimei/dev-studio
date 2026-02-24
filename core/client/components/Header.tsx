@@ -64,8 +64,8 @@ export function Header() {
       const idx = activeProject ? projects.indexOf(activeProject) : 0;
       const next =
         e.key === "j"
-          ? (idx + 1) % projects.length
-          : (idx - 1 + projects.length) % projects.length;
+          ? (idx - 1 + projects.length) % projects.length
+          : (idx + 1) % projects.length;
       switchProject(projects[next]);
     }
     document.addEventListener("keydown", handleKeyDown);

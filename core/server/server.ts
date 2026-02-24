@@ -676,15 +676,19 @@ export function startServer(port: number) {
           case "new_session": {
             const executorType = msg.executorType ?? "claude";
             const projectPath = msg.projectPath ?? undefined;
+            const t0 = performance.now();
             log.info({ client: cid, executorType, projectPath: projectPath?.split("/").pop() }, "ws: → new_session");
             try {
-              const t0 = performance.now();
               const { sessionId } = await daemon.createSession(executorType, projectPath);
-              log.info({ client: cid, session: sid(sessionId), executorType, durationMs: Math.round(performance.now() - t0) }, "api: newSession completed");
+              const createMs = Math.round(performance.now() - t0);
+              log.info({ client: cid, session: sid(sessionId), executorType, createMs }, "api: newSession completed");
               daemon.defaultSessionId = sessionId;
               clientState.currentSessionId = sessionId;
               ws.send(JSON.stringify({ type: "session_switched", sessionId, turnStatus: daemon.getTurnStatusSnapshot(sessionId) }));
+              const sendMs = Math.round(performance.now() - t0);
               daemon.sendSessionMeta(ws, sessionId);
+              const metaMs = Math.round(performance.now() - t0);
+              log.info({ client: cid, session: sid(sessionId), createMs, sendMs, metaMs }, "ws: new_session timings");
               daemon.broadcastSessions().catch(() => {});
             } catch (err: any) {
               log.error({ client: cid, err: err.message }, "ws: new_session error");

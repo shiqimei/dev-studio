@@ -428,15 +428,20 @@ class AgentsDaemonImpl implements AgentsDaemon {
   }
 
   async createSession(executorType: ExecutorType = "claude", projectPath?: string): Promise<{ sessionId: string }> {
+    const t0 = performance.now();
     const conn = this.getConnectionForExecutor(executorType);
     if (!conn) throw new Error(`No connection for executor type: ${executorType}`);
     instLog(`daemon.createSession: executorType="${executorType}" conn.executorVersion="${conn.executorVersion || "(unset)"}" conn.agentName="${conn.agentName || "(unset)"}`);
     const cwd = projectPath ?? this.getActiveProjectCwd() ?? undefined;
+    const connMs = Math.round(performance.now() - t0);
     const result = await createNewSession(conn.connection, this.broadcast.bind(this), cwd, { name: conn.agentName, version: conn.agentVersion, executorVersion: conn.executorVersion });
+    const newSessionMs = Math.round(performance.now() - t0);
     kanbanDb.setSessionExecutorType(result.sessionId, executorType);
     kanbanDb.registerManagedSession(result.sessionId, cwd);
+    const dbMs = Math.round(performance.now() - t0);
     this.liveSessionIds.add(result.sessionId);
     this.autoRenameEligible.add(result.sessionId);
+    log.info({ session: result.sessionId.slice(0, 8), connMs, newSessionMs, dbMs }, "daemon.createSession timings");
     return result;
   }
 

@@ -1074,8 +1074,6 @@ export function KanbanPanel() {
       // and auto-create a phantom replacement session in backlog.
       if (targetCol === "backlog") {
         resumeSession(sessionId);
-      }
-      if (targetCol === "backlog") {
         setPendingPrompts((prev) => {
           const next = { ...prev, [sessionId]: prev[tempId] || text };
           delete next[tempId];

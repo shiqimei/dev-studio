@@ -162,7 +162,7 @@ export function startServer(port: number) {
         try {
           const result = await new Promise<string | null>((resolve) => {
             exec(
-              `osascript -e 'tell application "System Events" to set f to POSIX path of (choose folder with prompt "Select project folder" with showing package contents without invisibles)'`,,
+              `osascript -l JavaScript -e 'ObjC.import("Cocoa"); const p = $.NSOpenPanel.openPanel; p.canChooseFiles = false; p.canChooseDirectories = true; p.canCreateDirectories = true; p.prompt = "Select"; p.message = "Select project folder"; p.runModal == $.NSModalResponseOK ? ObjC.unwrap(p.URLs.objectAtIndex(0).path) : ""'`,
               { encoding: "utf-8", timeout: 120_000 },
               (err, stdout) => {
                 if (err) resolve(null);

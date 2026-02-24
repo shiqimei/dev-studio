@@ -213,7 +213,7 @@ app.whenReady().then(async () => {
     ipcMain.handle("pick-folder", async () => {
       const win = BrowserWindow.getFocusedWindow() ?? mainWindow;
       const result = await dialog.showOpenDialog(win!, {
-        properties: ["openDirectory"],
+        properties: ["openDirectory", "createDirectory"],
         title: "Select project folder",
       });
       if (result.canceled || result.filePaths.length === 0) return null;

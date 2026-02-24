@@ -162,7 +162,7 @@ export function startServer(port: number) {
         try {
           const result = await new Promise<string | null>((resolve) => {
             exec(
-              `osascript -e 'set f to POSIX path of (choose folder with prompt "Select project folder")'`,
+              `osascript -e 'tell application "System Events" to set f to POSIX path of (choose folder with prompt "Select project folder" with showing package contents without invisibles)'`,,
               { encoding: "utf-8", timeout: 120_000 },
               (err, stdout) => {
                 if (err) resolve(null);
